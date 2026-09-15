@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VRM check</title>
+<style>
+  html, body { margin: 0; height: 100%; font: 13px/1.4 system-ui, sans-serif; background: #202329; color: #e6e6e6; }
+  body { display: grid; grid-template-columns: 1fr 300px; }
+  #stage { position: relative; min-width: 0; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+  #hint { position: absolute; inset: 0; display: grid; place-items: center; color: #8a8f9c; pointer-events: none; }
+  aside { overflow-y: auto; padding: 12px 14px; background: #2a2d34; }
+  h2 { font-size: 13px; font-weight: 600; margin: 16px 0 6px; color: #b4b9c6; }
+  .row { display: grid; grid-template-columns: 84px 1fr 36px; gap: 6px; align-items: center; margin: 3px 0; }
+  button { width: 100%; margin: 3px 0; padding: 6px; background: #3b3f49; color: inherit; border: 1px solid #4a4f5a; border-radius: 4px; cursor: pointer; }
+  button[aria-pressed="true"] { background: #56607a; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 11px; background: #1c1e23; padding: 8px; border-radius: 4px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.5.5/lib/three-vrm.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="stage"><div id="hint">Drop a .vrm file here, or open with ?model=path/to/file.vrm</div></div>
+<aside>
+  <input type="file" id="file" accept=".vrm">
+  <h2>Camera</h2>
+  <button id="focus-face">Focus face</button>
+  <button id="focus-body">Whole body</button>
+  <h2>Motion</h2>
+  <button id="swing" aria-pressed="false">Swing head and body (spring bones)</button>
+  <button id="raise-arm" aria-pressed="false">Raise left arm</button>
+  <h2>Expressions</h2>
+  <div id="expressions"></div>
+  <h2>Summary</h2>
+  <pre id="summary">No model loaded</pre>
+</aside>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+
+const stage = document.getElementById("stage");
+const summaryBox = document.getElementById("summary");
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x202329);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+sun.position.set(1, 2, 3);
+scene.add(sun);
+scene.add(new THREE.GridHelper(4, 16, 0x555a66, 0x3a3e47));
+
+const camera = new THREE.PerspectiveCamera(30, 1, 0.01, 50);
+camera.position.set(0, 1.2, 3.5);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.9, 0);
+controls.update();
+
+const loader = new GLTFLoader();
+loader.register((parser) => new VRMLoaderPlugin(parser));
+
+let vrm = null;
+let modelLabel = "";
+const motion = { swing: false, raiseArm: false };
+const clock = new THREE.Clock();
+
+function resize() {
+  const { clientWidth: width, clientHeight: height } = stage;
+  renderer.setSize(width, height, false);
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize);
+resize();
+
+async function load(url, label) {
+  summaryBox.textContent = `Loading ${label}…`;
+  const gltf = await loader.loadAsync(url);
+  if (!gltf.userData.vrm) throw new Error(`${label} is not a VRM file`);
+  if (vrm) {
+    scene.remove(vrm.scene);
+    VRMUtils.deepDispose(vrm.scene);
+  }
+  vrm = gltf.userData.vrm;
+  modelLabel = label;
+  VRMUtils.rotateVRM0(vrm);
+  scene.add(vrm.scene);
+  document.getElementById("hint").style.display = "none";
+  buildExpressionSliders();
+  focusBody();
+  summaryBox.textContent = JSON.stringify(summarize(), null, 2);
+}
+
+function summarize() {
+  const springBones = vrm.springBoneManager;
+  let triangles = 0;
+  vrm.scene.traverse((object) => {
+    if (object.isMesh) {
+      const geometry = object.geometry;
+      triangles += (geometry.index ? geometry.index.count : geometry.attributes.position.count) / 3;
+    }
+  });
+  return {
+    model: modelLabel,
+    name: vrm.meta?.name,
+    vrmVersion: vrm.meta?.metaVersion,
+    humanBones: Object.keys(vrm.humanoid.humanBones),
+    expressions: (vrm.expressionManager?.expressions ?? []).map((expression) => expression.expressionName),
+    springJoints: springBones ? springBones.joints.size : 0,
+    colliders: springBones ? new Set([...springBones.colliderGroups].flatMap((group) => group.colliders)).size : 0,
+    triangles,
+  };
+}
+
+function buildExpressionSliders() {
+  const container = document.getElementById("expressions");
+  container.textContent = "";
+  for (const expression of vrm.expressionManager?.expressions ?? []) {
+    const name = expression.expressionName;
+    const row = document.createElement("label");
+    row.className = "row";
+    const title = document.createElement("span");
+    title.textContent = name;
+    const slider = document.createElement("input");
+    Object.assign(slider, { type: "range", min: "0", max: "1", step: "0.01", value: "0" });
+    slider.dataset.expression = name;
+    const readout = document.createElement("span");
+    readout.textContent = "0.00";
+    slider.addEventListener("input", () => {
+      vrm.expressionManager.setValue(name, Number(slider.value));
+      readout.textContent = Number(slider.value).toFixed(2);
+    });
+    row.append(title, slider, readout);
+    container.append(row);
+  }
+}
+
+function frame(center, distance) {
+  controls.target.copy(center);
+  camera.position.set(center.x, center.y, center.z + distance);
+  controls.update();
+}
+
+function focusBody() {
+  const box = new THREE.Box3().setFromObject(vrm.scene);
+  const size = box.getSize(new THREE.Vector3());
+  frame(box.getCenter(new THREE.Vector3()), size.y * 2.2);
+}
+
+function focusFace() {
+  const head = vrm.humanoid.getRawBoneNode("head");
+  const center = head.getWorldPosition(new THREE.Vector3());
+  center.y += 0.08;
+  frame(center, 0.55);
+}
+
+function toggle(button, key) {
+  motion[key] = !motion[key];
+  button.setAttribute("aria-pressed", String(motion[key]));
+}
+
+document.getElementById("focus-face").addEventListener("click", () => vrm && focusFace());
+document.getElementById("focus-body").addEventListener("click", () => vrm && focusBody());
+document.getElementById("swing").addEventListener("click", (event) => toggle(event.currentTarget, "swing"));
+document.getElementById("raise-arm").addEventListener("click", (event) => toggle(event.currentTarget, "raiseArm"));
+
+function showError(error) {
+  console.error(error);
+  summaryBox.textContent = `Error: ${error.message}`;
+}
+
+document.getElementById("file").addEventListener("change", (event) => {
+  const file = event.target.files[0];
+  if (file) load(URL.createObjectURL(file), file.name).catch(showError);
+});
+stage.addEventListener("dragover", (event) => event.preventDefault());
+stage.addEventListener("drop", (event) => {
+  event.preventDefault();
+  const file = event.dataTransfer.files[0];
+  if (file) load(URL.createObjectURL(file), file.name).catch(showError);
+});
+
+const model = new URLSearchParams(location.search).get("model");
+if (model) load(model, model).catch(showError);
+
+function animate() {
+  requestAnimationFrame(animate);
+  const delta = clock.getDelta();
+  const time = clock.elapsedTime;
+  if (vrm) {
+    const head = vrm.humanoid.getNormalizedBoneNode("head");
+    if (head) head.rotation.y = motion.swing ? Math.sin(time * 6) * 0.6 : 0;
+    vrm.scene.position.x = motion.swing ? Math.sin(time * 4) * 0.15 : 0;
+    const upperArm = vrm.humanoid.getNormalizedBoneNode("leftUpperArm");
+    if (upperArm) upperArm.rotation.z = motion.raiseArm ? 1.0 : 0;
+    vrm.update(delta);
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// For inspection from the browser console.
+window.viewer = { get vrm() { return vrm; }, summarize, focusFace, focusBody, motion };
+</script>
+</body>
+</html>
