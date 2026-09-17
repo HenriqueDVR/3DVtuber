@@ -94,6 +94,7 @@ async function load(url, label) {
     VRMUtils.deepDispose(vrm.scene);
   }
   vrm = gltf.userData.vrm;
+  window.vrm = vrm; // for inspecting from the browser console
   modelLabel = label;
   VRMUtils.rotateVRM0(vrm);
   scene.add(vrm.scene);

@@ -12,9 +12,11 @@ TOLERANCE = 0.05
 
 
 class DetectBodyOnSyntheticCharacter(unittest.TestCase):
+    FIXTURE = "synthetic_character"
+
     @classmethod
     def setUpClass(cls):
-        mesh, cls.truth = load_fixture()
+        mesh, cls.truth = load_fixture(cls.FIXTURE)
         cls.joints = landmarks.detect_body(meshdata.world_vertices(mesh), meshdata.triangles(mesh.data))
 
     def assert_joint_near_truth(self, name):
@@ -56,6 +58,12 @@ class DetectBodyOnSyntheticCharacter(unittest.TestCase):
     def test_character_left_is_positive_x(self):
         self.assertGreater(self.joints["left_hand"][0], 0.0)
         self.assertLess(self.joints["right_hand"][0], 0.0)
+
+
+class DetectBodyWithArmsHangingIntoHair(DetectBodyOnSyntheticCharacter):
+    """Arms close to the body with long hair fused behind them, so only the hands stand apart."""
+
+    FIXTURE = "synthetic_character_arms_down"
 
 
 if __name__ == "__main__":

@@ -52,6 +52,24 @@ class HairBonesOnSyntheticCharacter(unittest.TestCase):
         bpy.context.view_layer.update()
         return np.linalg.norm(posed_world_vertices(self.mesh) - self.rest, axis=1)
 
+    def chains_moving(self, point, radius=0.02):
+        """Names of the hair chains that move the vertices near a point."""
+        chain_of = {name: chain[0].rsplit("_", 1)[0] for chain in self.chains for name in chain}
+        found = set()
+        for index in np.nonzero(self.near(point, radius))[0]:
+            for group in self.mesh.data.vertices[index].groups:
+                name = self.mesh.vertex_groups[group.group].name
+                if name in chain_of and group.weight > 0.01:
+                    found.add(chain_of[name])
+        return found
+
+    def test_each_side_lock_hangs_on_a_single_chain(self):
+        # A strand blended across two chains gets averaged into the body when those chains
+        # swing to opposite sides of the shoulder.
+        for tip in ("left_lock_tip", "right_lock_tip"):
+            with self.subTest(tip=tip):
+                self.assertEqual(len(self.chains_moving(self.truth["hair"][tip])), 1)
+
     def test_splits_hanging_hair_into_several_chains(self):
         self.assertGreaterEqual(len(self.chains), 4)
 

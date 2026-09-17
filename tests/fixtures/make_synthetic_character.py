@@ -7,7 +7,14 @@ face positions used to build it, so detectors can be checked against known
 answers.
 
 Run:
-    blender -b --factory-startup -P tests/fixtures/make_synthetic_character.py -- <out_dir>
+    blender -b --factory-startup -P tests/fixtures/make_synthetic_character.py -- <out_dir> [variant]
+
+The "synthetic_character_arms_down" variant hangs the arms close to the body with
+long hair fused between them and the torso, so only the hands stand apart.
+
+The "synthetic_character_parts" variant is built like Tripo's P2 meshes: the body,
+the hair and small eye and mouth inserts are separate pieces of one mesh, and long
+hair locks hang right beside the lowered arms.
 """
 
 import json
@@ -29,12 +36,29 @@ VOXEL_SIZE = 0.006
 DECIMATE_RATIO = 0.6
 ARM_DROP = math.radians(40)
 
+# Variant name -> (arm drop below horizontal, whether a hair curtain joins the arms to the body,
+# whether hair and face inserts are separate parts).
+VARIANTS = {
+    "synthetic_character": (ARM_DROP, False, False),
+    "synthetic_character_arms_down": (math.radians(78), True, False),
+    "synthetic_character_parts": (math.radians(78), False, True),
+}
+# Regions built as small separate inserts instead of being fused into the body.
+INSERT_REGIONS = ("iris", "mouth_inside")
+GLOVE_RADIUS = 0.045
+EYE_INSERT_RADII = (0.013, 0.003, 0.017)
+MOUTH_INSERT_RADII = (0.012, 0.003, 0.004)
+LONG_LOCK_TIP_Z = 0.84
+
 REGION_COLORS = {
     "skin": (255, 224, 206),
     "hair": (176, 92, 204),
     "top": (64, 76, 150),
     "pants": (44, 44, 56),
     "shoes": (30, 28, 30),
+    "iris": (60, 110, 200),
+    "mouth_inside": (120, 30, 40),
+    "glove": (40, 36, 44),
 }
 
 HEAD_CENTER = Vector((0.0, 0.0, 1.47))
@@ -62,9 +86,9 @@ def limb(name, region, start, end, radius):
     return ellipsoid(name, region, (start + end) / 2, (radius, radius, half_length + radius * 0.6), end - start)
 
 
-def arm_joints(side):
+def arm_joints(side, arm_drop):
     shoulder = Vector((0.17 * side, 0.0, 1.28))
-    direction = Vector((math.cos(ARM_DROP) * side, 0.0, -math.sin(ARM_DROP)))
+    direction = Vector((math.cos(arm_drop) * side, 0.0, -math.sin(arm_drop)))
     elbow = shoulder + direction * 0.26
     wrist = elbow + direction * 0.24
     return shoulder, elbow, wrist, wrist + direction * 0.09
@@ -75,7 +99,12 @@ def leg_joints(side):
     return Vector((x, 0.0, 0.84)), Vector((x, 0.0, 0.46)), Vector((x, 0.0, 0.08))
 
 
-def shapes():
+def long_lock(side):
+    """A lock of hair hanging from the head down beside the arm, ending just above the hand."""
+    return (0.15 * side, 0.05, 1.45), (0.2 * side, 0.06, LONG_LOCK_TIP_Z), 0.022
+
+
+def shapes(arm_drop, hair_curtain, separate_parts=False):
     parts = [
         ellipsoid("head", "skin", HEAD_CENTER, (HEAD_RADIUS,) * 3),
         limb("neck", "skin", (0, 0, 1.30), (0, 0, 1.38), 0.045),
@@ -86,9 +115,12 @@ def shapes():
         ellipsoid("hair_back", "hair", (0, 0.07, 1.30), (0.15, 0.06, 0.26)),
         ellipsoid("bang_mid", "hair", (0, -0.11, 1.56), (0.03, 0.02, 0.045)),
     ]
+    if hair_curtain:
+        # Long hair hanging behind the arms, wide enough to fuse them to the torso above the hands.
+        parts.append(ellipsoid("hair_curtain", "hair", (0, 0.06, 1.15), (0.27, 0.05, 0.28)))
     for side in (1, -1):
         tag = "L" if side > 0 else "R"
-        shoulder, elbow, wrist, hand_tip = arm_joints(side)
+        shoulder, elbow, wrist, hand_tip = arm_joints(side, arm_drop)
         hip, knee, ankle = leg_joints(side)
         parts += [
             ellipsoid(f"shoulder_{tag}", "top", shoulder, (0.05, 0.05, 0.05)),
@@ -101,6 +133,17 @@ def shapes():
             limb(f"side_lock_{tag}", "hair", (0.115 * side, -0.08, 1.50), (0.13 * side, -0.08, 1.22), 0.028),
             ellipsoid(f"bang_{tag}", "hair", (0.04 * side, -0.105, 1.555), (0.035, 0.02, 0.05)),
         ]
+        if separate_parts:
+            start, end, radius = long_lock(side)
+            eye = Vector(head_surface_point(EYE_OFFSET_X * side, EYE_Z)) + Vector((0.0, -0.002, 0.0))
+            parts += [
+                limb(f"long_lock_{tag}", "hair", start, end, radius),
+                ellipsoid(f"eye_insert_{tag}", "iris", eye, EYE_INSERT_RADII),
+                limb(f"glove_{tag}", "glove", wrist, hand_tip, GLOVE_RADIUS),
+            ]
+    if separate_parts:
+        mouth = Vector(head_surface_point(0.0, MOUTH_Z)) + Vector((0.0, -0.001, 0.0))
+        parts.append(ellipsoid("mouth_insert", "mouth_inside", mouth, MOUTH_INSERT_RADII))
     return parts
 
 
@@ -133,6 +176,35 @@ def build_mesh(parts):
     bpy.ops.object.modifier_apply(modifier=triangulate.name)
     bpy.ops.object.shade_smooth()
     return body
+
+
+def build_insert(part):
+    """A small low-poly ellipsoid kept as its own piece (voxel remeshing would erase it)."""
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=16, ring_count=8, radius=1.0)
+    obj = bpy.context.active_object
+    obj.scale = part["radii"]
+    obj.location = part["center"]
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    triangulate = obj.modifiers.new("triangulate", "TRIANGULATE")
+    bpy.ops.object.modifier_apply(modifier=triangulate.name)
+    bpy.ops.object.shade_smooth()
+    return obj
+
+
+def build_parts_mesh(parts):
+    """Body, hair and each insert built separately, then joined into one mesh of separate parts."""
+    pieces = [
+        build_mesh([p for p in parts if p["region"] not in ("hair", "glove") + INSERT_REGIONS]),
+        build_mesh([p for p in parts if p["region"] == "hair"]),
+        build_mesh([p for p in parts if p["region"] == "glove"]),
+    ]
+    pieces += [build_insert(p) for p in parts if p["region"] in INSERT_REGIONS]
+    bpy.ops.object.select_all(action="DESELECT")
+    for piece in pieces:
+        piece.select_set(True)
+    bpy.context.view_layer.objects.active = pieces[0]
+    bpy.ops.object.join()
+    return bpy.context.active_object
 
 
 def unwrap(obj):
@@ -209,10 +281,28 @@ def head_surface_point(x, z):
     return [x, HEAD_CENTER.y - math.sqrt(HEAD_RADIUS**2 - dx**2 - dz**2), z]
 
 
-def truth():
+def truth(arm_drop, separate_parts=False):
+    result = _truth(arm_drop)
+    if separate_parts:
+        for side, tag in ((1, "left"), (-1, "right")):
+            _, end, _ = long_lock(side)
+            result["hair"][f"{tag}_long_tip"] = [end[0], end[1], LONG_LOCK_TIP_Z + 0.03]
+            eye = head_surface_point(EYE_OFFSET_X * side, EYE_Z)
+            result.setdefault("parts", {})[f"{tag}_eye"] = [eye[0], eye[1] - 0.002, eye[2]]
+            _, _, wrist, hand_tip = arm_joints(side, arm_drop)
+            middle = (wrist + hand_tip) / 2
+            result["parts"][f"{tag}_glove_front"] = [middle.x, middle.y - GLOVE_RADIUS, middle.z]
+        mouth = head_surface_point(0.0, MOUTH_Z)
+        result["parts"]["mouth"] = [mouth[0], mouth[1] - 0.001, mouth[2]]
+        result["parts"]["eye_size"] = [2 * EYE_INSERT_RADII[0], 2 * EYE_INSERT_RADII[2]]
+        result["parts"]["mouth_width"] = 2 * MOUTH_INSERT_RADII[0]
+    return result
+
+
+def _truth(arm_drop):
     joints = {"hips": [0.0, 0.0, 0.86], "neck": [0.0, 0.0, 1.30], "head": [0.0, 0.0, 1.38]}
     for side, tag in ((1, "left"), (-1, "right")):
-        shoulder, elbow, wrist, _ = arm_joints(side)
+        shoulder, elbow, wrist, _ = arm_joints(side, arm_drop)
         hip, knee, ankle = leg_joints(side)
         joints[f"{tag}_upper_arm"] = list(shoulder)
         joints[f"{tag}_lower_arm"] = list(elbow)
@@ -241,7 +331,10 @@ def truth():
 
 
 def main():
-    out_dir = Path(sys.argv[sys.argv.index("--") + 1]) if "--" in sys.argv else REPO / "tests" / "fixtures" / "out"
+    args = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
+    out_dir = Path(args[0]) if args else REPO / "tests" / "fixtures" / "out"
+    name = args[1] if len(args) > 1 else "synthetic_character"
+    arm_drop, hair_curtain, separate_parts = VARIANTS[name]
     # Blender resolves relative output paths against its own working directory, not ours.
     out_dir = out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -249,26 +342,25 @@ def main():
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete()
 
-    parts = shapes()
-    body = build_mesh(parts)
+    parts = shapes(arm_drop, hair_curtain, separate_parts)
+    body = build_parts_mesh(parts) if separate_parts else build_mesh(parts)
+    body.name = name
     unwrap(body)
     image = paint_texture(body, parts, TEXTURE_SIZE)
-    image.filepath_raw = str(out_dir / "synthetic_character_basecolor.png")
+    image.filepath_raw = str(out_dir / f"{name}_basecolor.png")
     image.file_format = "PNG"
     image.save()
     assign_material(body, image)
 
     bpy.ops.object.select_all(action="DESELECT")
     body.select_set(True)
-    bpy.ops.export_scene.gltf(
-        filepath=str(out_dir / "synthetic_character.glb"), export_format="GLB", use_selection=True
-    )
-    (out_dir / "synthetic_character.truth.json").write_text(json.dumps(truth(), indent=2))
+    bpy.ops.export_scene.gltf(filepath=str(out_dir / f"{name}.glb"), export_format="GLB", use_selection=True)
+    (out_dir / f"{name}.truth.json").write_text(json.dumps(truth(arm_drop, separate_parts), indent=2))
 
     for view in ("front", "side"):
-        preview.render(str(out_dir / f"synthetic_character_{view}.png"), view)
+        preview.render(str(out_dir / f"{name}_{view}.png"), view)
     face_center = (HEAD_CENTER.x, HEAD_CENTER.y, HEAD_CENTER.z)
-    preview.render(str(out_dir / "synthetic_character_face.png"), "front", focus=(face_center, 0.34))
+    preview.render(str(out_dir / f"{name}_face.png"), "front", focus=(face_center, 0.34))
     print(f"FIXTURE faces={len(body.data.polygons)} verts={len(body.data.vertices)}")
 
 

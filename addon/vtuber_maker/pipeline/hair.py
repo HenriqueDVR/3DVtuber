@@ -1,10 +1,11 @@
 """Bone chains for hanging hair, so VRM spring bones can swing it.
 
-Hair is found by its texture color, grown outward from the crown across the
-mesh. The part hanging below the head is split into angular sectors around the
-head's vertical axis; each sector holding enough hair becomes a chain of bones,
-and its vertices are reweighted from the torso onto that chain. Neighbouring
-chains share weight across sector borders so the hair doesn't tear.
+Hair is found by its texture color. The part hanging below the head is split into
+connected strands, and each strand becomes a chain of bones with its vertices
+reweighted from the torso onto it. A strand wider than CHAIN_SPREAD around the
+head, like hair covering the back, gets several side-by-side chains that share
+weight with each other. Separate strands never share weight: blended across two
+chains that swing apart, a strand would be averaged into the body.
 """
 
 import math
@@ -18,10 +19,10 @@ from .face import HAIR_DISTANCE
 from .meshdata import world_vertices
 from .rig import BONE_NAMES, make_active
 
-SECTORS = 8
-SECTOR_WIDTH = 2 * math.pi / SECTORS
+# Hanging hair spanning more than this angle around the head is split into several chains.
+CHAIN_SPREAD = 2 * math.pi / 8
 BONES_PER_CHAIN = 4
-MIN_SECTOR_VERTICES = 30
+MIN_CHAIN_VERTICES = 30
 MAX_INFLUENCES = 4
 # Fractions of the head radius.
 HEAD_REACH = 1.3
@@ -31,28 +32,62 @@ MIN_CHAIN_LENGTH = 0.4
 ROOT_BLEND = 0.12
 
 
-def build_hair_bones(mesh_obj, armature, joints, features):
+def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None):
     """Add hair bone chains under the head bone and reweight hanging hair onto them.
 
-    Run after skinning. Returns each chain as a list of bone names, root first.
+    Run after skinning. `hair_mask` marks the hair vertices when the mesh has separate
+    hair parts; without it hair is found by texture color. Returns each chain as a list
+    of bone names, root first.
     """
     verts = world_vertices(mesh_obj)
     head = _Head(verts, joints, features)
-    hair = _hair_vertices(mesh_obj, verts, features["hair_color"], head)
-    hanging = hair[verts[hair, 2] < head.center[2] - HANGS_BELOW_CENTER * head.radius]
-    angles = head.angle(verts[hanging])
-    sectors = np.floor((angles + math.pi) / SECTOR_WIDTH).astype(int) % SECTORS
+    if hair_mask is not None:
+        hair = np.nonzero(hair_mask)[0]
+    else:
+        hair = _hair_vertices(mesh_obj, verts, features["hair_color"], head)
+    hang_line = head.center[2] - HANGS_BELOW_CENTER * head.radius
+    hanging = np.zeros(len(verts), dtype=bool)
+    hanging[hair[verts[hair, 2] < hang_line]] = True
 
-    chains = []
-    for sector in range(SECTORS):
-        points = verts[hanging[sectors == sector]]
-        if len(points) < MIN_SECTOR_VERTICES or np.ptp(points[:, 2]) < MIN_CHAIN_LENGTH * head.radius:
+    edges = np.empty(len(mesh_obj.data.edges) * 2, dtype=np.int64)
+    mesh_obj.data.edges.foreach_get("vertices", edges)
+    # Imported meshes split vertices along UV seams, cutting strands lengthwise into
+    # unconnected strips, so vertices sharing a position are welded before grouping.
+    weld = _welded(verts)
+    a, b = weld[edges[0::2]], weld[edges[1::2]]
+    welded_hanging = np.zeros(len(verts), dtype=bool)
+    welded_hanging[weld[hanging]] = True
+    within = welded_hanging[a] & welded_hanging[b]
+    labels = _component_labels(len(verts), a[within], b[within])[weld]
+
+    chains, strands = [], []
+    for label in np.unique(labels[hanging]):
+        members = np.nonzero(hanging & (labels == label))[0]
+        if len(members) < MIN_CHAIN_VERTICES:
             continue
-        names = [f"Hair{sector}_{k}" for k in range(BONES_PER_CHAIN)]
-        chains.append(_Chain(names, _chain_positions(points), -math.pi + (sector + 0.5) * SECTOR_WIDTH))
+        angles = head.angle(verts[members])
+        center = _circular_mean(angles)
+        offsets = _angle_between(angles, center)
+        low, high = float(offsets.min()), float(offsets.max())
+        count = max(1, math.ceil((high - low) / CHAIN_SPREAD))
+        width = (high - low) / count
+        strand_chains = []
+        for piece in range(count):
+            start = low + piece * width
+            in_piece = (offsets >= start) & ((offsets < start + width) | (piece == count - 1))
+            points = verts[members[in_piece]]
+            if len(points) < MIN_CHAIN_VERTICES or np.ptp(points[:, 2]) < MIN_CHAIN_LENGTH * head.radius:
+                continue
+            names = [f"Hair{len(chains)}_{k}" for k in range(BONES_PER_CHAIN)]
+            chain = _Chain(names, _chain_positions(points), center + start + width / 2, width)
+            chains.append(chain)
+            strand_chains.append(chain)
+        if strand_chains:
+            strands.append((members, strand_chains))
+
     if chains:
         _add_bones(armature, chains)
-        _reweight(mesh_obj, verts, hanging, angles, chains)
+        _reweight(mesh_obj, verts, head, strands)
     return [chain.names for chain in chains]
 
 
@@ -70,10 +105,11 @@ class _Head:
 
 
 class _Chain:
-    def __init__(self, names, positions, angle):
+    def __init__(self, names, positions, angle, width):
         self.names = names
         self.positions = positions
         self.angle = angle
+        self.width = width
         self.root_z = positions[0][2]
         self.tip_z = positions[-1][2]
 
@@ -94,6 +130,13 @@ def _hair_vertices(mesh_obj, verts, hair_color, head):
     labels = _component_labels(len(verts), a[within_hair], b[within_hair])
     near_head = hair_colored & (np.linalg.norm(verts - head.center, axis=1) < HEAD_REACH * head.radius)
     return np.nonzero(hair_colored & np.isin(labels, labels[near_head]))[0]
+
+
+def _welded(verts, tolerance=1e-5):
+    """For each vertex, the index of the first vertex at the same position."""
+    keys = np.round(verts / tolerance).astype(np.int64)
+    _, first, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+    return first[inverse.ravel()]
 
 
 def _component_labels(count, a, b):
@@ -141,43 +184,50 @@ def _add_bones(armature, chains):
     bpy.ops.object.mode_set(mode="OBJECT")
 
 
-def _reweight(mesh_obj, verts, hanging, angles, chains):
+def _reweight(mesh_obj, verts, head, strands):
+    """Move each strand's vertices onto its own chains, blending only between those chains."""
     head_group = BONE_NAMES["head"]
     new_weights = {}
-    for vertex, angle in zip(hanging, angles):
-        shares = [(chain, 1.0 - abs(_angle_between(angle, chain.angle)) / SECTOR_WIDTH) for chain in chains]
-        shares = [(chain, share) for chain, share in shares if share > 0]
-        if not shares:
-            continue
-        total_share = sum(share for _, share in shares)
-        weights = {}
-        for chain, share in shares:
-            share /= total_share
-            along = min(max((chain.root_z - verts[vertex, 2]) / (chain.root_z - chain.tip_z), 0.0), 1.0)
-            head_part = max(0.0, 1.0 - along / ROOT_BLEND)
-            weights[head_group] = weights.get(head_group, 0.0) + share * head_part
-            position = along * BONES_PER_CHAIN - 0.5
-            lower = int(min(max(math.floor(position), 0), BONES_PER_CHAIN - 1))
-            upper = min(lower + 1, BONES_PER_CHAIN - 1)
-            blend = min(max(position - lower, 0.0), 1.0)
-            for index, part in ((lower, 1.0 - blend), (upper, blend)):
-                name = chain.names[index]
-                weights[name] = weights.get(name, 0.0) + share * (1.0 - head_part) * part
-        strongest = sorted(weights.items(), key=lambda item: -item[1])[:MAX_INFLUENCES]
-        total = sum(weight for _, weight in strongest)
-        new_weights[int(vertex)] = {name: weight / total for name, weight in strongest if weight > 0}
+    for members, chains in strands:
+        for vertex, angle in zip(members, head.angle(verts[members])):
+            shares = [(chain, 1.0 - abs(_angle_between(angle, chain.angle)) / chain.width) for chain in chains]
+            shares = [(chain, share) for chain, share in shares if share > 0]
+            if len(chains) == 1 or not shares:
+                shares = [(min(chains, key=lambda chain: abs(_angle_between(angle, chain.angle))), 1.0)]
+            total_share = sum(share for _, share in shares)
+            weights = {}
+            for chain, share in shares:
+                share /= total_share
+                along = min(max((chain.root_z - verts[vertex, 2]) / (chain.root_z - chain.tip_z), 0.0), 1.0)
+                head_part = max(0.0, 1.0 - along / ROOT_BLEND)
+                weights[head_group] = weights.get(head_group, 0.0) + share * head_part
+                position = along * BONES_PER_CHAIN - 0.5
+                lower = int(min(max(math.floor(position), 0), BONES_PER_CHAIN - 1))
+                upper = min(lower + 1, BONES_PER_CHAIN - 1)
+                blend = min(max(position - lower, 0.0), 1.0)
+                for index, part in ((lower, 1.0 - blend), (upper, blend)):
+                    name = chain.names[index]
+                    weights[name] = weights.get(name, 0.0) + share * (1.0 - head_part) * part
+            strongest = sorted(weights.items(), key=lambda item: -item[1])[:MAX_INFLUENCES]
+            total = sum(weight for _, weight in strongest)
+            new_weights[int(vertex)] = {name: weight / total for name, weight in strongest if weight > 0}
 
     groups = mesh_obj.vertex_groups
-    for chain in chains:
-        for name in chain.names:
-            if name not in groups:
-                groups.new(name=name)
+    for _members, chains in strands:
+        for chain in chains:
+            for name in chain.names:
+                if name not in groups:
+                    groups.new(name=name)
     reweighted = list(new_weights)
     for group in groups:
         group.remove(reweighted)
     for vertex, weights in new_weights.items():
         for name, weight in weights.items():
             groups[name].add([vertex], weight, "REPLACE")
+
+
+def _circular_mean(angles):
+    return math.atan2(float(np.sin(angles).mean()), float(np.cos(angles).mean()))
 
 
 def _angle_between(a, b):

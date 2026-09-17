@@ -33,6 +33,10 @@ def parse_args():
     parser.add_argument("--name", help="avatar name (defaults to the model file name)")
     parser.add_argument("--author", default="Unknown")
     parser.add_argument("--height", type=float, default=1.6, help="avatar height in metres")
+    parser.add_argument("--blend", type=Path, help="also save the rigged scene here, to fix weights by hand and re-export")
+    parser.add_argument("--keep-eyes", action="store_true", help="leave the eyes as modelled: no blink")
+    parser.add_argument("--face", type=Path, help="face.json with eye and mouth points, from viewer/setup.html")
+    parser.add_argument("--closed-eyes", type=Path, help="closed-eyes version of the face patch texture, for blink lids")
     return parser.parse_args(sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else [])
 
 
@@ -51,7 +55,12 @@ def main():
         name=args.name or model.stem,
         author=args.author,
         height=args.height,
+        closed_eyes_image=args.closed_eyes.resolve() if args.closed_eyes else None,
+        face_points_path=args.face.resolve() if args.face else None,
+        keep_eyes=args.keep_eyes,
     )
+    if args.blend:
+        bpy.ops.wm.save_as_mainfile(filepath=str(args.blend.resolve()))
     print("VTUBER_MAKER_REPORT " + json.dumps(report))
 
 

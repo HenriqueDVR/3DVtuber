@@ -5,7 +5,7 @@ import struct
 import unittest
 
 from support import FIXTURE_OUT, load_fixture
-from vtuber_maker.pipeline import face, hair, landmarks, meshdata, rig, vrm_export
+from vtuber_maker.pipeline import face, hair, hair_physics, landmarks, meshdata, rig, vrm_export
 
 
 def read_glb_json(path):
@@ -25,7 +25,7 @@ class ExportHairSpringBones(unittest.TestCase):
         rig.skin(mesh, armature)
         cls.chains = hair.build_hair_bones(mesh, armature, joints, features)
         vrm_export.configure(armature, name="Synthetic", author="Tests")
-        vrm_export.bind_spring_bones(armature, cls.chains, joints)
+        vrm_export.bind_spring_bones(armature, hair_physics.design(mesh, armature, cls.chains, joints))
 
         path = FIXTURE_OUT / "synthetic_character_hair.vrm"
         path.unlink(missing_ok=True)

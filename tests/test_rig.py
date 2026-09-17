@@ -97,5 +97,47 @@ class SkinnedSyntheticCharacter(unittest.TestCase):
         self.assertLess(moved[self.near(self.truth["joints"]["left_hand"])].max(), 0.002)
 
 
+class FillUnweighted(unittest.TestCase):
+    def setUp(self):
+        verts = [
+            (0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0),  # weighted to Neck at y=0, Head at y=1
+            (0, 2, 0), (1, 2, 0),  # unweighted, joined to the Head row by edges
+            (0, 2, 0), (1, 2, 0), (0, 3, 0), (1, 3, 0),  # unweighted separate piece sharing that row's spot
+            (5, 5, 5), (6, 5, 5), (5, 6, 5),  # unweighted piece touching nothing
+        ]
+        faces = [(0, 1, 3, 2), (2, 3, 5, 4), (6, 7, 9, 8), (10, 11, 12)]
+        mesh = bpy.data.meshes.new("fill_unweighted")
+        mesh.from_pydata(verts, [], faces)
+        self.obj = bpy.data.objects.new("fill_unweighted", mesh)
+        bpy.context.scene.collection.objects.link(self.obj)
+        self.obj.vertex_groups.new(name="Neck").add([0, 1], 1.0, "REPLACE")
+        self.obj.vertex_groups.new(name="Head").add([2, 3], 1.0, "REPLACE")
+
+    def tearDown(self):
+        mesh = self.obj.data
+        bpy.data.objects.remove(self.obj)
+        bpy.data.meshes.remove(mesh)
+
+    def weights(self, index):
+        return {self.obj.vertex_groups[g.group].name: round(g.weight, 3) for g in self.obj.data.vertices[index].groups}
+
+    def test_every_vertex_ends_up_weighted(self):
+        self.assertEqual(rig.fill_unweighted(self.obj), 9)
+        for v in self.obj.data.vertices:
+            self.assertAlmostEqual(sum(g.weight for g in v.groups), 1.0, places=3)
+
+    def test_takes_weights_from_the_surface_around_it(self):
+        rig.fill_unweighted(self.obj)
+        self.assertEqual(self.weights(4), {"Head": 1.0})
+
+    def test_separate_piece_follows_what_it_touches(self):
+        rig.fill_unweighted(self.obj)
+        self.assertEqual(self.weights(8), {"Head": 1.0})
+
+    def test_isolated_piece_takes_the_nearest_weights(self):
+        rig.fill_unweighted(self.obj)
+        self.assertEqual(self.weights(10), {"Head": 1.0})
+
+
 if __name__ == "__main__":
     unittest.main()

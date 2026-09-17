@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Face setup</title>
+<style>
+  html, body { margin: 0; height: 100%; font: 13px/1.4 system-ui, sans-serif; background: #202329; color: #e6e6e6; }
+  body { display: grid; grid-template-columns: 1fr 300px; }
+  #stage { position: relative; min-width: 0; overflow: hidden; cursor: crosshair; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+  #hint { position: absolute; inset: 0; display: grid; place-items: center; color: #8a8f9c; pointer-events: none; text-align: center; padding: 16px; }
+  aside { overflow-y: auto; padding: 12px 14px; background: #2a2d34; }
+  h2 { font-size: 13px; font-weight: 600; margin: 16px 0 6px; color: #b4b9c6; }
+  button { width: 100%; margin: 3px 0; padding: 6px; background: #3b3f49; color: inherit; border: 1px solid #4a4f5a; border-radius: 4px; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  ol { margin: 0; padding-left: 20px; }
+  li { margin: 2px 0; color: #8a8f9c; cursor: pointer; }
+  li.done { color: #e6e6e6; }
+  li.current { color: #ffd84a; font-weight: 600; }
+  .tip { color: #8a8f9c; font-size: 12px; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 11px; background: #1c1e23; padding: 8px; border-radius: 4px; max-height: 220px; overflow: auto; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="canvas"></canvas>
+  <div id="hint">Drop the front face image here, or open with ?image=path/to/face.png</div>
+</div>
+<aside>
+  <input type="file" id="file" accept="image/*">
+  <h2>Points</h2>
+  <p class="tip">Click to place the highlighted point. Drag any point to move it. Scroll to zoom, right-drag to pan. "Right eye" is the character's right, on the left of the image.</p>
+  <ol id="steps"></ol>
+  <h2>File</h2>
+  <button id="undo">Undo last point</button>
+  <button id="save" disabled>Save face.json</button>
+  <input type="file" id="load" accept=".json" hidden>
+  <button id="open">Open face.json</button>
+  <h2>Result</h2>
+  <pre id="result">Nothing placed yet</pre>
+</aside>
+<script>
+// Each feature: four points. Eyes: the corners and the top/bottom of the opening (where the
+// lashes meet the white, not the lash tips). Mouth: the corners and the middle of the lip line
+// above and below the opening. Curves through inner/top/outer and inner/bottom/outer are drawn.
+const FEATURES = [
+  ["right_eye", "Right eye", ["inner", "outer", "top", "bottom"], "#4ad7ff"],
+  ["left_eye", "Left eye", ["inner", "outer", "top", "bottom"], "#7dff6b"],
+  ["mouth", "Mouth", ["left", "right", "top", "bottom"], "#ff6bb5"],
+];
+const LABELS = { inner: "inner corner", outer: "outer corner", top: "top of opening", bottom: "bottom of opening",
+                 left: "left corner (image left)", right: "right corner (image right)" };
+const STEPS = FEATURES.flatMap(([key, title, names, color]) => names.map((name) => ({ key, title, name, color })));
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const stage = document.getElementById("stage");
+const hint = document.getElementById("hint");
+let image = null, imageName = "face.png";
+let points = {};              // "feature.name" -> [x, y] in image pixels
+let view = { scale: 1, x: 0, y: 0 };
+let dragging = null, panning = null, pressed = null;
+
+const id = (step) => `${step.key}.${step.name}`;
+const current = () => STEPS.find((s) => !points[id(s)]);
+
+function fit() {
+  const r = stage.getBoundingClientRect();
+  canvas.width = r.width * devicePixelRatio;
+  canvas.height = r.height * devicePixelRatio;
+  if (image && !view.fitted) {
+    view.scale = Math.min(canvas.width / image.width, canvas.height / image.height);
+    view.x = (canvas.width - image.width * view.scale) / 2;
+    view.y = (canvas.height - image.height * view.scale) / 2;
+    view.fitted = true;
+  }
+  draw();
+}
+
+const toScreen = ([x, y]) => [x * view.scale + view.x, y * view.scale + view.y];
+function toImage(event) {
+  const r = canvas.getBoundingClientRect();
+  const sx = (event.clientX - r.left) * devicePixelRatio, sy = (event.clientY - r.top) * devicePixelRatio;
+  return [(sx - view.x) / view.scale, (sy - view.y) / view.scale];
+}
+
+function parabola(p0, p1, p2) {
+  // y = a x^2 + b x + c through three points; null if two share an x
+  const [[x0, y0], [x1, y1], [x2, y2]] = [p0, p1, p2];
+  const d = (x0 - x1) * (x0 - x2) * (x1 - x2);
+  if (Math.abs(d) < 1e-9) return null;
+  const a = (x2 * (y1 - y0) + x1 * (y0 - y2) + x0 * (y2 - y1)) / d;
+  const b = (x2 * x2 * (y0 - y1) + x1 * x1 * (y2 - y0) + x0 * x0 * (y1 - y2)) / d;
+  const c = (x1 * x2 * (x1 - x2) * y0 + x2 * x0 * (x2 - x0) * y1 + x0 * x1 * (x0 - x1) * y2) / d;
+  return (x) => a * x * x + b * x + c;
+}
+
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!image) return;
+  ctx.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
+  ctx.drawImage(image, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const lw = 2 * devicePixelRatio;
+  for (const [key, , names, color] of FEATURES) {
+    const [ends0, ends1, mid0, mid1] = names.map((n) => points[`${key}.${n}`]);
+    if (!ends0 || !ends1) continue;
+    for (const mid of [mid0, mid1]) {
+      if (!mid) continue;
+      const f = parabola(ends0, mid, ends1);
+      if (!f) continue;
+      ctx.beginPath();
+      const lo = Math.min(ends0[0], ends1[0]), hi = Math.max(ends0[0], ends1[0]);
+      for (let i = 0; i <= 40; i++) {
+        const x = lo + (hi - lo) * i / 40;
+        const [sx, sy] = toScreen([x, f(x)]);
+        i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy);
+      }
+      ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.stroke();
+    }
+  }
+  const next = current();
+  for (const step of STEPS) {
+    const p = points[id(step)];
+    if (!p) continue;
+    const [sx, sy] = toScreen(p);
+    ctx.beginPath(); ctx.arc(sx, sy, 5 * devicePixelRatio, 0, Math.PI * 2);
+    ctx.fillStyle = step.color; ctx.fill();
+    ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5 * devicePixelRatio; ctx.stroke();
+  }
+  canvas.style.cursor = next ? "crosshair" : "default";
+}
+
+function refresh() {
+  const next = current();
+  const list = document.getElementById("steps");
+  list.innerHTML = "";
+  for (const step of STEPS) {
+    const li = document.createElement("li");
+    li.textContent = `${step.title}: ${LABELS[step.name]}`;
+    if (points[id(step)]) li.className = "done";
+    if (step === next) li.className = "current";
+    li.title = "Click to place this point again";
+    li.onclick = () => { delete points[id(step)]; refresh(); };
+    list.appendChild(li);
+  }
+  document.getElementById("save").disabled = !!next;
+  document.getElementById("result").textContent = Object.keys(points).length ? JSON.stringify(result(), null, 1) : "Nothing placed yet";
+  draw();
+}
+
+function result() {
+  const out = { image: imageName, size: image ? [image.width, image.height] : null };
+  for (const [key, , names] of FEATURES) {
+    out[key] = {};
+    for (const n of names) if (points[`${key}.${n}`]) out[key][n] = points[`${key}.${n}`].map((v) => Math.round(v * 10) / 10);
+  }
+  return out;
+}
+
+function nearest(event) {
+  const [x, y] = toImage(event);
+  let best = null, dist = 12 * devicePixelRatio / view.scale;
+  for (const [k, p] of Object.entries(points)) {
+    const d = Math.hypot(p[0] - x, p[1] - y);
+    if (d < dist) { dist = d; best = k; }
+  }
+  return best;
+}
+
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+canvas.addEventListener("pointerdown", (e) => {
+  if (!image) return;
+  canvas.setPointerCapture(e.pointerId);
+  if (e.button === 2 || e.button === 1) { panning = [e.clientX, e.clientY]; return; }
+  // A click places the next point; pressing on a point and moving drags it.
+  pressed = { hit: nearest(e), x: e.clientX, y: e.clientY, at: toImage(e) };
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (panning) {
+    view.x += (e.clientX - panning[0]) * devicePixelRatio;
+    view.y += (e.clientY - panning[1]) * devicePixelRatio;
+    panning = [e.clientX, e.clientY];
+    draw();
+  } else if (pressed && !dragging && pressed.hit && Math.hypot(e.clientX - pressed.x, e.clientY - pressed.y) > 4) {
+    dragging = pressed.hit;
+  }
+  if (dragging) {
+    points[dragging] = toImage(e);
+    refresh();
+  }
+});
+canvas.addEventListener("pointerup", () => {
+  const next = current();
+  if (pressed && !dragging && next) {
+    points[id(next)] = pressed.at;
+    refresh();
+  }
+  dragging = null; panning = null; pressed = null;
+});
+canvas.addEventListener("wheel", (e) => {
+  if (!image) return;
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  const sx = (e.clientX - r.left) * devicePixelRatio, sy = (e.clientY - r.top) * devicePixelRatio;
+  const factor = Math.exp(-e.deltaY * 0.0015);
+  view.x = sx - (sx - view.x) * factor;
+  view.y = sy - (sy - view.y) * factor;
+  view.scale *= factor;
+  draw();
+}, { passive: false });
+
+function loadImage(src, name) {
+  const img = new Image();
+  img.onload = () => { image = img; imageName = name; view.fitted = false; hint.hidden = true; fit(); refresh(); };
+  img.onerror = () => { hint.hidden = false; hint.textContent = `Couldn't load ${name}`; };
+  img.src = src;
+}
+
+document.getElementById("file").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (f) loadImage(URL.createObjectURL(f), f.name);
+});
+stage.addEventListener("dragover", (e) => e.preventDefault());
+stage.addEventListener("drop", (e) => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (!f) return;
+  if (f.name.endsWith(".json")) readJson(f); else loadImage(URL.createObjectURL(f), f.name);
+});
+document.getElementById("undo").onclick = () => {
+  const placed = STEPS.filter((s) => points[id(s)]);
+  if (placed.length) { delete points[id(placed[placed.length - 1])]; refresh(); }
+};
+document.getElementById("save").onclick = () => {
+  const blob = new Blob([JSON.stringify(result(), null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "face.json";
+  a.click();
+};
+const loader = document.getElementById("load");
+document.getElementById("open").onclick = () => loader.click();
+loader.addEventListener("change", (e) => e.target.files[0] && readJson(e.target.files[0]));
+function readJson(file) {
+  file.text().then((text) => {
+    const data = JSON.parse(text);
+    points = {};
+    for (const [key, , names] of FEATURES) for (const n of names) if (data[key]?.[n]) points[`${key}.${n}`] = data[key][n];
+    refresh();
+  });
+}
+
+window.addEventListener("resize", fit);
+const param = new URLSearchParams(location.search).get("image");
+if (param) loadImage(param, param.split("/").pop());
+fit();
+refresh();
+</script>
+</body>
+</html>

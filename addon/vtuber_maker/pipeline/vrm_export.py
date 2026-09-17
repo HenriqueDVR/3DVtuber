@@ -6,6 +6,7 @@ from mathutils import Vector
 
 from . import texture_space
 from .face_rig import BLINK_LEFT, BLINK_RIGHT, VOWELS
+from .hair_physics import HAIR_TIP_STIFFNESS
 from .rig import BONE_NAMES
 
 # Module names the VRM Add-on for Blender can have, depending on how it was installed.
@@ -18,6 +19,10 @@ PRESET_SHAPE_KEYS = {
     "blink_right": (BLINK_RIGHT,),
     **{vowel: (vowel,) for vowel in VOWELS},
 }
+
+# MToon shadows: the texture darkened with a slight cool tint, like cel-shaded anime art.
+SHADE_TINT = (0.78, 0.74, 0.86)
+UNTEXTURED_SHADE = 0.75
 
 
 class VrmAddonMissing(RuntimeError):
@@ -61,92 +66,46 @@ def bind_expressions(armature, mesh_obj):
         expression = getattr(presets, preset)
         expression.morph_target_binds.clear()
         for shape_key in shape_keys:
+            if mesh_obj.data.shape_keys is None or shape_key not in mesh_obj.data.shape_keys.key_blocks:
+                continue  # e.g. no blink keys when the eyes are kept as modelled
             bind = expression.morph_target_binds.add()
             bind.node.mesh_object_name = mesh_obj.name
             bind.index = shape_key
             bind.weight = 1.0
 
 
-# VRM 1.0 spring settings for hair. Stiffness 0-4, gravity power 0-2, drag 0-1, hit radius in metres.
-HAIR_STIFFNESS = 1.0
-HAIR_GRAVITY_POWER = 0.4
-HAIR_DRAG_FORCE = 0.4
-HAIR_HIT_RADIUS = 0.02
-
-
-def bind_spring_bones(armature, chains, joints):
-    """Make each hair chain a VRM spring that collides with the head, shoulders and upper arms."""
+def bind_spring_bones(armature, design):
+    """Export a hair spring design (see hair_physics.design) as VRM springs and body colliders."""
     context = bpy.context
     spring_bone = armature.data.vrm_addon_extension.spring_bone1
     body = spring_bone.add_collider_group()
     body.vrm_name = "Body"
-
-    j = {key: Vector(tuple(float(c) for c in value)) for key, value in joints.items()}
-    head_length = 2.5 * (j["head"] - j["neck"]).length
-    colliders = [
-        _sphere_collider(
-            context, armature, "head", j["head"] + Vector((0.0, 0.0, 0.55 * head_length)), 0.4 * head_length
-        ),
-        _capsule_collider(
-            context,
-            armature,
-            "upper_chest",
-            j["left_upper_arm"],
-            j["right_upper_arm"],
-            0.25 * (j["left_upper_arm"] - j["right_upper_arm"]).length / 2,
-        ),
-    ]
-    for side in ("left", "right"):
-        shoulder, elbow = j[f"{side}_upper_arm"], j[f"{side}_lower_arm"]
-        colliders.append(
-            _capsule_collider(context, armature, f"{side}_upper_arm", shoulder, elbow, 0.15 * (elbow - shoulder).length)
-        )
-    for collider in colliders:
+    for shape in design.colliders:
+        collider = spring_bone.add_collider(context, armature)
+        collider.node.bone_name = shape.bone
+        if shape.tail is None:
+            collider.shape_type = "Sphere"
+            collider.shape.sphere.offset = _in_bone_space(armature, shape.bone, shape.offset)
+            collider.shape.sphere.radius = shape.radius
+        else:
+            collider.shape_type = "Capsule"
+            collider.shape.capsule.offset = _in_bone_space(armature, shape.bone, shape.offset)
+            collider.shape.capsule.tail = _in_bone_space(armature, shape.bone, shape.tail)
+            collider.shape.capsule.radius = shape.radius
         body.add_collider().collider_uuid = collider.uuid
 
-    for chain in chains:
+    for chain in design.chains:
         spring = spring_bone.add_spring()
-        spring.vrm_name = chain[0].rsplit("_", 1)[0]
-        for bone_name in chain:
+        spring.vrm_name = chain.names[0].rsplit("_", 1)[0]
+        for i, bone_name in enumerate(chain.names):
             joint = spring.joints.add()
             joint.node.bone_name = bone_name
-            joint.stiffness = HAIR_STIFFNESS
-            joint.gravity_power = HAIR_GRAVITY_POWER
-            joint.drag_force = HAIR_DRAG_FORCE
-            joint.hit_radius = HAIR_HIT_RADIUS
+            along = i / max(len(chain.names) - 1, 1)
+            joint.stiffness = chain.stiffness + (HAIR_TIP_STIFFNESS - chain.stiffness) * along
+            joint.gravity_power = chain.gravity_power
+            joint.drag_force = chain.drag_force
+            joint.hit_radius = chain.hit_radius
         spring.add_collider_group().collider_group_uuid = body.uuid
-
-
-def _sphere_collider(context, armature, bone_key, center, radius):
-    spring_bone = armature.data.vrm_addon_extension.spring_bone1
-    collider = spring_bone.add_collider(context, armature)
-    collider.node.bone_name = BONE_NAMES[bone_key]
-    collider.shape_type = "Sphere"
-    collider.shape.sphere.offset = _in_bone_space(armature, bone_key, center)
-    collider.shape.sphere.radius = radius
-    return collider
-
-
-def _capsule_collider(context, armature, bone_key, start, end, radius):
-    spring_bone = armature.data.vrm_addon_extension.spring_bone1
-    collider = spring_bone.add_collider(context, armature)
-    collider.node.bone_name = BONE_NAMES[bone_key]
-    collider.shape_type = "Capsule"
-    collider.shape.capsule.offset = _in_bone_space(armature, bone_key, start)
-    collider.shape.capsule.tail = _in_bone_space(armature, bone_key, end)
-    collider.shape.capsule.radius = radius
-    return collider
-
-
-def _in_bone_space(armature, bone_key, point):
-    """A rest-pose world point expressed relative to the bone, as VRM collider offsets are."""
-    bone = armature.pose.bones[BONE_NAMES[bone_key]]
-    return (armature.matrix_world @ bone.matrix).inverted() @ point
-
-
-# MToon shadows: the texture darkened with a slight cool tint, like cel-shaded anime art.
-SHADE_TINT = (0.78, 0.74, 0.86)
-UNTEXTURED_SHADE = 0.75
 
 
 def use_toon_shading(mesh_obj):
@@ -173,6 +132,12 @@ def export(filepath, armature):
     result = bpy.ops.export_scene.vrm(filepath=str(filepath), armature_object_name=armature.name)
     if result != {"FINISHED"}:
         raise RuntimeError(f"VRM export of {armature.name} to {filepath} returned {result}")
+
+
+def _in_bone_space(armature, bone_name, point):
+    """A rest-pose world point relative to the bone, as VRM collider offsets are."""
+    bone = armature.pose.bones[bone_name]
+    return (armature.matrix_world @ bone.matrix).inverted() @ Vector(tuple(float(c) for c in point))
 
 
 def _find_addon_module():
