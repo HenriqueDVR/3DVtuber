@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -60,6 +61,16 @@ SPRING_NOISE = 1.0
 
 class StepFailed(Exception):
     pass
+
+
+class Cancelled(Exception):
+    """The user stopped the run. Not a StepFailed: a soft step must not carry on past it."""
+
+
+# Set by the app's Stop button: the running Blender is killed at its next poll, and the chain
+# stops before its next step. Only this process's runs; a CLI run elsewhere is untouched.
+CANCEL = threading.Event()
+CANCELLED = -2
 
 
 # (name, label, what it writes): "vrm" = a .blend and a .vrm, "blend" = a .blend only,
@@ -127,7 +138,7 @@ class Project:
 
     def survey(self):
         entry = self.state["steps"].get("survey")
-        if not entry or not Path(entry["json"]).exists():
+        if not entry or not entry.get("json") or not Path(entry["json"]).exists():
             return None
         return json.loads(Path(entry["json"]).read_text(encoding="utf-8"))
 
@@ -285,6 +296,45 @@ class Project:
                 return Path(entry["blend"])
         return None
 
+    # ----- history
+
+    def runs(self):
+        """Every run folder under runs/, newest first: its steps, its last .vrm and its rig check."""
+        approved = (self.approved() or {}).get("vrm")
+        approved = Path(approved).parent.resolve() if approved else None
+        current = {Path(e[k]).parent.resolve() for e in self.state["steps"].values() for k in ("blend", "json", "vrm") if e.get(k)}
+        found = []
+        for folder in sorted((self.out / "runs").glob("*"), reverse=True):
+            if not folder.is_dir():
+                continue
+            logs = sorted(folder.glob("[0-9][0-9]_*.log"))
+            vrms = sorted(folder.glob("[0-9][0-9]_*.vrm"))
+            checks = {p.stem[3:]: p for p in folder.glob("[0-9][0-9]_*check.json")}
+            check = _read_json(checks.get("check"), None) or {}
+            try:
+                when = datetime.strptime(folder.name, "%Y%m%d-%H%M%S").isoformat()
+            except ValueError:
+                when = None
+            found.append({"run": folder.name, "folder": str(folder), "when": when, "steps": [p.stem[3:] for p in logs],
+                          "vrm": str(vrms[-1]) if vrms else None,
+                          "check": str(checks["check"]) if "check" in checks else None,
+                          "vrm_check": str(checks["vrm_check"]) if "vrm_check" in checks else None,
+                          "failed": check.get("failed"), "approved": folder.resolve() == approved,
+                          "current": folder.resolve() in current})
+        return found
+
+    def summary(self):
+        """How far the build got and the newest render: a card on the app's Characters page."""
+        steps = self.state["steps"]
+        statuses = {name: e.get("status") for name, e in steps.items()}
+        renders = sorted((p for p in (self.out / "renders").glob("*") if p.is_dir()), key=lambda p: p.stat().st_mtime)
+        pictures = sorted(renders[-1].glob("*.png"), key=lambda p: ("front" not in p.stem, p.name)) if renders else []
+        return {"surveyed": statuses.get("survey") == "done", "built": statuses.get("vrm_check") == "done",
+                "stale": sorted(n for n, s in statuses.items() if s == "stale"),
+                "failed": sorted(n for n, s in statuses.items() if s == "failed"),
+                "finished": max((e.get("finished") or "" for e in steps.values()), default="") or None,
+                "approved": self.approved() is not None, "picture": str(pictures[0]) if pictures else None}
+
     # ----- running
 
     def run(self, start=None, stop=None, only=None, on_event=None):
@@ -297,6 +347,8 @@ class Project:
         with _Lock():
             for index in range(first, last + 1):
                 name = NAMES[index]
+                if CANCEL.is_set():
+                    raise Cancelled(f"stopped by the user before {name}")
                 if name != "survey" and self.survey() is None:
                     raise StepFailed("run the survey step first")
                 # planned afresh each time: the survey decides what later steps do
@@ -308,11 +360,19 @@ class Project:
                 emit({"step": name, "status": "running"})
                 try:
                     entry = self._run_step(name, index, folder)
+                except Cancelled:
+                    # not recorded: the step keeps what it last finished, which later steps may still read
+                    emit({"step": name, "status": "cancelled"})
+                    raise
                 except StepFailed as error:
                     if name not in SOFT | CHECKS:
                         raise
                     entry = {"status": "failed", "reason": str(error)[-1500:],
                              "finished": datetime.now().isoformat(timespec="seconds")}
+                    # the reason keeps only its end, where the log's name no longer is
+                    log = folder / f"{index:02d}_{name}.log"
+                    if log.exists():
+                        entry["log"] = str(log)
                 self._record(name, entry)
                 emit({"step": name, **entry})
         return self.status()
@@ -330,6 +390,8 @@ class Project:
         log = stem.with_suffix(".log")
         started = time.time()
         code = _blender(self.blender, blend_in, args, log, extra)
+        if code == CANCELLED:
+            raise Cancelled(f"{name}: stopped by the user")
         entry = {"status": "done", "log": str(log), "input": str(blend_in) if blend_in else None,
                  "finished": datetime.now().isoformat(timespec="seconds"), "seconds": round(time.time() - started)}
         output = log.read_text(encoding="utf-8", errors="replace")
@@ -451,6 +513,8 @@ def run_script(blender, script, args, blend_in=None, log=None, extra=()):
     log = Path(log) if log else Path(os.environ.get("TEMP", "/tmp")) / f"vtuber_{os.getpid()}.log"
     with _Lock():
         code = _blender(blender, blend_in, [script, *args], log, list(extra))
+    if code == CANCELLED:
+        raise Cancelled("stopped by the user")
     return code, log.read_text(encoding="utf-8", errors="replace")
 
 
@@ -470,6 +534,12 @@ def _blender(blender, blend_in, args, log, extra):
         started = time.time()
         while process.poll() is None:
             time.sleep(2)
+            if CANCEL.is_set():
+                process.kill()
+                process.wait()
+                with open(log, "a", encoding="utf-8") as tail:
+                    tail.write(f"\nCANCELLED by the user after {round(time.time() - started)} s\n")
+                return CANCELLED
             if time.time() - started > STEP_TIMEOUT or OUT_OF_MEMORY in _log_tail(log):
                 process.kill()
                 process.wait()

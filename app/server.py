@@ -11,6 +11,9 @@ build the same way; long runs happen on a thread and report progress through /ap
 import argparse
 import json
 import mimetypes
+import os
+import re
+import subprocess
 import threading
 import traceback
 import webbrowser
@@ -20,7 +23,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import cli, engine
-from .engine import REPO, Project, StepFailed
+from .engine import REPO, Cancelled, Project, StepFailed
 
 GUI = Path(__file__).resolve().parent / "gui"
 # Only these repository folders are served, and only these kinds of file.
@@ -37,17 +40,20 @@ class Jobs:
 
     def __init__(self):
         self.lock = threading.Lock()
-        self.events, self.running, self.result, self.error = [], None, None, None
+        self.events, self.running, self.result, self.error, self.cancelled = [], None, None, None, False
 
     def start(self, label, work):
         with self.lock:
             if self.running:
                 raise StepFailed(f"busy: {self.running} is still running")
-            self.events, self.running, self.result, self.error = [], label, None, None
+            self.events, self.running, self.result, self.error, self.cancelled = [], label, None, None, False
+            engine.CANCEL.clear()
 
         def go():
             try:
                 self.result = work(self.events.append)
+            except Cancelled:
+                self.cancelled = True
             except Exception as error:  # reported to the page, not lost in a thread
                 self.error = str(error) if isinstance(error, (StepFailed, ValueError)) else traceback.format_exc()
             finally:
@@ -55,9 +61,15 @@ class Jobs:
         threading.Thread(target=go, daemon=True).start()
         return {"started": label}
 
+    def cancel(self):
+        """Stops the running job: its Blender is killed within a couple of seconds, the lock freed."""
+        if self.running:
+            engine.CANCEL.set()
+        return {"cancelling": self.running}
+
     def poll(self, since=0):
         return {"running": self.running, "events": self.events[since:], "next": len(self.events),
-                "result": self.result, "error": self.error}
+                "result": self.result, "error": self.error, "cancelled": self.cancelled}
 
 
 JOBS = Jobs()
@@ -71,7 +83,7 @@ def api(route, query, body):
     m = body.get("manifest") or (query.get("manifest") or [None])[0]
     if route == "projects":
         found = sorted({*REPO.glob("samples/manifests/*.json"), *REPO.glob("out/*/character.json")})
-        return {"projects": [{"manifest": str(p), "name": _name(p)} for p in found]}
+        return {"projects": [{"manifest": str(p), "name": _name(p), **_summary(p)} for p in found]}
     if route == "status":
         return cli.cmd_status(_args(manifest=Path(m)))
     if route == "manifest":
@@ -111,7 +123,17 @@ def api(route, query, body):
         return JOBS.start("build", work)
     if route == "render":
         return JOBS.start("render", lambda emit: _with_urls(cli.cmd_render(
-            _args(manifest=Path(m), pose=body.get("pose", "raised"), step=body.get("step"), size=700))))
+            _args(manifest=Path(m), pose=body.get("pose", "raised"), step=body.get("step"), run=body.get("run"), size=700))))
+    if route == "renders":
+        return {"renders": _renders(Project(m).out / "renders")}
+    if route == "runs":
+        return {"runs": [dict(r, vrm_url=_url(r["vrm"]) if r["vrm"] else None) for r in Project(m).runs()]}
+    if route == "compare":
+        return cli.cmd_compare(_args(before=Path(body["before"]), after=Path(body["after"])))
+    if route == "cancel":
+        return JOBS.cancel()
+    if route == "reveal":
+        return _reveal(Path(body["path"]))
     if route == "movement":
         return JOBS.start("movement check", lambda emit: cli.cmd_movement(_args(manifest=Path(m), step=body.get("step"))))
     if route == "movement_result":
@@ -147,6 +169,44 @@ def api(route, query, body):
     if route == "url":
         return {"url": _url(Path(body["path"]))}
     raise ValueError(f"no such call: {route}")
+
+
+def _summary(manifest_path):
+    """A character card's facts; a manifest that can't be read still lists, without them."""
+    try:
+        summary = Project(manifest_path).summary()
+    except (OSError, ValueError, KeyError):
+        return {}
+    return dict(summary, picture=_url(summary["picture"]) if summary["picture"] else None)
+
+
+# A render folder is <run>_<step's blend>_<pose> (cli.cmd_render); older ones lack the run.
+RENDER_FOLDER = re.compile(r"^(?:(?P<run>\d{8}-\d{6})_)?(?P<blend>.+)_(?P<pose>[^_]+)$")
+
+
+def _renders(folder):
+    """Every render of a character, newest first, with its run, pose and served pictures."""
+    found = []
+    for path in sorted((p for p in folder.glob("*") if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True):
+        match = RENDER_FOLDER.match(path.name)
+        if match:
+            found.append({**match.groupdict(), "urls": [_url(p) for p in sorted(path.glob("*.png"))]})
+    return found
+
+
+def _reveal(path):
+    """Shows an output file in Explorer. Only files under out/: the page must not open anything else."""
+    try:
+        path.resolve().relative_to((REPO / "out").resolve())
+    except ValueError:
+        raise ValueError("only files the build made can be shown") from None
+    if not path.exists():
+        raise FileNotFoundError(f"{path} is gone")
+    if os.name == "nt":
+        subprocess.Popen(["explorer", "/select,", str(path.resolve())] if path.is_file() else ["explorer", str(path.resolve())])
+    else:
+        webbrowser.open(path.resolve().parent.as_uri() if path.is_file() else path.resolve().as_uri())
+    return {"shown": str(path)}
 
 
 # What each Browse button asks for.

@@ -105,6 +105,71 @@ class Engine(unittest.TestCase):
         finally:
             engine.LOCK = real
 
+    def test_stop_kills_the_running_blender_and_frees_the_lock(self):
+        killed = []
+
+        class Hanging:
+            returncode = None
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def poll(self):
+                return -9 if killed else None
+
+            def kill(self):
+                killed.append(True)
+
+            def wait(self):
+                return -9
+        project = self.project()
+        real = engine.LOCK, engine.subprocess.Popen, engine.time.sleep
+        engine.LOCK, engine.subprocess.Popen, engine.time.sleep = self.root / ".blender.lock", Hanging, lambda s: engine.CANCEL.set()
+        try:
+            with self.assertRaises(engine.Cancelled):
+                project.run(only="survey")
+            self.assertTrue(killed)
+            # what the step last finished stays: a stopped rerun must not lose it
+            self.assertNotIn("survey", project.state["steps"])
+            self.assertFalse(engine.LOCK.exists())
+            # a stop between steps: the next one doesn't start
+            with self.assertRaisesRegex(engine.Cancelled, "before survey"):
+                project.run(only="survey")
+        finally:
+            engine.LOCK, engine.subprocess.Popen, engine.time.sleep = real
+            engine.CANCEL.clear()
+
+    def test_runs_are_listed_newest_first_with_their_vrm_and_check(self):
+        project = self.project()
+        for run, files in (("20260101-100000", ["01_build.log", "01_build.vrm"]),
+                           ("20260102-100000", ["09_tpose.log", "09_tpose.vrm", "12_check.log", "12_check.json"])):
+            folder = project.out / "runs" / run
+            folder.mkdir(parents=True)
+            for name in files:
+                (folder / name).write_text(json.dumps({"failed": ["an edge stretches"]}) if name.endswith(".json") else "")
+        project.state["steps"]["tpose"] = {"status": "done", "vrm": str(project.out / "runs" / "20260102-100000" / "09_tpose.vrm")}
+        runs = project.runs()
+        self.assertEqual([r["run"] for r in runs], ["20260102-100000", "20260101-100000"])
+        self.assertEqual(runs[0]["steps"], ["tpose", "check"])
+        self.assertEqual(Path(runs[0]["vrm"]).name, "09_tpose.vrm")
+        self.assertEqual(runs[0]["failed"], ["an edge stretches"])
+        self.assertEqual([r["current"] for r in runs], [True, False])
+        self.assertIsNone(runs[1]["check"])
+
+    def test_a_character_card_says_how_far_the_build_got(self):
+        project = self.project()
+        self.assertEqual(project.summary(), {"surveyed": False, "built": False, "stale": [], "failed": [],
+                                             "finished": None, "approved": False, "picture": None})
+        self.finished(project, eyes={"status": "failed", "finished": "2026-01-02T10:00:00"}, tpose={"status": "stale"})
+        pictures = project.out / "renders" / "20260102-100000_09_tpose_raised"
+        pictures.mkdir(parents=True)
+        for view in ("back", "front"):
+            (pictures / f"raised_{view}.png").write_bytes(b"")
+        summary = project.summary()
+        self.assertTrue(summary["built"])
+        self.assertEqual((summary["failed"], summary["stale"]), (["eyes"], ["tpose"]))
+        self.assertEqual(Path(summary["picture"]).name, "raised_front.png")
+
     def face_points(self):
         eye = {"inner": [10, 20], "outer": [30, 20], "top": [20, 15], "bottom": [20, 25]}
         return {"image": "face_patch.png", "size": [100, 100], "right_eye": eye, "left_eye": eye,
@@ -240,6 +305,16 @@ class Server(unittest.TestCase):
         probe = Probe()
         probe._model({"manifest": [str(REPO / "out" / "nobody" / "character.json")], "key": ["source"]})
         self.assertEqual(probe.errors, [403])
+
+    def test_shows_only_files_the_build_made(self):
+        for path in (REPO / "CLAUDE.md", REPO / "out" / ".." / "scripts" / "make_vrm.py", REPO.parent):
+            with self.assertRaisesRegex(ValueError, "only files the build made"):
+                server._reveal(path)
+
+    def test_render_folders_name_their_run_and_pose(self):
+        match = lambda name: server.RENDER_FOLDER.match(name).groupdict()  # noqa: E731
+        self.assertEqual(match("20260102-100000_09_tpose_t-pose"), {"run": "20260102-100000", "blend": "09_tpose", "pose": "t-pose"})
+        self.assertEqual(match("09_tpose_raised"), {"run": None, "blend": "09_tpose", "pose": "raised"})
 
     def test_refuses_a_name_with_a_path(self):
         with self.assertRaisesRegex(ValueError, "path"):

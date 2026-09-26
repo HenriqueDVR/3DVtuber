@@ -74,6 +74,7 @@ def main(argv=None):
     p.add_argument("manifest", type=Path)
     p.add_argument("--pose", default="raised")
     p.add_argument("--step", choices=engine.NAMES, help="render this step's output instead of the latest")
+    p.add_argument("--run", help="render the last .blend of this run folder (a name from `runs`) instead")
     p.add_argument("--size", type=int, default=800)
 
     p = sub.add_parser("movement", help="which pieces stay behind or tear when the arms and head move (runs Blender)")
@@ -98,6 +99,9 @@ def main(argv=None):
     p = sub.add_parser("compare", help="compare two check reports (scripts/compare_checks.py)")
     p.add_argument("before", type=Path)
     p.add_argument("after", type=Path)
+
+    p = sub.add_parser("runs", help="every build run, newest first: its steps, .vrm and rig check")
+    p.add_argument("manifest", type=Path)
 
     p = sub.add_parser("bundle", help="gather everything an agent needs to look at a problem into one folder")
     p.add_argument("manifest", type=Path)
@@ -131,6 +135,10 @@ def cmd_init(args):
 
 def cmd_status(args):
     return _project(args).status()
+
+
+def cmd_runs(args):
+    return {"runs": _project(args).runs()}
 
 
 def cmd_approve(args):
@@ -232,16 +240,21 @@ def cmd_piece(args):
 
 def cmd_render(args):
     project = _project(args)
-    blend = Path(project.state["steps"][args.step]["blend"]) if args.step else project.latest()
+    if getattr(args, "run", None):
+        blends = sorted((project.out / "runs" / Path(args.run).name).glob("[0-9][0-9]_*.blend"))
+        blend = blends[-1] if blends else None
+    else:
+        blend = Path(project.state["steps"][args.step]["blend"]) if args.step else project.latest()
     if blend is None:
         raise StepFailed("nothing built yet")
-    out = project.out / "renders" / f"{blend.stem}_{args.pose}"
+    # keyed by run too: every run has a 13_tpose.blend, and one run's render replaced another's
+    out = project.out / "renders" / f"{blend.parent.name}_{blend.stem}_{args.pose}"
     code, output = engine.run_script(project.blender, "render_pose.py",
                                      [out, "--pose", args.pose, "--size", args.size], blend_in=blend,
                                      log=out.with_suffix(".log"))
     if code != 0:
         raise StepFailed(f"render failed\n{output[-2000:]}")
-    return {"blend": str(blend), "images": sorted(str(p) for p in out.glob("*.png"))}
+    return {"blend": str(blend), "run": blend.parent.name, "pose": args.pose, "images": sorted(str(p) for p in out.glob("*.png"))}
 
 
 def cmd_movement(args):
@@ -437,7 +450,8 @@ def cmd_bundle(args):
 
 COMMANDS = {"init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_set, "joint": cmd_joint,
             "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "movement": cmd_movement, "springs": cmd_springs,
-            "face-patch": cmd_face_patch, "face": cmd_face, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle}
+            "face-patch": cmd_face_patch, "face": cmd_face, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
+            "runs": cmd_runs}
 
 
 def _project(args):
