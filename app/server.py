@@ -1,0 +1,304 @@
+"""The desktop app's local server: the guided build's page and a JSON API over the engine.
+
+    python -m app.server [--port 8322] [--no-window]
+
+Serves app/gui/ and, read-only, the repository's model and output files, on 127.0.0.1 only:
+the art is private. Opens a pywebview window when pywebview is installed, else the browser.
+The API calls the same functions as the command line, so the app, the CLI and an agent all
+build the same way; long runs happen on a thread and report progress through /api/events.
+"""
+
+import argparse
+import json
+import mimetypes
+import threading
+import traceback
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from types import SimpleNamespace
+from urllib.parse import parse_qs, quote, unquote, urlparse
+
+from . import cli, engine
+from .engine import REPO, Project, StepFailed
+
+GUI = Path(__file__).resolve().parent / "gui"
+# Only these repository folders are served, and only these kinds of file.
+SERVED = ("out", "samples", "tools/work", "viewer")
+KINDS = {".glb", ".vrm", ".png", ".jpg", ".jpeg", ".json", ".html", ".js", ".css", ".log"}
+
+mimetypes.add_type("model/gltf-binary", ".glb")
+mimetypes.add_type("model/gltf-binary", ".vrm")
+mimetypes.add_type("text/javascript", ".js")
+
+
+class Jobs:
+    """The one long job (a build, a piece listing, a render) running at a time, and its events."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.events, self.running, self.result, self.error = [], None, None, None
+
+    def start(self, label, work):
+        with self.lock:
+            if self.running:
+                raise StepFailed(f"busy: {self.running} is still running")
+            self.events, self.running, self.result, self.error = [], label, None, None
+
+        def go():
+            try:
+                self.result = work(self.events.append)
+            except Exception as error:  # reported to the page, not lost in a thread
+                self.error = str(error) if isinstance(error, (StepFailed, ValueError)) else traceback.format_exc()
+            finally:
+                self.running = None
+        threading.Thread(target=go, daemon=True).start()
+        return {"started": label}
+
+    def poll(self, since=0):
+        return {"running": self.running, "events": self.events[since:], "next": len(self.events),
+                "result": self.result, "error": self.error}
+
+
+JOBS = Jobs()
+
+
+def _args(**kwargs):
+    return SimpleNamespace(blender=None, **kwargs)
+
+
+def api(route, query, body):
+    m = body.get("manifest") or (query.get("manifest") or [None])[0]
+    if route == "projects":
+        found = sorted({*REPO.glob("samples/manifests/*.json"), *REPO.glob("out/*/character.json")})
+        return {"projects": [{"manifest": str(p), "name": _name(p)} for p in found]}
+    if route == "status":
+        return cli.cmd_status(_args(manifest=Path(m)))
+    if route == "manifest":
+        return engine.manifest.load(m)
+    if route == "pieces":
+        listing = engine._read_json(Project(m).out / "pieces.json", None)
+        return {"listing": listing, "glb": _url(Project(m).out / "pieces.glb")}
+    if route == "init":
+        if not body.get("name") or Path(body["name"]).name != body["name"]:
+            raise ValueError("the name can't contain a path")
+        return cli.cmd_init(_args(model=Path(body["model"]), name=body["name"], author=body.get("author") or "Unknown",
+                                  manifest=None, face=Path(body["face"]) if body.get("face") else None,
+                                  reference=Path(body["reference"]) if body.get("reference") else None,
+                                  rig=Path(body["rig"]) if body.get("rig") else None))
+    if route == "set":
+        return cli.cmd_set(_args(manifest=Path(m), key=body["key"], value=json.dumps(body["value"])))
+    if route == "set_path":
+        if body.get("key") not in ("source", "reference", "face", "author", "rig"):
+            raise ValueError("only source, reference, face, rig and author are set this way")
+        data = engine.manifest.load(m)
+        data[body["key"]] = body["value"] or None
+        engine.manifest.save(data, m)
+        return {"saved": body["key"]}
+    if route == "joint":
+        return cli.cmd_joint(_args(manifest=Path(m), key=body["key"], xyz=body.get("xyz") or [],
+                                   clear=bool(body.get("clear"))))
+    if route == "piece":
+        return cli.cmd_piece(_args(manifest=Path(m), name=body["name"], role=body.get("role"), point=None, count=None,
+                                   label=body.get("label"), bone=body.get("bone") or None,
+                                   anchor=body.get("anchor") or None, tip=bool(body.get("tip")),
+                                   remove=bool(body.get("remove")), region=body.get("region"), rename=body.get("rename")))
+    if route == "list_pieces":
+        return JOBS.start("listing pieces", lambda emit: cli.cmd_pieces(_args(manifest=Path(m))))
+    if route == "run":
+        def work(emit):
+            return Project(m).run(start=body.get("from"), stop=body.get("to"), only=body.get("only"), on_event=emit)
+        return JOBS.start("build", work)
+    if route == "render":
+        return JOBS.start("render", lambda emit: _with_urls(cli.cmd_render(
+            _args(manifest=Path(m), pose=body.get("pose", "raised"), step=body.get("step"), size=700))))
+    if route == "movement":
+        return JOBS.start("movement check", lambda emit: cli.cmd_movement(_args(manifest=Path(m), step=body.get("step"))))
+    if route == "movement_result":
+        return {"result": engine._read_json(Project(m).out / "movement.json", None)}
+    if route == "springs":
+        return JOBS.start("spring check", lambda emit: cli.cmd_springs(_args(manifest=Path(m), step=body.get("step"))))
+    if route == "springs_result":
+        return {"result": engine._read_json(Project(m).out / "springs.json", None)}
+    if route == "face":
+        project = Project(m)
+        face = engine.manifest.path_of(project.data, "face")
+        source = engine.manifest.path_of(project.data, "source")
+        # the page views glTF only: an OBJ or FBX source shows once the face patch (a .glb) replaces it
+        viewable = source is not None and source.suffix.lower() in (".glb", ".vrm")
+        return {"points": engine._read_json(face, None) if face else None,
+                "model": f"/api/model?key=source&manifest={quote(str(project.manifest_path))}" if viewable else None}
+    if route == "face_patch":
+        return JOBS.start("making the face patch", lambda emit: cli.cmd_face_patch(_args(manifest=Path(m))))
+    if route == "face_save":
+        return cli.save_face(Path(m), body["points"])
+    if route == "feedback":
+        return cli.save_feedback(Path(m), body.get("note", ""), body.get("images") or [])
+    if route == "feedback_list":
+        return {"feedback": [dict(f, urls=[_url(Path(f["folder"]) / n) for n in f["screenshots"]]) for f in cli.list_feedback(Path(m))]}
+    if route == "approve":
+        return cli.cmd_approve(_args(manifest=Path(m), note=body.get("note", "")))
+    if route == "bundle":
+        return cli.cmd_bundle(_args(manifest=Path(m), note=body.get("note", "")))
+    if route == "browse":
+        return {"path": _browse(body.get("kind", "model"))}
+    if route == "events":
+        return JOBS.poll(int((query.get("since") or ["0"])[0]))
+    if route == "url":
+        return {"url": _url(Path(body["path"]))}
+    raise ValueError(f"no such call: {route}")
+
+
+# What each Browse button asks for.
+BROWSE = {"model": ("Model", "*.glb *.gltf *.fbx *.obj *.vrm"), "rig": ("Tripo rig (FBX)", "*.fbx"),
+          "face": ("Face points", "*.json")}
+
+
+def _browse(kind):
+    """A native open-file dialog, from the server: a web page can't learn a file's real path."""
+    import tkinter
+    from tkinter import filedialog
+    title, pattern = BROWSE.get(kind, BROWSE["model"])
+    root = tkinter.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)  # over the app's window, not behind it
+    try:
+        chosen = filedialog.askopenfilename(title=f"Choose the {title.lower()}", filetypes=[(title, pattern), ("All files", "*.*")],
+                                            initialdir=str(REPO / "samples"))
+    finally:
+        root.destroy()
+    return str(Path(chosen)) if chosen else None
+
+
+def _name(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8")).get("name") or Path(path).stem
+    except (OSError, json.JSONDecodeError):
+        return Path(path).stem
+
+
+def _served(path):
+    """The repository-relative path of a file this server may hand out, else None."""
+    try:
+        relative = Path(path).resolve().relative_to(REPO.resolve()).as_posix()
+    except ValueError:
+        return None
+    if not any(relative.startswith(folder + "/") for folder in SERVED):
+        return None
+    return relative if Path(path).is_file() and Path(path).suffix.lower() in KINDS else None
+
+
+def _url(path):
+    """A served URL for a repository file, or None when it isn't served."""
+    relative = _served(path)
+    return "/" + relative if relative else None
+
+
+def _with_urls(result):
+    return dict(result, urls=[_url(p) for p in result.get("images", [])])
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _trusted(self):
+        # another site open in the browser must not drive builds: a page on this origin sends
+        # the header, and a DNS-rebound name fails the host check
+        return self.headers.get("Host") in (f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}")
+
+    def do_GET(self):
+        if not self._trusted():
+            return self.send_error(403)
+        url = urlparse(self.path)
+        if url.path == "/api/model":
+            return self._model(parse_qs(url.query))
+        if url.path.startswith("/api/"):
+            return self._api(url.path[5:], parse_qs(url.query), {})
+        path = unquote(url.path)
+        if path in ("/", "/index.html"):
+            return self._file(GUI / "index.html")
+        if path.startswith("/gui/"):
+            return self._file(GUI / path[5:], root=GUI)
+        relative = _served(REPO / path.lstrip("/"))
+        if relative:
+            return self._file(REPO / relative, root=REPO)
+        self.send_error(404)
+
+    def do_POST(self):
+        if not self._trusted() or self.headers.get("X-VTuber-Maker") != "1":
+            return self.send_error(403)
+        url = urlparse(self.path)
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            return self._json({"error": "bad JSON"}, 400)
+        self._api(url.path[5:], parse_qs(url.query), body)
+
+    def _api(self, route, query, body):
+        try:
+            self._json(api(route, query, body))
+        except (StepFailed, ValueError, FileNotFoundError, KeyError) as error:
+            self._json({"error": str(error)}, 400)
+
+    def _model(self, query):
+        """A listed character's source or reference model, wherever it lives on disk."""
+        wanted = Path((query.get("manifest") or [""])[0]).resolve()
+        listed = {Path(p["manifest"]).resolve() for p in api("projects", {}, {})["projects"]}
+        key = (query.get("key") or [""])[0]
+        if wanted not in listed or key not in ("source", "reference"):
+            return self.send_error(403)
+        path = engine.manifest.path_of(engine.manifest.load(wanted), key)
+        if path is None or path.suffix.lower() not in (".glb", ".vrm"):
+            return self.send_error(404)
+        self._file(Path(path))
+
+    def _json(self, data, code=200):
+        raw = json.dumps(data, default=str).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _file(self, path, root=None):
+        path = path.resolve()
+        if root is not None and root.resolve() not in path.parents:
+            return self.send_error(403)
+        if not path.is_file() or path.suffix.lower() not in KINDS:
+            return self.send_error(404)
+        raw = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--port", type=int, default=8322)
+    parser.add_argument("--no-window", action="store_true", help="serve only; open the page yourself")
+    args = parser.parse_args()
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    address = f"http://127.0.0.1:{args.port}/"
+    print(f"VTuber Maker at {address}", flush=True)
+    if args.no_window:
+        server.serve_forever()
+        return
+    try:
+        import webview
+    except ImportError:
+        webbrowser.open(address)
+        server.serve_forever()
+        return
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    webview.create_window("VTuber Maker", address, width=1400, height=900)
+    webview.start()
+
+
+if __name__ == "__main__":
+    main()

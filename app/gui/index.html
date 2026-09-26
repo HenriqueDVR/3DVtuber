@@ -1,0 +1,1430 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VTuber Maker</title>
+<style>
+  :root {
+    --bg: #15171c; --panel: #1d2027; --raise: #262a33; --line: #323743; --text: #e7e9ee; --dim: #9aa1b0;
+    --accent: #7cc4ff; --good: #7fd49a; --warn: #f2c46d; --bad: #ff8a8a;
+    font: 14px/1.45 system-ui, "Segoe UI", sans-serif; color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); display: grid; grid-template-columns: 230px 1fr; height: 100vh; }
+  nav { background: var(--panel); border-right: 1px solid var(--line); padding: 14px; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
+  nav h1 { font-size: 16px; margin: 0 0 4px; }
+  nav select { width: 100%; }
+  nav ol { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 2px; counter-reset: s; }
+  nav li button { width: 100%; text-align: left; background: none; border: 0; color: var(--dim); padding: 7px 8px; border-radius: 6px; cursor: pointer; font: inherit; }
+  nav li button::before { counter-increment: s; content: counter(s) ". "; }
+  nav li button.on { background: var(--raise); color: var(--text); }
+  nav .foot { margin-top: auto; color: var(--dim); font-size: 12px; }
+  main { overflow: auto; padding: 18px 22px; }
+  section { display: none; max-width: 1400px; }
+  section.on { display: block; }
+  h2 { margin: 0 0 4px; font-size: 20px; }
+  p.lead { margin: 0 0 14px; color: var(--dim); max-width: 780px; }
+  .row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  label { display: block; color: var(--dim); font-size: 12px; margin: 8px 0 3px; }
+  input, select, textarea { background: var(--raise); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+  input[type=text], textarea { width: 100%; }
+  button.act { background: var(--accent); color: #0b1a26; border: 0; border-radius: 6px; padding: 7px 14px; font: inherit; font-weight: 600; cursor: pointer; }
+  button.act.alt { background: var(--raise); color: var(--text); border: 1px solid var(--line); }
+  button:disabled { opacity: .5; cursor: default; }
+  .view { width: 640px; height: 640px; background: #0f1115; border-radius: 10px; border: 1px solid var(--line); position: relative; }
+  .view canvas { display: block; border-radius: 10px; }
+  .hint { position: absolute; left: 10px; bottom: 8px; color: var(--dim); font-size: 12px; pointer-events: none; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; }
+  tr.sel td { background: #24344a; }
+  tr[data-label] { cursor: pointer; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px; background: var(--raise); }
+  .warn { color: var(--warn); }
+  .done { color: var(--good); } .failed, .error { color: var(--bad); } .running { color: var(--accent); } .stale, .skipped, .nothing { color: var(--dim); }
+  .msg { margin-top: 10px; min-height: 20px; color: var(--dim); white-space: pre-wrap; }
+  .msg.bad { color: var(--bad); }
+  pre { background: #0f1115; border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow: auto; max-height: 260px; font-size: 12px; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  .imgs { display: flex; gap: 8px; flex-wrap: wrap; } .imgs img { width: 300px; border-radius: 8px; border: 1px solid var(--line); }
+  iframe { width: 100%; height: 640px; border: 1px solid var(--line); border-radius: 10px; background: #000; }
+  .grid2 { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 4px 18px; }
+  .list { max-height: 640px; overflow: auto; flex: 1; min-width: 480px; }
+  p.help, .help { color: var(--dim); font-size: 12.5px; margin: 4px 0 6px; max-width: 760px; }
+  .opt { border-top: 1px solid var(--line); padding: 10px 0; }
+  .opt:first-child { border-top: 0; }
+  .opt b { display: block; margin-bottom: 2px; }
+  .opt .choice { color: var(--text); font-size: 12.5px; margin: 6px 0 0; padding-left: 10px; border-left: 2px solid var(--accent); }
+  .examples { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
+  .examples figure { margin: 0; width: 230px; }
+  .examples img { width: 100%; border-radius: 6px; border: 1px solid var(--line); background: #fff; cursor: zoom-in; }
+  .examples figcaption { color: var(--dim); font-size: 12px; margin-top: 2px; }
+  .todo { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+  .todo:first-child { border-top: 0; }
+  .todo span { flex: 1; }
+  @media (max-width: 1000px) { body { grid-template-columns: 1fr; } .view { width: 100%; height: 420px; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<nav>
+  <h1>VTuber Maker</h1>
+  <label for="project">Character</label>
+  <select id="project"></select>
+  <ol id="steps">
+    <li><button data-go="model">Model</button></li>
+    <li><button data-go="parts">Parts</button></li>
+    <li><button data-go="joints">Joints</button></li>
+    <li><button data-go="face">Face</button></li>
+    <li><button data-go="options">Options</button></li>
+    <li><button data-go="build">Build</button></li>
+    <li><button data-go="movement">Movement</button></li>
+    <li><button data-go="review">Review</button></li>
+    <li><button data-go="help">Stuck?</button></li>
+  </ol>
+  <div class="foot" id="busy">idle</div>
+</nav>
+<main>
+
+<section id="model">
+  <h2>Model</h2>
+  <div id="model-new">
+  <p class="lead">A character is one model you turn into a VTuber avatar. Everything you decide on the later pages
+    (parts, joints, face, options) is saved with it as you go, in <code>out\&lt;name&gt;\character.json</code>.
+    To go back to one you already started, pick it in the <b>Character</b> list on the left.</p>
+  <div class="row">
+    <div class="card" style="width:560px">
+      <b>Start a new character</b>
+      <label>1 · The model (.glb, .obj or .fbx)</label>
+      <button class="act alt" data-browse="model" data-for="new-model" style="float:right;margin-top:-26px">Browse…</button>
+      <input type="text" id="new-model" placeholder="E:\3DVtuber\samples\my_oc.glb">
+      <p class="help">The textured model straight from Tripo (P2 works best). Generate it standing in a <b>T-pose</b> (arms
+        straight out) if you can: sleeves then don't fuse to the ribs. An A-pose (arms angled down) still builds.</p>
+      <label>2 · Name</label><input type="text" id="new-name" placeholder="MyOC">
+      <p class="help">A folder name for the build: letters, digits, <code>_</code>. Also the avatar's name in Warudo.</p>
+      <label>Author (optional)</label><input type="text" id="new-author" placeholder="Unknown">
+      <label>3 · Tripo's rig of the same model (optional, recommended)</label>
+      <button class="act alt" data-browse="rig" data-for="new-rig" style="float:right;margin-top:-26px">Browse…</button>
+      <input type="text" id="new-rig" placeholder="leave empty: the app places the skeleton itself">
+      <p class="help">Not a second character: it's the <i>same</i> model with a skeleton Tripo already fitted. In Tripo,
+        press <b>Rig</b>, pick "VRM 1.0 humanoid" and export as <b>FBX</b> (its GLB export is broken). Its skeleton and
+        body weights usually bend better than the app's own. You can also add it later on this page.</p>
+      <details style="margin-top:8px"><summary class="help" style="cursor:pointer">Advanced: files you usually don't have</summary>
+        <label>Unmodified model, only if you repainted the texture after generating</label>
+        <button class="act alt" data-browse="model" data-for="new-reference" style="float:right;margin-top:-26px">Browse…</button>
+        <input type="text" id="new-reference">
+        <label>Face points (face.json) from an earlier character: normally you mark them on the Face page</label>
+        <button class="act alt" data-browse="face" data-for="new-face" style="float:right;margin-top:-26px">Browse…</button>
+        <input type="text" id="new-face">
+      </details>
+      <div style="margin-top:12px"><button class="act" id="create">Create the character</button></div>
+      <div class="msg" id="create-msg"></div>
+    </div>
+  </div>
+  </div>
+  <div id="model-open">
+  <p class="lead">The character that's open. Run the survey first: it only <i>reads</i> the model (how it stands,
+    what it's made of, which options suit it) and changes nothing. Then go down the pages on the left in order.
+    To start a different character, pick "— new character —" in the list on the left.</p>
+  <div class="row">
+    <div class="card" style="flex:1; min-width:380px;max-width:760px">
+      <b>1 · Survey</b> <span class="tag" id="survey-state"></span>
+      <p class="help">One Blender run, under a minute. Nothing is changed.</p>
+      <div style="margin:8px 0"><button class="act" id="survey-run">Run survey</button></div>
+      <div id="survey"></div>
+    </div>
+    <div class="card" style="width:460px">
+      <b>Tripo's rig (optional)</b>
+      <p class="help">The same model rigged in Tripo (Rig → "VRM 1.0 humanoid" → export FBX). With it, the skeleton and
+        body weights come from Tripo instead of the app's own guess, which usually bends better at the shoulders and hips.
+        Without it the app rigs the model itself; that works too.</p>
+      <label>Rig file (.fbx)</label><button class="act alt" data-browse="rig" data-for="rig-path" style="float:right;margin-top:-26px">Browse…</button>
+      <input type="text" id="rig-path" placeholder="none: the app rigs it itself">
+      <button class="act alt" id="rig-save" style="margin-top:6px">Use this rig</button> <span class="msg" id="rig-msg"></span>
+      <p class="help" id="model-files"></p>
+    </div>
+  </div>
+  </div>
+</section>
+
+<section id="parts">
+  <h2>Parts</h2>
+  <p class="lead">A generated model is made of separate pieces (the body, hair strands, a hat, sleeves...). Here you
+    say how each one should move. Most pieces are fine left on <i>automatic</i>; only give a role to what should move
+    differently from the skin under it. Click a piece in the view or the list. Every change saves right away.
+    Suggestions are guesses: a sleeve looks like cloth until an arm moves (the Movement page tests that).</p>
+  <div style="margin-bottom:10px"><button class="act" id="pieces-run">List pieces</button> <span class="msg" id="pieces-msg"></span></div>
+  <details class="card" style="margin-bottom:10px;max-width:980px"><summary style="cursor:pointer"><b>What the roles do</b></summary>
+    <div id="role-legend" class="grid2" style="margin-top:8px"></div>
+    <div class="examples" data-examples="follow_bone"></div></details>
+  <div class="card" id="region-card" style="margin-bottom:10px;max-width:980px">
+    <b>Part of a piece</b> <span class="msg" style="margin:0">for something fused into a bigger piece (a twin-tail
+    that is part of the body): pick the piece, then paint the part with <b>Alt</b>+drag (<b>Ctrl+Alt</b> erases), or
+    <b>Shift</b>+drag a box (<b>Ctrl+Shift</b> adds). Take all of it, ribbons and the hidden side included: whatever is
+    left out stays on the old bone and tears away from the rest.</span>
+    <div style="margin-top:6px">brush <input type="range" id="region-brush" min="0.5" max="6" step="0.5" value="2" style="width:110px;display:inline-block;vertical-align:middle">
+      <span id="region-brush-cm" class="msg" style="margin:0">2 cm</span>
+      <button class="act alt" id="region-grow" title="add the ring of vertices around the part">Grow</button>
+      <button class="act alt" id="region-shrink" title="take off the part's outer ring">Shrink</button>
+      <button class="act alt" id="region-fill" title="fill gaps inside the part and smooth its edge">Fill gaps</button>
+      <button class="act alt" id="region-clear">Clear</button></div>
+    <div style="margin-top:6px"><span id="region-count" class="msg" style="margin:0">no part chosen</span></div>
+    <div id="region-warn" class="msg" style="margin:4px 0 0"></div>
+    <div style="margin-top:6px">
+      <input type="text" id="region-name" placeholder="name, e.g. twintail_right" style="width:220px;display:inline-block">
+      <select id="region-role"></select>
+      <button class="act alt" id="region-save" disabled>Give this part the role</button></div></div>
+  <div class="row">
+    <div class="view" id="parts-view"><div class="hint">drag to orbit · scroll to zoom · click a piece</div></div>
+    <div class="card list">
+      <table><thead><tr><th></th><th>Piece</th><th>Vertices</th><th>Looks like</th><th>Role</th><th></th></tr></thead><tbody id="piece-rows"></tbody></table>
+    </div>
+  </div>
+</section>
+
+<section id="joints">
+  <h2>Joints</h2>
+  <p class="lead">Where the skeleton's joints sit inside the model. Detection gets most models right; long robes and
+    wide sleeves can fool it (a robe hem once read as the crotch, 44 cm off). <b>Click a ball</b> in the view (or a row
+    in the list), then drag its arrows; it stays picked, so you can nudge it as often as you like. Each move saves on
+    its own. Blue: detected. Orange: moved by you (<i>Reset</i> puts it back). Needs the piece listing (Parts).</p>
+  <div class="row">
+    <div class="view" id="joints-view"><div class="hint">click a ball · drag its arrows · drag empty space to orbit · Esc lets go</div></div>
+    <div class="card" style="min-width:340px">
+      <table><thead><tr><th>Joint</th><th>Where</th><th></th></tr></thead><tbody id="joint-rows"></tbody></table>
+      <div style="margin-top:10px"><button class="act alt" id="mirror">Mirror left → right</button></div>
+      <p class="msg" id="joints-msg">Each joint saves itself when you let go of its arrow.</p>
+      <p class="msg bad" id="joints-note"></p>
+    </div>
+  </div>
+</section>
+
+<section id="face">
+  <h2>Face</h2>
+  <p class="lead">Tell the app where the eyes and mouth are, so it can make the avatar blink, talk and look around.
+    Three steps, top to bottom. Left and right always mean the <b>character's</b> own sides (the character faces you,
+    so their right eye is on your left).</p>
+  <div class="card" style="margin-bottom:10px;max-width:1080px">
+    <b>1 · Face patch</b>
+    <p class="help" id="patch-state" style="margin:4px 0"></p>
+    <div><button class="act alt" id="patch-make">Make a face patch</button>
+      <span class="msg" id="patch-msg" style="margin-left:8px"></span></div>
+  </div>
+  <div class="card" style="margin-bottom:10px">
+    <b>2 · Mark the eyes and mouth</b> <span class="tag" id="points-state"></span>
+    <p class="help">Click the highlighted point on the picture, twelve in all: four per eye (the two corners, the top and
+      bottom of the opening, where the lashes meet the white) and four for the mouth. Drag a dot to move it. The small 3D
+      view shows where each lands on the head: the dots must sit on the eyes and the mouth (a mouth once got marked on
+      the nose). They save by themselves once all twelve are placed.</p>
+    <div class="row">
+      <div style="flex:1;min-width:520px"><iframe id="marker" title="Face marker" style="height:600px"></iframe></div>
+      <div>
+        <div class="view" id="face-view" style="width:420px;height:420px"><div class="hint">the marked points on the model · drag to orbit</div></div>
+        <div id="face-checks" style="width:420px"></div>
+      </div>
+    </div>
+  </div>
+  <div class="card" style="max-width:1080px">
+    <b>3 · How the face moves</b>
+    <div class="opt"><b>Eye tracking</b>
+      <p class="help">Makes the eyes follow where you look in the tracking app (Warudo: set eye movement to "blendshapes").
+        Blinking works either way.</p>
+      <select id="eyes"><option value="">automatic (recommended)</option><option value="iris">moving iris</option>
+        <option value="slide">sliding eye patches</option><option value="none">none: eyes stay still</option></select>
+      <p class="choice" id="eyes-choice"></p>
+      <div class="examples" data-examples="eyes"></div></div>
+    <div class="opt"><b>Mouth</b>
+      <p class="help">By default the mouth opens by bending the face around the marked mouth. If it barely opens, looks
+        smeared, or the face dents when talking, redraw it.</p>
+      <div><label style="display:inline;color:var(--text)"><input type="checkbox" id="mouth-fix"> redraw the talking mouth shapes</label></div>
+      <p class="help" style="margin-left:22px">Replaces the talking shapes (a, i, u, e, o) with drawn mouth shapes fitted to the
+        marked mouth: a dark opening with a tongue that opens cleanly.</p>
+      <div style="margin-left:22px"><label style="display:inline;color:var(--text)"><input type="checkbox" id="mouth-free"> free mouth</label>
+        <p class="help">Also paints the model's own mouth out of the texture and draws the whole mouth on a separate patch
+          that moves on its own, so talking never bends the face. Best for simple or chibi faces, and when the face dents.</p>
+        <label style="display:inline;color:var(--text)">size × <input id="mouth-scale" type="number" step="0.05" min="0.5" max="2" value="1" style="width:70px"></label>
+        <span class="help">how big the drawn mouth is against the marked one (1.3 = 30% bigger; model A used 1.3)</span></div>
+      <div class="examples" data-examples="mouth"></div></div>
+    <div style="margin-top:12px"><button class="act" id="face-apply">Save face</button>
+      <span class="help">saves the points and these choices; then rebuild (Build page) for the face to change</span></div>
+    <div class="msg" id="face-msg"></div>
+  </div>
+</section>
+
+<section id="options">
+  <h2>Options</h2>
+  <p class="lead">Switches for the whole avatar. The defaults suit most models; "auto" lets the survey decide from what it
+    saw, and says what it picked. Each change saves on its own. After changing any, rebuild (Build page).</p>
+  <div class="card" style="max-width:860px"><div id="option-grid"></div>
+    <div class="msg" id="options-msg"></div>
+  </div>
+</section>
+
+<section id="build">
+  <h2>Build</h2>
+  <p class="lead">Turns everything you set up into the avatar file (.vrm). <b>Build everything</b> runs the whole chain,
+    10–20 minutes. Each step is one Blender run and keeps its own files; later steps read what the step before them
+    made, so rerunning a step marks the ones after it stale. One run at a time. Grey steps are switched off, and the
+    note says why.</p>
+  <div class="card" style="margin-bottom:10px;max-width:980px"><b>What's left</b><div id="todo" style="margin-top:4px"></div></div>
+  <div style="margin-bottom:10px"><button class="act" id="run-all">Build everything</button> <button class="act alt" id="run-from" disabled>Run from selected</button> <button class="act alt" id="run-only" disabled>Run selected only</button></div>
+  <div class="row">
+    <div class="card" style="flex:1;min-width:520px"><table><thead><tr><th>Step</th><th>Status</th><th>Time</th><th>Notes</th></tr></thead><tbody id="step-rows"></tbody></table></div>
+    <div class="card" style="width:420px"><b>Result</b><div id="verdict"></div><div id="approved"></div><b>Progress</b><pre id="events"></pre><b>Rig check</b><div id="check"></div></div>
+  </div>
+</section>
+
+<section id="movement">
+  <h2>Movement</h2>
+  <p class="lead">Catches clothing that doesn't move with the body, before you find it in Warudo. Two tests, both run in
+    Blender and report back; neither animates here. To <i>watch</i> the avatar move, open it in the viewer at the bottom.</p>
+  <div class="row" style="margin-bottom:10px">
+    <div class="card" style="flex:1;min-width:380px;max-width:560px"><b>Pose test</b>
+      <p class="help">Bends the rig the way tracking apps do (arms raised, forward, out and down; head turned and nodded) and
+        lists the pieces that don't come along: a sleeve left at the ribs, a hat that stays while the head turns. It
+        suggests the part role that fixed each kind of problem before. About a minute; needs a build up to “pieces”.</p>
+      <button class="act" id="movement-run">Run the pose test</button></div>
+    <div class="card" style="flex:1;min-width:380px;max-width:560px"><b>Physics test</b>
+      <p class="help">Runs the finished avatar's hair and cloth springs, standing still and then swaying, as Warudo does
+        (renders never run them). It reports hair or cloth that droops when standing still, pieces left behind by a swing,
+        and swinging parts sinking into the body. Needs a finished build.</p>
+      <button class="act alt" id="springs-run">Run the physics test</button>
+      <div id="springs-out" class="msg">not run yet</div></div>
+  </div>
+  <span class="msg" id="movement-msg"></span>
+  <div class="row">
+    <div class="view" id="movement-view"><div class="hint"><span style="color:#ff5a5a">■</span> stays behind ·
+      <span style="color:#ffa040">■</span> stretches · <span style="color:#8a8a8a">■</span> fine · click a row to highlight</div></div>
+    <div class="card list"><b>Pose test results</b>
+      <table><thead><tr><th></th><th>Piece</th><th>What goes wrong</th><th>Suggested fix</th><th></th></tr></thead><tbody id="movement-rows"></tbody></table>
+      <p class="msg" id="movement-next"></p></div>
+  </div>
+  <div class="card" style="margin-top:12px"><b>See it move</b>
+    <p class="help">The last finished .vrm in the viewer, springs running. Use its buttons: <i>Raise left arm</i>,
+      <i>Swing head and body</i>, <i>Look around</i>. Drag to orbit.</p>
+    <button class="act alt" id="move-viewer-open">Open the avatar</button> <span class="msg" id="move-viewer-msg"></span>
+    <iframe id="move-viewer" title="Avatar moving" hidden style="margin-top:8px"></iframe></div>
+</section>
+
+<section id="review">
+  <h2>Review</h2>
+  <p class="lead">The checks can pass and the avatar still look wrong, so look at it, in three steps: a still render
+    (Blender, no physics), the viewer here (physics running, face buttons), and finally Warudo itself.</p>
+  <div style="margin-bottom:10px">
+    <select id="pose"><option>raised</option><option>t-pose</option></select>
+    <button class="act" id="render">Render</button> <button class="act alt" id="viewer-open">Open in the spring viewer</button>
+    <span class="msg" id="render-msg"></span></div>
+  <div class="imgs" id="renders"></div>
+  <div id="face-test" style="margin-top:12px" hidden><b>Face</b> <span class="msg" style="margin:0">drives the viewer's expressions the way tracking does:</span>
+    <button class="act alt" data-face="blink">Blink</button> <button class="act alt" data-face="talk">Talk</button>
+    <button class="act alt" data-face="look">Look around</button> <button class="act alt" data-face="stop">Stop</button>
+    <span class="msg" id="face-test-msg"></span></div>
+  <div style="margin-top:12px"><iframe id="viewer" title="VRM viewer" hidden></iframe></div>
+  <div class="card" style="margin-top:12px;max-width:760px"><b>In Warudo</b>
+    <p class="help">Load the .vrm in Warudo and go through this list; the ticks are only a checklist for you and aren't
+      saved. Then write down what you saw (and attach screenshots): the note is kept with this exact .vrm, so later builds
+      can be compared with it, and an agent helping on the Stuck? page can read it. Once a build looks right, mark it as
+      good on the Build page.</p>
+    <div class="grid2" style="margin-top:6px">
+      <span><input type="checkbox"> arms up: sleeves and shoulders follow</span>
+      <span><input type="checkbox"> arms down: nothing pokes through</span>
+      <span><input type="checkbox"> head turn: hair and hat follow</span>
+      <span><input type="checkbox"> blink, mouth, eyes look around</span>
+      <span><input type="checkbox"> fingers open and close evenly</span>
+      <span><input type="checkbox"> hair and cloth swing, don't clip</span>
+    </div>
+    <div style="margin-top:10px"><label>What you saw in Warudo</label>
+      <textarea id="fb-note" rows="3" placeholder="blink fine; left sleeve pokes through when the arm is down"></textarea>
+      <div style="margin-top:6px"><input type="file" id="fb-shots" accept="image/png,image/jpeg" multiple style="display:inline-block;width:auto">
+        <button class="act" id="fb-save">Save note</button> <span class="msg" id="fb-msg"></span></div></div>
+    <div id="fb-list" style="margin-top:8px"></div></div>
+</section>
+
+<section id="help">
+  <h2>Stuck?</h2>
+  <p class="lead">Something looks wrong and no part role or option fixes it. Say what you see; this gathers the manifest, checks, logs and renders into one folder for Claude Code (or any agent) to pick up. The agent drives the same build with <code>python -m app</code>.</p>
+  <div class="card" style="max-width:760px">
+    <label>What looks wrong</label><textarea id="note" rows="4" placeholder="the left sleeve stays at the ribs when the arm goes up"></textarea>
+    <div style="margin-top:10px"><button class="act" id="bundle">Gather for an agent</button></div>
+    <pre id="bundle-out" hidden></pre>
+  </div>
+</section>
+
+</main>
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { TransformControls } from "three/addons/controls/TransformControls.js";
+
+const ROLES = ["", "body", "hair", "hat", "swing_cloth", "appendage", "fitted_skirt", "shoulder_cloth", "follow_bone", "detail"];
+// What each role means in practice, in the user's words: shown in the lists and on Parts/Movement.
+const ROLE_INFO = {
+  "": ["automatic", "leave it to detection: skinned with the body, or hair/cloth if it looks like it"],
+  body: ["body", "bends with the skeleton like skin; also keeps it out of hair and cloth physics"],
+  hair: ["hair (swings)", "gets its own spring strands, so it sways when the head moves"],
+  hat: ["hat (rigid on head)", "stuck to the head as one solid piece: turns with the head, never bends"],
+  swing_cloth: ["swinging cloth", "cape, coat tail, loose skirt: hangs and swings with physics"],
+  appendage: ["wing / tail", "grows from the back or hips on its own bones and sways"],
+  fitted_skirt: ["fitted skirt", "stays on the hips; cut free of hands resting on it so they don't drag it"],
+  shoulder_cloth: ["mantle / shoulder cloth", "drapes both shoulders: bends with the upper arms, collar and hem stay"],
+  follow_bone: ["follows one bone", "moves rigidly with one bone you pick, e.g. a hanging sleeve with the upper arm, a bracelet with the hand"],
+  detail: ["rides another piece", "small bit (cuff trim, button) that moves with the piece you pick"],
+};
+const roleName = (r) => ROLE_INFO[r || ""]?.[0] ?? r;
+const CORE = ["", "Hips", "Spine", "Chest", "UpperChest", "Neck", "Head"];
+const ROLE_COLOUR = { "": 0x9a9a9a, body: 0xd8c3a5, hair: 0xb07cff, hat: 0xffb347, swing_cloth: 0x4fc3f7,
+  fitted_skirt: 0x81c784, shoulder_cloth: 0x4db6ac, follow_bone: 0xff8a65, detail: 0xf06292, appendage: 0xba68c8 };
+const BONES = ["LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand",
+  "Head", "Neck", "Chest", "UpperChest", "Spine", "Hips", "LeftUpperLeg", "LeftLowerLeg", "RightUpperLeg", "RightLowerLeg"];
+const $ = (id) => document.getElementById(id);
+let manifestPath = null, manifest = null, status = null, listing = null;
+
+async function call(route, body) {
+  const options = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-VTuber-Maker": "1" },
+    body: JSON.stringify({ manifest: manifestPath, ...body }) };
+  const q = body === undefined && manifestPath ? `${route.includes("?") ? "&" : "?"}manifest=${encodeURIComponent(manifestPath)}` : "";
+  const response = await fetch(`/api/${route}${q}`, options);
+  const data = await response.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+const esc = (t) => String(t ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+// the meaningful line of a step's error: the last one that isn't Blender's shutdown chatter
+const lastLine = (t) => String(t ?? "").split(/\r?\n/).map((l) => l.trim())
+  .filter((l) => l && !l.startsWith("###") && !l.startsWith("Blender")).slice(-1)[0] || "";
+// What a failed face step means for the user, and what to try.
+function plain(step, reason) {
+  const r = String(reason || "");
+  if (step === "eyes" && /iris shows over the lids/.test(r))
+    return "the blink doesn't cover the moving iris, so eye tracking was left out. Try sliding eye patches (Face), or ask for a fuller blink.";
+  if (step === "eyes" && /face points|patch/i.test(r)) return "eye tracking needs face points on a face patch (Face page).";
+  return lastLine(r);
+}
+// Before/after pictures from characters already built (model A, model B), in out/: private art, so
+// they're read where they lie and never copied into the app. A picture that isn't there is left out.
+const EXAMPLES = {
+  follow_bone: [["/out/<name>_clothing_ready_raised/raised_front.png", "before: the sleeve tabs stay at the hips when the arms go up"],
+    ["/out/<name>_sleeves_ready_views/raised_front.png", "after giving them “follows one bone” (upper arm): they go up with the arms"]],
+  eyes: [["/out/<name>_eyes2_renders/rest.png", "moving iris (model A): looking ahead"], ["/out/<name>_eyes2_renders/look_left.png", "moving iris: looking to the side"],
+    ["/out/<name>_eyes_renders/rest.png", "sliding patches (model B): looking ahead"], ["/out/<name>_eyes_renders/look_left.png", "sliding patches: looking to the side"]],
+  mouth: [["/out/<name>_mouth2_renders/before/aa.png", "before: saying “a” with the model's own mouth"],
+    ["/out/<name>_mouth2_renders/after/aa.png", "after: redrawn, free mouth, size × 1.3"]],
+};
+function showExamples() {
+  document.querySelectorAll("[data-examples]").forEach((host) => {
+    if (host.dataset.shown) return;
+    host.dataset.shown = "1";
+    host.innerHTML = (EXAMPLES[host.dataset.examples] || []).map(([src, text]) =>
+      `<figure><a href="${src}" target="_blank"><img src="${src}" alt="${esc(text)}" loading="lazy" onerror="this.closest('figure').remove()"></a><figcaption>${esc(text)}</figcaption></figure>`).join("");
+  });
+}
+function say(id, text, bad = false) { const el = $(id); el.textContent = text; el.classList.toggle("bad", bad); }
+// Blender (Z up) <-> glTF/three (Y up)
+const toThree = ([x, y, z]) => new THREE.Vector3(x, z, -y);
+const toBlender = (v) => [+v.x.toFixed(4), +(-v.z).toFixed(4), +v.y.toFixed(4)];
+
+// ---------- navigation and projects
+function go(name) {
+  document.querySelectorAll("section").forEach((s) => s.classList.toggle("on", s.id === name));
+  document.querySelectorAll("#steps button").forEach((b) => b.classList.toggle("on", b.dataset.go === name));
+  if (name === "parts") partsView.resize();
+  if (name === "joints") { jointsView.resize(); showJoints(); }
+  if (name === "face") faceView.resize();
+  if (name === "movement") moveView.resize();
+  location.hash = name;
+}
+document.querySelectorAll("#steps button").forEach((b) => b.onclick = () => go(b.dataset.go));
+
+async function loadProjects(select) {
+  const { projects } = await call("projects");
+  $("project").innerHTML = `<option value="">— new character —</option>` +
+    projects.map((p) => `<option value="${p.manifest}">${p.name}</option>`).join("");
+  // a refresh reopens the character that was open: it showed an empty app, as if the work were lost
+  let last = null;
+  try { last = localStorage.getItem("vtuber-maker-project"); } catch {}
+  if (select) $("project").value = select;
+  else if (last && projects.some((p) => p.manifest === last)) $("project").value = last;
+  await openProject($("project").value || null);
+}
+$("project").onchange = () => openProject($("project").value || null);
+
+async function openProject(path) {
+  manifestPath = path; listing = null;
+  try { path ? localStorage.setItem("vtuber-maker-project", path) : localStorage.removeItem("vtuber-maker-project"); } catch {}
+  if (!path) { manifest = status = null; render(); $("fb-list").innerHTML = ""; return; }
+  [manifest, status] = await Promise.all([call("manifest"), call("status")]);
+  const pieces = await call("pieces");
+  listing = pieces.listing;
+  if (pieces.glb) await partsView.load(pieces.glb); else partsView.clear();
+  render();
+  loadFace().catch((e) => say("patch-msg", e.message, true));
+  loadMovement(pieces.glb).catch((e) => say("movement-msg", e.message, true));
+  loadSprings().catch((e) => say("movement-msg", e.message, true));
+  renderFeedback().catch((e) => say("fb-msg", e.message, true));
+}
+
+function render() {
+  renderSurvey(); renderPieces(); renderFace(); renderOptions(); renderSteps(); showJoints();
+}
+
+// ---------- model + survey
+$("create").onclick = async () => {
+  try {
+    const made = await call("init", { model: $("new-model").value.trim(), name: $("new-name").value.trim(),
+      author: $("new-author").value.trim(), face: $("new-face").value.trim(), reference: $("new-reference").value.trim(),
+      rig: $("new-rig").value.trim() });
+    say("create-msg", `Made ${made.manifest}`);
+    await loadProjects(made.manifest);
+  } catch (e) { say("create-msg", e.message, true); }
+};
+$("survey-run").onclick = () => job("run", { only: "survey" });
+document.querySelectorAll("[data-browse]").forEach((b) => b.onclick = async () => {
+  try { const { path } = await call("browse", { kind: b.dataset.browse }); if (path) $(b.dataset.for).value = path; }
+  catch (e) { say("create-msg", e.message, true); }
+});
+$("rig-save").onclick = async () => {
+  try { await call("set_path", { key: "rig", value: $("rig-path").value.trim() }); say("rig-msg", "saved: rebuild from build"); await openProject(manifestPath); }
+  catch (e) { say("rig-msg", e.message, true); }
+};
+
+async function renderSurvey() {
+  // one card at a time: a new character's form, or the open one's survey and rig. Both at once
+  // read as two ways to start, and a rigged FBX looked like a second character to create
+  $("model-new").hidden = !!manifest; $("model-open").hidden = !manifest;
+  $("rig-path").value = manifest?.rig || "";
+  for (const id of ["survey-run", "rig-save"]) $(id).disabled = !manifest;
+  $("model-files").innerHTML = manifest ? `Model in use: <code>${esc(manifest.source)}</code>`
+    + (manifest.reference ? `<br>Original, before the face patch: <code>${esc(manifest.reference)}</code>` : "") : "";
+  const entry = status?.steps.find((s) => s.step === "survey");
+  $("survey-state").textContent = entry ? entry.status : "";
+  $("survey").innerHTML = "";
+  if (!entry?.json) return;
+  const { url } = await call("url", { path: entry.json });
+  if (!url) return;
+  const s = await (await fetch(url)).json();
+  const o = s.options || {};
+  $("survey").innerHTML = `<table>
+    <tr><td>Size</td><td>${s.size.map((v) => v.toFixed(2)).join(" × ")} m, ${s.triangles.toLocaleString()} triangles, ${s.pieces} pieces</td></tr>
+    <tr><td>Pose</td><td>${s.pose.kind}, arms ${Math.round(s.pose.arm_drop_degrees)}° below horizontal</td></tr>
+    <tr><td>Face</td><td>${s.parts.eye_inserts ? "modelled eyes" : "painted face"}${s.face_patch ? ", face patch" : ""}</td></tr>
+    <tr><td>Head</td><td>${o.rigid_head ? "solid head or hat: rigid head suggested" : "hair"}</td></tr>
+    <tr><td>Cloth</td><td>${Math.round(s.cloth.share * 100)}% below the hips hangs free${o.cloth_physics ? ": cloth physics suggested" : ""}</td></tr>
+    </table>${notesFor(s.notes || []).map((n) => `<p class="msg">• ${esc(n)}</p>`).join("")}`;
+}
+
+// The survey's notes in the app's words: with a Tripo rig the joints come from it, so notes about
+// joints placed by proportion don't apply; and no command-line flags.
+function notesFor(notes) {
+  const rigged = !!manifest?.rig;
+  const out = notes.filter((n) => !(rigged && /joint|placed from typical proportions|Joints page|legs are joined|legs only stand apart/i.test(n)))
+    .map((n) => n.replace(/,? ?or pass --joints/g, " on the Joints page").replace(/: building with --cloth/g, ": cloth physics is on (Options)")
+      .replace(/--free-mouth/g, "a free mouth (Face)").replace(/--mouth-only/g, "mouth-only face tracking"));
+  if (rigged) out.unshift("the joints and body weights come from Tripo's rig");
+  return out;
+}
+
+// ---------- 3D views
+function makeView(host) {
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(devicePixelRatio);
+  host.prepend(renderer.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0f1115);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x333344, 2.2));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.5); sun.position.set(1, 2, 2); scene.add(sun);
+  const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 50);
+  camera.position.set(0, 0.9, 3.2);
+  const orbit = new OrbitControls(camera, renderer.domElement);
+  orbit.target.set(0, 0.85, 0); orbit.update();
+  const view = { renderer, scene, camera, orbit, host, model: null,
+    resize() { const w = host.clientWidth, h = host.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); },
+    clear() { if (view.model) scene.remove(view.model); view.model = null; },
+    pick(event, objects) {
+      const r = renderer.domElement.getBoundingClientRect();
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(((event.clientX - r.left) / r.width) * 2 - 1, -((event.clientY - r.top) / r.height) * 2 + 1), camera);
+      return ray.intersectObjects(objects, true)[0];
+    } };
+  renderer.setAnimationLoop(() => renderer.render(scene, camera));
+  addEventListener("resize", () => view.resize());
+  view.resize();
+  return view;
+}
+
+const partsView = makeView($("parts-view"));
+let region = new Set();  // surface vertices (see buildTopo) chosen within the selected piece
+const jointsView = makeView($("joints-view"));
+let partMeshes = [], selected = null, jointGhost = null;
+
+partsView.load = async (url) => {
+  partsView.clear(); jointsView.clear();
+  const gltf = await new GLTFLoader().loadAsync(url + `?t=${Date.now()}`);
+  partsView.model = gltf.scene; partsView.scene.add(gltf.scene);
+  partMeshes = [];
+  gltf.scene.traverse((o) => { if (o.isMesh) { partMeshes.push(o); o.material = o.material.clone(); o.material.vertexColors = true; } });
+  // the joints view shows the same model, see-through
+  jointGhost = gltf.scene.clone(true);
+  jointGhost.traverse((o) => { if (o.isMesh) o.material = new THREE.MeshStandardMaterial({ color: 0x8899aa, transparent: true, opacity: 0.25, depthWrite: false }); });
+  jointsView.model = jointGhost; jointsView.scene.add(jointGhost);
+  topo = null; region = new Set();
+  colourPieces();
+};
+
+function suggestionOf(label) {
+  const row = listing?.pieces.find((p) => p.label === label);
+  return row && row.suggested !== "body" ? row.suggested : "";
+}
+function roleOf(label) {
+  const row = listing?.pieces.find((p) => p.label === label);
+  if (!row) return "";
+  const named = manifest.pieces.find((p) => samePiece(p, row));
+  return named ? named.role : "";
+}
+// the listing says which row each named piece is; one named here since carries the row's own point
+function samePiece(piece, row) {
+  if (piece.region?.length) return false;  // part of a piece: it has its own row (regionRows)
+  return row.manifest?.name === piece.name ||
+    (piece.count === row.count && Math.hypot(...piece.point.map((v, i) => v - row.point[i])) < 1e-6);
+}
+
+function colourPieces() {
+  for (const mesh of partMeshes) {
+    const attr = mesh.geometry.attributes._piece;
+    if (!attr) continue;
+    const numbers = mesh.geometry.attributes._vertex;
+    const colours = new Float32Array(attr.count * 3), c = new THREE.Color();
+    const cache = new Map();
+    for (let i = 0; i < attr.count; i++) {
+      const label = Math.round(attr.getX(i));
+      if (!cache.has(label)) {
+        const own = roleOf(label);
+        c.setHex(ROLE_COLOUR[own || suggestionOf(label)] ?? 0x9a9a9a);
+        if (!own) c.lerp(new THREE.Color(0x9a9a9a), 0.6);
+        if (label === selected) c.lerp(new THREE.Color(0xffffff), 0.55);
+        cache.set(label, c.toArray());
+      }
+      colours.set(region.size && numbers && topo && region.has(topo.rep.get(Math.round(numbers.getX(i)))) ? [1, 1, 1] : cache.get(label), i * 3);
+    }
+    mesh.geometry.setAttribute("color", new THREE.BufferAttribute(colours, 3));
+    mesh.material.map = null; mesh.material.needsUpdate = true;
+  }
+}
+
+// The surface of the listed model: vertices sharing a position in one piece are one (UV seams
+// split them), `region` holds those, and the source vertex numbers are what the manifest gets.
+let topo = null;
+function buildTopo() {
+  const rep = new Map(), members = new Map(), nbrs = new Map(), piece = new Map(), pos = new Map(), byKey = new Map();
+  const v = new THREE.Vector3();
+  for (const mesh of partMeshes) {
+    const g = mesh.geometry, nums = g.attributes._vertex, pa = g.attributes._piece, p = g.attributes.position;
+    if (!nums || !pa) continue;
+    const local = new Int32Array(p.count);
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i).applyMatrix4(mesh.matrixWorld);
+      const label = Math.round(pa.getX(i)), n = Math.round(nums.getX(i));
+      const key = `${label}:${Math.round(v.x * 1e5)},${Math.round(v.y * 1e5)},${Math.round(v.z * 1e5)}`;
+      let r = byKey.get(key);
+      if (r === undefined) { r = n; byKey.set(key, r); members.set(r, new Set()); nbrs.set(r, new Set()); piece.set(r, label); pos.set(r, v.clone()); }
+      if (!rep.has(n)) rep.set(n, r);
+      members.get(r).add(n); local[i] = r;
+    }
+    const tri = g.index ? g.index.array : Array.from({ length: p.count }, (_, i) => i);
+    for (let t = 0; t + 2 < tri.length; t += 3) {
+      const a = local[tri[t]], b = local[tri[t + 1]], c = local[tri[t + 2]];
+      for (const [x, y] of [[a, b], [b, c], [c, a]]) if (x !== y) { nbrs.get(x).add(y); nbrs.get(y).add(x); }
+    }
+  }
+  topo = { rep, members, nbrs, piece, pos };
+}
+const inPiece = (r) => topo.piece.get(r) === selected;
+function regionNumbers() { const out = []; for (const r of region) out.push(...topo.members.get(r)); return out.sort((a, b) => a - b); }
+
+// what the pick looks like as a part: one connected bit, no gaps, a clean edge
+function regionReport() {
+  const seen = new Set(); let bits = 0;
+  for (const r of region) {
+    if (seen.has(r)) continue;
+    bits++; const stack = [r]; seen.add(r);
+    while (stack.length) for (const o of topo.nbrs.get(stack.pop())) if (region.has(o) && !seen.has(o)) { seen.add(o); stack.push(o); }
+  }
+  let border = 0; const edge = new Set();
+  for (const r of region) for (const o of topo.nbrs.get(r)) if (!region.has(o) && inPiece(o)) { border++; edge.add(o); }
+  const gaps = outsideParts().filter((c) => c.length < GAP_SHARE * region.size).reduce((n, c) => n + c.length, 0);
+  return { bits, border, gaps, rim: edge.size };
+}
+// the piece's vertices outside the part, as connected groups
+function outsideParts() {
+  const seen = new Set(), parts = [];
+  for (const [r, label] of topo.piece) {
+    if (label !== selected || region.has(r) || seen.has(r)) continue;
+    const part = [r]; seen.add(r);
+    for (let k = 0; k < part.length; k++) for (const o of topo.nbrs.get(part[k])) if (inPiece(o) && !region.has(o) && !seen.has(o)) { seen.add(o); part.push(o); }
+    parts.push(part);
+  }
+  return parts;
+}
+// the same rule the build applies (roles.close_region): gaps under a quarter of the part are its own
+const GAP_SHARE = 0.25;
+function fillGaps() {
+  for (const part of outsideParts()) if (part.length < GAP_SHARE * region.size) part.forEach((r) => region.add(r));
+  for (let pass = 0; pass < 3; pass++) {
+    const add = [];
+    for (const [r, label] of topo.piece) {
+      if (label !== selected || region.has(r)) continue;
+      const around = [...topo.nbrs.get(r)].filter(inPiece);
+      if (around.length && 2 * around.filter((o) => region.has(o)).length >= around.length) add.push(r);
+    }
+    if (!add.length) break;
+    add.forEach((r) => region.add(r));
+  }
+}
+function grow() { const add = []; for (const r of region) for (const o of topo.nbrs.get(r)) if (inPiece(o)) add.push(o); add.forEach((r) => region.add(r)); }
+function shrink() { const drop = [...region].filter((r) => [...topo.nbrs.get(r)].some((o) => !region.has(o))); drop.forEach((r) => region.delete(r)); }
+
+const box = document.createElement("div");
+box.style.cssText = "position:absolute;border:1px dashed #fff;background:rgba(255,255,255,.08);pointer-events:none;display:none";
+$("parts-view").appendChild(box);
+let dragFrom = null, painting = null;
+function brushAt(e) {
+  const hit = partsView.pick(e, partMeshes);
+  if (!hit) return;
+  const radius = +$("region-brush").value / 100;
+  for (const [r, label] of topo.piece) {
+    if (label !== selected || topo.pos.get(r).distanceTo(hit.point) > radius) continue;
+    if (painting.erase) region.delete(r); else region.add(r);
+  }
+  colourPieces();
+}
+partsView.renderer.domElement.addEventListener("pointerdown", (e) => {
+  if (!(e.shiftKey || e.altKey) || selected == null) return;
+  if (!topo) buildTopo();
+  e.preventDefault(); e.stopPropagation(); partsView.orbit.enabled = false;
+  if (e.altKey) { painting = { erase: e.ctrlKey }; brushAt(e); return; }
+  dragFrom = { x: e.offsetX, y: e.offsetY, add: e.ctrlKey };
+}, true);
+partsView.renderer.domElement.addEventListener("pointermove", (e) => {
+  if (painting) { brushAt(e); return; }
+  if (!dragFrom) return;
+  const [x0, x1] = [dragFrom.x, e.offsetX].sort((a, b) => a - b), [y0, y1] = [dragFrom.y, e.offsetY].sort((a, b) => a - b);
+  Object.assign(box.style, { display: "block", left: `${x0}px`, top: `${y0}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
+});
+partsView.renderer.domElement.addEventListener("pointerup", (e) => {
+  if (painting) { painting = null; partsView.orbit.enabled = true; showRegion(); return; }
+  if (!dragFrom) return;
+  const r = partsView.renderer.domElement.getBoundingClientRect();
+  const [x0, x1] = [dragFrom.x, e.offsetX].sort((a, b) => a - b), [y0, y1] = [dragFrom.y, e.offsetY].sort((a, b) => a - b);
+  if (!dragFrom.add) region = new Set();
+  const v = new THREE.Vector3();
+  for (const [rep, label] of topo.piece) {
+    if (label !== selected) continue;
+    v.copy(topo.pos.get(rep)).project(partsView.camera);
+    const sx = (v.x + 1) / 2 * r.width, sy = (1 - v.y) / 2 * r.height;
+    if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1) region.add(rep);
+  }
+  dragFrom = null; box.style.display = "none"; partsView.orbit.enabled = true;
+  showRegion();
+});
+function showRegion() {
+  $("region-save").disabled = !region.size;
+  $("region-warn").textContent = "";
+  if (!region.size) { $("region-count").textContent = "no part chosen"; colourPieces(); return; }
+  const n = regionNumbers().length, rep = regionReport(), warn = [];
+  $("region-count").textContent = `${n.toLocaleString()} vertices chosen in piece #${selected}`;
+  if (rep.bits > 1) warn.push(`it is in ${rep.bits} separate bits: a part is one connected piece, so paint the bits together (or Grow)`);
+  if (rep.gaps) warn.push(`${rep.gaps} vertices inside it are left out: press Fill gaps`);
+  // a clean cut crosses the part once, at its root; a ragged pick borders the rest all over
+  if (rep.rim > 3 * Math.sqrt(region.size)) warn.push(`its edge meets the rest of the piece at ${rep.rim} vertices, a ragged edge for its size: every one of them can tear`);
+  $("region-warn").innerHTML = warn.length ? `<span style="color:var(--bad,#d66)">Check the pick:</span> ${warn.join("; ")}.` : "One connected part with a clean edge.";
+  colourPieces();
+}
+$("region-brush").oninput = () => { $("region-brush-cm").textContent = `${$("region-brush").value} cm`; };
+$("region-grow").onclick = () => { if (topo && region.size) { grow(); showRegion(); } };
+$("region-shrink").onclick = () => { if (topo && region.size) { shrink(); showRegion(); } };
+$("region-fill").onclick = () => { if (topo && region.size) { fillGaps(); showRegion(); } };
+$("region-role").innerHTML = ROLES.filter(Boolean).map((r) => `<option value="${r}" title="${ROLE_INFO[r][1]}">${roleName(r)}</option>`).join("");
+$("role-legend").innerHTML = ROLES.map((r) => `<p class="help" style="margin:2px 0"><b style="color:var(--text)">${roleName(r)}</b>: ${ROLE_INFO[r][1]}</p>`).join("");
+$("region-clear").onclick = () => { region = new Set(); showRegion(); };
+$("region-save").onclick = async () => {
+  const name = $("region-name").value.trim() || `${$("region-role").value}_part_${selected}`;
+  const rep = regionReport();
+  if ((rep.bits > 1 || rep.gaps) && !confirm(`${$("region-warn").textContent}\n\nSave it anyway?`)) return;
+  try {
+    await call("piece", { name, label: selected, role: $("region-role").value, region: regionNumbers() });
+    manifest = await call("manifest"); region = new Set(); showRegion(); renderPieces();
+    say("pieces-msg", `Saved ${name}. Rebuild from "build" (or "pieces" for a clothing role) for it to count.`);
+  } catch (e) { say("pieces-msg", e.message, true); }
+};
+
+// a click picks a piece; letting go after dragging to orbit doesn't (it picked whatever was under the cursor)
+let partsDown = null;
+partsView.renderer.domElement.addEventListener("pointerdown", (e) => { partsDown = { x: e.clientX, y: e.clientY }; });
+partsView.renderer.domElement.addEventListener("click", (event) => {
+  if (event.shiftKey || event.altKey) return;
+  if (partsDown && Math.hypot(event.clientX - partsDown.x, event.clientY - partsDown.y) > 4) return;
+  const hit = partsView.pick(event, partMeshes);
+  const attr = hit?.object.geometry.attributes._piece;
+  if (!attr) return;
+  selectPiece(Math.round(attr.getX(hit.face.a)));
+});
+function selectPiece(label) {
+  if (label !== selected && region.size) { region = new Set(); showRegion(); }
+  selected = label; colourPieces();
+  document.querySelectorAll("#piece-rows tr").forEach((tr) => tr.classList.toggle("sel", +tr.dataset.label === label));
+  const tr = document.querySelector(`#piece-rows tr[data-label="${label}"]`);
+  if (tr) tr.scrollIntoView({ block: "nearest" }); else say("pieces-msg", "a speck too small to list");
+}
+
+$("pieces-run").onclick = () => job("list_pieces", {});
+
+function renderPieces() {
+  const body = $("piece-rows");
+  if (!listing) { body.innerHTML = `<tr><td colspan="6" class="msg">Not listed yet: press List pieces (one Blender run, about a minute).</td></tr>`; return; }
+  body.innerHTML = listing.pieces.map((row) => {
+    const named = manifest.pieces.find((p) => samePiece(p, row)) || {};
+    const role = named.role || "";
+    const others = manifest.pieces.filter((p) => p.name !== named.name).map((p) => p.name);
+    return `<tr data-label="${row.label}" class="${row.label === selected ? "sel" : ""}">
+      <td><span class="swatch" style="background:#${(ROLE_COLOUR[role] ?? 0x9a9a9a).toString(16).padStart(6, "0")}"></span></td>
+      <td>${esc(named.name || row.where || `piece ${row.label}`)}${named.name ? ` <button class="act alt" data-rename title="rename" style="padding:0 6px">✎</button>` : ""}<br><span class="msg" style="margin:0">${row.where && named.name ? row.where : `#${row.label}`}</span></td><td>${row.count.toLocaleString()}</td>
+      <td title="${esc(row.why)}">${roleName(row.suggested === "body" ? "body" : row.suggested)}</td>
+      <td><select data-role>${ROLES.map((r) => `<option ${r === role ? "selected" : ""} value="${r}" title="${ROLE_INFO[r][1]}">${roleName(r)}</option>`).join("")}</select>
+        ${role === "follow_bone" ? `<select data-bone>${BONES.map((b) => `<option ${b === named.bone ? "selected" : ""}>${b}</option>`).join("")}</select>` : ""}
+        ${role === "appendage" ? `<select data-core title="the bone it grows from">${CORE.map((b) => `<option ${b === (named.bone || "") ? "selected" : ""} value="${b}">${b || "grows from: nearest"}</option>`).join("")}</select>` : ""}
+        ${role === "detail" ? `<select data-anchor>${others.map((n) => `<option ${n === named.anchor ? "selected" : ""}>${n}</option>`).join("")}</select>` : ""}
+        ${role === "hat" ? `<label style="display:inline"><input type="checkbox" data-tip ${named.tip ? "checked" : ""}> tip swings</label>` : ""}</td>
+      <td>${row.suggested !== "body" && !role ? `<button class="act alt" data-accept title="${ROLE_INFO[row.suggested]?.[1] ?? ""}">use: ${roleName(row.suggested)}</button>` : ""}</td></tr>`;
+  }).join("") + regionRows();
+  body.querySelectorAll("tr[data-region]").forEach((tr) => {
+    const name = tr.dataset.region;
+    const redo = async (body) => {
+      try { await call("piece", body); manifest = await call("manifest"); renderPieces(); colourPieces(); }
+      catch (e) { say("pieces-msg", e.message, true); }
+    };
+    tr.querySelector("[data-rename]").onclick = () => { const to = prompt("New name", name)?.trim(); if (to && to !== name) redo({ name, rename: to }); };
+    tr.querySelector("[data-remove]").onclick = () => { if (confirm(`Remove the part ${name}?`)) redo({ name, remove: true }); };
+  });
+  body.querySelectorAll("tr[data-label]").forEach((tr) => {
+    const label = +tr.dataset.label, row = listing.pieces.find((r) => r.label === label);
+    const named = manifest.pieces.find((p) => samePiece(p, row));
+    tr.onclick = (e) => { if (!["SELECT", "INPUT", "BUTTON", "OPTION"].includes(e.target.tagName)) selectPiece(label); };
+    const save = async (patch) => {
+      try {
+        if (patch.role === "") { if (named) await call("piece", { name: named.name, remove: true }); }
+        else await call("piece", { name: named?.name || `${patch.role || named?.role}_${label}`, label, ...patch });
+        manifest = await call("manifest"); renderPieces(); colourPieces();
+      } catch (e) { say("pieces-msg", e.message, true); }
+    };
+    tr.querySelector("[data-role]").onchange = (e) => {
+      const role = e.target.value;
+      save(role === "follow_bone" ? { role, bone: row.max[0] > 0 ? "LeftUpperArm" : "RightUpperArm" }
+        : role === "detail" ? { role, anchor: manifest.pieces.find((p) => p.name !== named?.name)?.name } : { role });
+    };
+    tr.querySelector("[data-bone]")?.addEventListener("change", (e) => save({ role: "follow_bone", bone: e.target.value }));
+    tr.querySelector("[data-core]")?.addEventListener("change", (e) => save({ role: "appendage", bone: e.target.value || "auto" }));
+    tr.querySelector("[data-anchor]")?.addEventListener("change", (e) => save({ role: "detail", anchor: e.target.value }));
+    tr.querySelector("[data-tip]")?.addEventListener("change", (e) => save({ role: "hat", tip: e.target.checked }));
+    tr.querySelector("[data-accept]")?.addEventListener("click", () => save({ role: row.suggested }));
+    tr.querySelector("[data-rename]")?.addEventListener("click", async () => {
+      const to = prompt("New name, e.g. left wing", named.name)?.trim();
+      if (!to || to === named.name) return;
+      try { await call("piece", { name: named.name, rename: to }); manifest = await call("manifest"); renderPieces(); }
+      catch (e) { say("pieces-msg", e.message, true); }
+    });
+  });
+}
+// parts of pieces (a twin-tail fused into the body) are listed after the pieces, each on its own row
+function regionRows() {
+  return manifest.pieces.filter((p) => p.region?.length).map((p) => {
+    const whole = listing.pieces.find((r) => r.count === p.count && Math.hypot(...p.point.map((v, i) => v - r.point[i])) < 1e-6);
+    return `<tr data-region="${esc(p.name)}"><td><span class="swatch" style="background:#${(ROLE_COLOUR[p.role] ?? 0x9a9a9a).toString(16).padStart(6, "0")}"></span></td>
+      <td>${esc(p.name)} <button class="act alt" data-rename title="rename" style="padding:0 6px">✎</button><br><span class="msg" style="margin:0">part of ${whole ? `#${whole.label}` : "a piece"}</span></td>
+      <td>${p.region.length.toLocaleString()}</td><td></td><td>${esc(roleName(p.role))}</td><td><button class="act alt" data-remove>remove</button></td></tr>`;
+  }).join("");
+}
+
+// ---------- joints
+const markers = new THREE.Group(); jointsView.scene.add(markers);
+const gizmo = new TransformControls(jointsView.camera, jointsView.renderer.domElement);
+jointsView.scene.add(gizmo.getHelper ? gizmo.getHelper() : gizmo);
+gizmo.addEventListener("dragging-changed", (e) => {
+  jointsView.orbit.enabled = !e.value;
+  if (!e.value && gizmo.object) saveJoint(gizmo.object.userData.key, toBlender(gizmo.object.position));
+});
+// the joint being moved: kept across saves, which rebuild the markers (the gizmo used to drop it)
+let pickedJoint = null, jointsDown = null;
+function pickJoint(key) {
+  pickedJoint = key;
+  document.querySelectorAll("#joint-rows tr").forEach((t) => t.classList.toggle("sel", t.dataset.key === key));
+  const dot = key && markers.children.find((m) => m.userData.key === key);
+  if (dot) gizmo.attach(dot); else gizmo.detach();
+  if (key) $("joint-rows").querySelector(`tr[data-key="${key}"]`)?.scrollIntoView({ block: "nearest" });
+}
+jointsView.renderer.domElement.addEventListener("pointerdown", (e) => { jointsDown = { x: e.clientX, y: e.clientY }; });
+jointsView.renderer.domElement.addEventListener("click", (e) => {
+  if (gizmo.dragging || (jointsDown && Math.hypot(e.clientX - jointsDown.x, e.clientY - jointsDown.y) > 4)) return;
+  const hit = jointsView.pick(e, markers.children);
+  if (hit) pickJoint(hit.object.userData.key);
+});
+jointsView.renderer.domElement.addEventListener("pointermove", (e) => {
+  if (gizmo.dragging) return;
+  jointsView.renderer.domElement.style.cursor = jointsView.pick(e, markers.children) ? "pointer" : "";
+});
+addEventListener("keydown", (e) => { if (e.key === "Escape" && pickedJoint) pickJoint(null); });
+function jointPositions() { return { ...(listing?.joints || {}), ...(manifest?.joints || {}) }; }
+function showJoints() {
+  markers.clear(); gizmo.detach();
+  const joints = jointPositions(), body = $("joint-rows");
+  if (!listing) { body.innerHTML = `<tr><td colspan="3" class="msg">List the pieces first (Parts).</td></tr>`; return; }
+  $("joints-note").textContent = manifest?.rig ? "This character uses Tripo's rig: the build takes its joints from the rig. "
+    + "Only move a joint here to overrule the rig; what's shown is the app's own detection, not the rig's." : "";
+  for (const [key, p] of Object.entries(joints)) {
+    const own = key in (manifest.joints || {});
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.02), new THREE.MeshBasicMaterial({ color: own ? 0xffb347 : 0x7cc4ff, depthTest: false }));
+    dot.renderOrder = 2; dot.position.copy(toThree(p)); dot.userData.key = key; markers.add(dot);
+  }
+  body.innerHTML = Object.entries(joints).map(([key, p]) => `<tr data-key="${key}"><td>${key.replaceAll("_", " ")}</td>
+    <td class="${key in (manifest.joints || {}) ? "running" : ""}">${p.map((v) => v.toFixed(3)).join(", ")}</td>
+    <td>${key in (manifest.joints || {}) ? `<button class="act alt" data-reset>Reset</button>` : ""}</td></tr>`).join("");
+  body.querySelectorAll("tr").forEach((tr) => {
+    tr.onclick = (e) => { if (e.target.tagName !== "BUTTON") pickJoint(tr.dataset.key); };
+    tr.querySelector("[data-reset]")?.addEventListener("click", () => saveJoint(tr.dataset.key, null));
+  });
+  if (pickedJoint) pickJoint(pickedJoint);
+}
+async function saveJoint(key, xyz) {
+  const name = key.replaceAll("_", " ");
+  try {
+    await call("joint", xyz ? { key, xyz } : { key, clear: true });
+    manifest = await call("manifest"); showJoints();
+    say("joints-msg", xyz ? `Saved ${name} (${new Date().toLocaleTimeString()}).` : `Reset ${name} to detection.`);
+  } catch (err) { say("joints-msg", `Not saved: ${err.message}`, true); }
+}
+$("mirror").onclick = async () => {
+  const joints = jointPositions();
+  for (const key of Object.keys(manifest.joints || {})) if (key.startsWith("left_"))
+    await call("joint", { key: key.replace("left_", "right_"), xyz: [-joints[key][0], joints[key][1], joints[key][2]] });
+  manifest = await call("manifest"); showJoints();
+  say("joints-msg", `Saved the mirrored right side (${new Date().toLocaleTimeString()}).`);
+};
+
+// ---------- face
+// The marker (viewer/setup.html, embedded) marks pixels on the face patch texture. Here the same
+// pixels are found on the 3D model through the patch's UVs, so a point on the wrong feature shows.
+const faceView = makeView($("face-view"));
+const faceDots = new THREE.Group(); faceView.scene.add(faceDots);
+const FEATURE_COLOUR = { right_eye: 0x4ad7ff, left_eye: 0x7dff6b, mouth: 0xff6bb5 };
+let facePatch = null, faceImage = null, facePoints = null, markerReady = false;
+$("marker").src = "/viewer/setup.html?embed=1";
+
+addEventListener("message", async (e) => {
+  if (e.origin !== location.origin) return;
+  const { type, data } = e.data || {};
+  if (type === "face-marker-ready") { markerReady = true; sendFaceImage(); }
+  if (type === "face-points-draft") {
+    facePoints = data; showFacePoints(); showPointsState();
+    // saved as soon as all twelve are placed: a separate save inside the marker was easy to miss,
+    // and "Save face options" next to it saved only the options
+    clearTimeout(pointsTimer);
+    if (e.data.complete) pointsTimer = setTimeout(() => savePoints().catch((err) => say("face-msg", err.message, true)), 600);
+  }
+});
+let pointsTimer = null, pointsSaved = null;
+const POINT_COUNT = 12;
+const placed = (p) => ["right_eye", "left_eye", "mouth"].reduce((n, k) => n + Object.keys(p?.[k] || {}).length, 0);
+async function savePoints() {
+  if (placed(facePoints) < POINT_COUNT) return false;
+  if (pointsSaved === JSON.stringify(facePoints)) return true;
+  await call("face_save", { points: facePoints });
+  pointsSaved = JSON.stringify(facePoints);
+  manifest = await call("manifest"); status = await call("status"); renderSteps(); showPointsState();
+  return true;
+}
+function showPointsState() {
+  const n = placed(facePoints), saved = n === POINT_COUNT && pointsSaved === JSON.stringify(facePoints);
+  $("points-state").textContent = saved ? "saved" : n === POINT_COUNT ? "saving…" : `${n} of ${POINT_COUNT} placed`;
+  $("points-state").className = `tag ${saved ? "done" : n ? "warn" : ""}`;
+}
+function sendFaceImage() {
+  if (markerReady && faceImage) $("marker").contentWindow.postMessage({ type: "face-image", ...faceImage, points: facePoints }, location.origin);
+}
+
+async function loadFace() {
+  faceView.clear(); faceDots.clear(); facePatch = faceImage = patchFit = null; $("face-checks").innerHTML = "";
+  if (!manifestPath) return;
+  const face = await call("face");
+  facePoints = face.points; pointsSaved = face.points ? JSON.stringify(face.points) : null; showPointsState();
+  if (!face.model) {
+    $("patch-make").textContent = "Make a face patch";
+    $("patch-state").textContent = "Needed once per character. It renders the head from the front and maps that picture onto the face as its own sharp texture; step 2 marks the points on it. Two Blender runs, about two minutes. The model is copied, never changed (it isn't a .glb, so it shows here once the patch is made).";
+    return;
+  }
+  const gltf = await new GLTFLoader().loadAsync(face.model);
+  faceView.model = gltf.scene; faceView.scene.add(gltf.scene); gltf.scene.updateMatrixWorld(true);
+  gltf.scene.traverse((o) => { if (o.isMesh && o.material?.name === "face_patch") facePatch = o; });
+  const box = new THREE.Box3().setFromObject(gltf.scene), size = box.getSize(new THREE.Vector3());
+  const head = new THREE.Vector3((box.min.x + box.max.x) / 2, box.max.y - size.y * 0.12, (box.min.z + box.max.z) / 2);
+  faceView.orbit.target.copy(head); faceView.camera.position.set(head.x, head.y, head.z + size.y * 0.55); faceView.orbit.update();
+  $("patch-make").textContent = facePatch ? "Remake the face patch" : "Make a face patch";
+  if (!facePatch) {
+    $("patch-state").textContent = "Needed once per character. It renders the head from the front and maps that picture onto the face as its own sharp texture; step 2 marks the points on it. Two Blender runs, about two minutes. The model is copied, never changed.";
+    return;
+  }
+  $("patch-state").textContent = "Done. The head was rendered from the front and that picture mapped onto the face, so step 2 marks a sharp picture instead of the blurry texture. Remake it only if the picture below looks wrong (face cut off, off-centre).";
+  const image = facePatch.material.map?.image;
+  if (!image) return;
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width; canvas.height = image.height;
+  canvas.getContext("2d").drawImage(image, 0, 0);
+  const blob = await new Promise((done) => canvas.toBlob(done, "image/png"));
+  faceImage = { src: URL.createObjectURL(blob), name: "face_patch.png" };
+  sendFaceImage(); showFacePoints();
+}
+
+// A pixel of the patch image on the model: the patch triangle whose UVs hold it, interpolated.
+function onPatch(px, py, size) {
+  const geo = facePatch.geometry, pos = geo.attributes.position, uv = geo.attributes.uv, index = geo.index;
+  const u = px / size[0], v = py / size[1];  // glTF UVs count down from the top, like image pixels
+  const count = index ? index.count : pos.count;
+  const a = new THREE.Vector2(), b = new THREE.Vector2(), c = new THREE.Vector2();
+  for (let t = 0; t < count; t += 3) {
+    const [i, j, k] = [0, 1, 2].map((o) => index ? index.getX(t + o) : t + o);
+    a.fromBufferAttribute(uv, i); b.fromBufferAttribute(uv, j); c.fromBufferAttribute(uv, k);
+    const d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if (Math.abs(d) < 1e-12) continue;
+    const w0 = ((b.y - c.y) * (u - c.x) + (c.x - b.x) * (v - c.y)) / d;
+    const w1 = ((c.y - a.y) * (u - c.x) + (a.x - c.x) * (v - c.y)) / d;
+    const w2 = 1 - w0 - w1;
+    if (w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6) continue;
+    const p = new THREE.Vector3().fromBufferAttribute(pos, i).multiplyScalar(w0)
+      .add(new THREE.Vector3().fromBufferAttribute(pos, j).multiplyScalar(w1))
+      .add(new THREE.Vector3().fromBufferAttribute(pos, k).multiplyScalar(w2));
+    return p.applyMatrix4(facePatch.matrixWorld);
+  }
+  return fromFront(u, v);
+}
+
+// Past the patch's own triangles, the way the build does it (face_points._pixel_to_world): the
+// patch's UVs are a straight front mapping, so u and v are fitted as lines in x and height, and
+// the point is where a ray from the front at that x and height meets the model.
+let patchFit = null;
+function fromFront(u, v) {
+  if (!patchFit) {
+    const pos = facePatch.geometry.attributes.position, uv = facePatch.geometry.attributes.uv, p = new THREE.Vector3();
+    const xs = [], ys = [], us = [], vs = [];
+    for (let i = 0; i < pos.count; i++) {
+      p.fromBufferAttribute(pos, i).applyMatrix4(facePatch.matrixWorld);
+      xs.push(p.x); ys.push(p.y); us.push(uv.getX(i)); vs.push(uv.getY(i));
+    }
+    patchFit = { u: line(xs, us), v: line(ys, vs) };
+  }
+  const x = (u - patchFit.u[1]) / patchFit.u[0], y = (v - patchFit.v[1]) / patchFit.v[0];
+  const box = new THREE.Box3().setFromObject(faceView.model);
+  const ray = new THREE.Raycaster(new THREE.Vector3(x, y, box.max.z + 1), new THREE.Vector3(0, 0, -1));
+  return ray.intersectObject(faceView.model, true)[0]?.point || null;
+}
+function line(xs, ys) {
+  const n = xs.length, mx = xs.reduce((a, b) => a + b) / n, my = ys.reduce((a, b) => a + b) / n;
+  let sxy = 0, sxx = 0;
+  for (let i = 0; i < n; i++) { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) ** 2; }
+  const slope = sxy / sxx;
+  return [slope, my - slope * mx];
+}
+
+function showFacePoints() {
+  faceDots.clear();
+  const checks = [];
+  if (!facePatch || !facePoints?.size) { $("face-checks").innerHTML = facePatch ? `<p class="msg">No points yet.</p>` : ""; return; }
+  const at = {}, missing = [];
+  const radius = 0.004 * new THREE.Box3().setFromObject(faceView.model).getSize(new THREE.Vector3()).y / 1.6;
+  for (const key of ["right_eye", "left_eye", "mouth"]) {
+    for (const [name, [px, py]] of Object.entries(facePoints[key] || {})) {
+      const p = onPatch(px, py, facePoints.size);
+      if (!p) { missing.push(`${key.replace("_", " ")} ${name}`); continue; }
+      (at[key] ||= []).push(p);
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(radius), new THREE.MeshBasicMaterial({ color: FEATURE_COLOUR[key], depthTest: false }));
+      dot.renderOrder = 3; dot.position.copy(p); faceDots.add(dot);
+    }
+  }
+  if (missing.length) checks.push(["bad", `not on the model: ${missing.join(", ")}`]);
+  const centre = (k) => at[k]?.length === 4 ? at[k].reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(0.25) : null;
+  const r = centre("right_eye"), l = centre("left_eye"), m = centre("mouth");
+  if (r && l) {
+    const eyeWidth = (at.right_eye[0].distanceTo(at.right_eye[1]) + at.left_eye[0].distanceTo(at.left_eye[1])) / 2;
+    checks.push([Math.abs(r.y - l.y) < eyeWidth * 0.5 ? "done" : "bad", `eyes level to ${(Math.abs(r.y - l.y) / eyeWidth).toFixed(2)} eye widths`]);
+    if (m) {
+      const off = Math.abs(m.x - (r.x + l.x) / 2) / eyeWidth;
+      checks.push([m.y < Math.min(r.y, l.y) ? "done" : "bad", m.y < Math.min(r.y, l.y) ? "mouth under the eyes" : "mouth above the eyes"]);
+      checks.push([off < 0.5 ? "done" : "bad", `mouth ${off.toFixed(2)} eye widths off the middle`]);
+    }
+  }
+  $("face-checks").innerHTML = checks.map(([k, t]) => `<p class="${k}" style="margin:4px 0">• ${t}</p>`).join("");
+}
+// No automatic mouth-versus-nose check: how far down the face the mouth sits can't tell them
+// apart (model A's nose is 0.66 eye widths under her eyes, a chibi's mouth 0.69), and a search
+// for the drawn stroke took model A's nose shading or her collar. The 3D preview shows it.
+
+$("patch-make").onclick = () => job("face_patch", {});
+function renderFace() {
+  if (!manifest) return;
+  $("eyes").value = manifest.options.eyes ?? "";
+  const fix = manifest.options.mouth_fix;
+  $("mouth-fix").checked = !!fix; $("mouth-free").checked = !!fix?.free; $("mouth-scale").value = fix?.scale ?? 1;
+  $("mouth-free").disabled = $("mouth-scale").disabled = !fix;
+  showEyeChoice();
+}
+$("face-apply").onclick = async () => {
+  try {
+    const points = await savePoints();
+    await call("set", { key: "eyes", value: $("eyes").value || null });
+    await call("set", { key: "mouth_fix", value: $("mouth-fix").checked ? { free: $("mouth-free").checked, scale: +$("mouth-scale").value } : null });
+    [manifest, status] = await Promise.all([call("manifest"), call("status")]); renderSteps();
+    say("face-msg", points ? `Saved the points and the choices (${new Date().toLocaleTimeString()}). Rebuild on the Build page for the face to change.`
+      : `Saved the choices, but not the points: ${placed(facePoints)} of ${POINT_COUNT} are placed. Place them all in step 2.`, !points);
+  } catch (e) { say("face-msg", e.message, true); }
+};
+const EYE_CHOICE = {
+  "": () => `Picks for you: a moving iris if the eyes are modelled as their own pieces, sliding patches if they're painted on the face${manifest?.face ? "" : " (and no eye movement until the points are marked)"}.`,
+  iris: () => "The coloured part of the eye (iris and pupil) moves inside the eye white. For models whose eyes are separate pieces, like model A.",
+  slide: () => "The whole painted eye slides a little across the face. For eyes painted onto the face texture, like a mascot.",
+  none: () => "The eyes stay still; blinking still works.",
+};
+const showEyeChoice = () => { $("eyes-choice").textContent = EYE_CHOICE[$("eyes").value](); };
+$("eyes").onchange = showEyeChoice;
+$("mouth-fix").onchange = () => { $("mouth-free").disabled = $("mouth-scale").disabled = !$("mouth-fix").checked; };
+
+// ---------- movement
+const moveView = makeView($("movement-view"));
+let moveMeshes = [], movement = null;
+const VERDICT_COLOUR = { behind: 0xff5a5a, torn: 0xffa040, fine: 0x8a8a8a };
+
+async function loadMovement(glb) {
+  moveView.clear(); moveMeshes = [];
+  movement = manifestPath ? (await call("movement_result")).result : null;
+  $("movement-next").textContent = "";
+  if (glb) {
+    const gltf = await new GLTFLoader().loadAsync(glb + `?t=${Date.now()}`);
+    moveView.model = gltf.scene; moveView.scene.add(gltf.scene);
+    gltf.scene.traverse((o) => { if (o.isMesh) { moveMeshes.push(o); o.material = o.material.clone(); o.material.vertexColors = true; o.material.map = null; } });
+  }
+  renderMovement();
+}
+function verdictOf(label) {
+  const row = movement?.pieces.find((r) => r.label === label);
+  if (!row) return "fine";
+  return row.findings.some((f) => f.kind === "stays behind") ? "behind" : "torn";
+}
+function renderMovement(selectedLabel) {
+  for (const mesh of moveMeshes) {
+    const attr = mesh.geometry.attributes._piece;
+    if (!attr) continue;
+    const colours = new Float32Array(attr.count * 3), c = new THREE.Color();
+    for (let i = 0; i < attr.count; i++) {
+      const label = Math.round(attr.getX(i));
+      c.setHex(VERDICT_COLOUR[verdictOf(label)]);
+      if (label === selectedLabel) c.lerp(new THREE.Color(0xffffff), 0.5);
+      colours.set(c.toArray(), i * 3);
+    }
+    mesh.geometry.setAttribute("color", new THREE.BufferAttribute(colours, 3));
+    mesh.material.needsUpdate = true;
+  }
+  const body = $("movement-rows");
+  if (!movement) { body.innerHTML = `<tr><td colspan="5" class="msg">Not run yet: press “Run the pose test”.${moveMeshes.length ? "" : " List the pieces (Parts) to see them here."}</td></tr>`; return; }
+  if (!movement.pieces.length) { body.innerHTML = `<tr><td colspan="5" class="done">Every piece moves with the body in every pose.</td></tr>`; return; }
+  body.innerHTML = movement.pieces.map((row) => {
+    const verdict = verdictOf(row.label);
+    // one line per kind of problem, with the poses it shows in
+    const behind = row.findings.filter((f) => f.kind === "stays behind"), torn = row.findings.filter((f) => f.kind === "torn");
+    const what = [behind.length ? `stays where it is while the body moves away (${behind.map((f) => f.pose).join(", ")})` : "",
+      torn.length ? `stretches up to ${Math.max(...torn.map((f) => f.stretch_cm))} cm between the part that moves and the part that stays (${torn.map((f) => f.pose).join(", ")})` : ""]
+      .filter(Boolean).join("<br>");
+    const has = row.role && row.role === row.suggested;
+    const side = row.findings.find((f) => f.bone)?.bone.startsWith("Left") ? "left" : "right";
+    const fix = !row.suggested ? esc(row.why.replace(/: gather it for an agent \(Stuck\?\)/, ": if it looks wrong in the Review renders, ask for help on the Stuck? page"))
+      : `<b>${roleName(row.suggested)}</b>${row.suggested === "follow_bone" ? ` (${side} upper arm)` : ""}<br><span class="msg" style="margin:0">${ROLE_INFO[row.suggested]?.[1] ?? ""}</span>`;
+    return `<tr data-label="${row.label}"><td><span class="swatch" style="background:#${VERDICT_COLOUR[verdict].toString(16)}"></span></td>
+      <td>${esc(row.name || `piece ${row.label}`)}<br><span class="msg" style="margin:0">${row.count.toLocaleString()} vertices${row.role ? `, now: ${roleName(row.role)}` : ""}</span></td>
+      <td>${what}</td><td>${fix}</td>
+      <td>${row.suggested && !has ? `<button class="act alt" data-use>Apply this fix</button>` : has ? `<span class="msg">applied: rebuild, then test again</span>` : ""}</td></tr>`;
+  }).join("");
+  body.querySelectorAll("tr[data-label]").forEach((tr) => {
+    const row = movement.pieces.find((r) => r.label === +tr.dataset.label);
+    tr.onclick = (e) => { if (e.target.tagName !== "BUTTON") renderMovement(row.label); };
+    tr.querySelector("[data-use]")?.addEventListener("click", async () => {
+      const side = row.findings.find((f) => f.bone)?.bone.startsWith("Left") ? "Left" : "Right";
+      try {
+        row.name ||= `${row.suggested}_${row.label}`;
+        await call("piece", { name: row.name, label: row.label, role: row.suggested,
+          ...(row.suggested === "follow_bone" ? { bone: `${side}UpperArm` } : {}) });
+        row.role = row.suggested;
+        manifest = await call("manifest"); renderPieces(); colourPieces(); renderMovement(row.label);
+        const from = ["hat", "hair", "swing_cloth", "body"].includes(row.suggested) ? "build" : "pieces";
+        $("movement-next").textContent = `Applied: ${roleName(row.suggested)}. Rebuild from “${from}” (Build page, or its What's left list), then run the pose test again.`;
+      } catch (err) { say("movement-msg", err.message, true); }
+    });
+  });
+}
+$("movement-run").onclick = () => job("movement", {});
+$("springs-run").onclick = () => job("springs", {});
+async function loadSprings() {
+  const r = manifestPath ? (await call("springs_result")).result : null;
+  if (!r) { $("springs-out").textContent = "not run yet"; return; }
+  const lines = [...r.sagging.map((s) => `• ${esc(s.chain)} sags ${s.sag_cm} cm lower than modelled just standing still (its springs are too soft for its weight)`),
+    ...r.coming_away.map((c) => `• a piece of ${c.count} vertices (#${c.label}) is left ${c.gap_cm} cm behind the hair or cloth it sits on when that swings: give it a role on Parts (a small bit sitting on hair or cloth: “rides another piece”)`),
+    r.clipping ? `• swinging hair or cloth sinks up to ${r.clipping.deepest_cm} cm into the body` : ""].filter(Boolean);
+  $("springs-out").innerHTML = lines.length ? lines.join("<br>") + (r.sagging.length || r.clipping ? `<br><span class="help">Sagging and sinking aren't adjustable in the app yet; if they look wrong in the viewer below, say so on the Stuck? page.</span>` : "")
+    : `<span class="done">${r.chains} spring chains: nothing droops or comes away</span>`;
+}
+
+// ---------- options
+// [key, title, what it does, [[value, label, what choosing it means]]]. "auto" is null: the survey decides.
+const AUTO = (what) => [null, "auto", what];
+const OPTION_UI = [
+  ["Head and face"],
+  ["rigid_head", "Solid head", "Moves the whole head as one solid block instead of bending it: for hats, helmets, masks, or a head that is one hard shape (a mascot's).",
+    [AUTO("the survey decides: on when it finds a hat or a solid head"), [true, "on", "The head and everything on it turn together and never bend. Hair on it doesn't sway."],
+      [false, "off", "The head bends normally and hair gets its own springs."]]],
+  ["hat_tip", "Swinging hat tip", "Only with a solid head: the tip of a pointed hat (a witch hat) swings with physics.",
+    [[true, "on", "The tip bounces when the head moves; the rest of the hat stays solid."], [false, "off", "The whole hat stays solid."]]],
+  ["face_tracking", "Face tracking shapes", "Adds the 52 ARKit face shapes that iPhone and webcam face tracking drive (brows, cheeks, jaw, mouth). Needs the face points (Face page).",
+    [[true, "on", "The face follows your expressions in Warudo/VNyan."], [false, "off", "Only the basic blink and the five vowel mouths."]]],
+  ["mouth_colour", "Inside of the mouth", "The colour painted inside the mouth when it opens.",
+    [AUTO("picked from the model's texture"), ["skin", "skin", "Skin-coloured: for simple faces where a dark mouth reads as a hole."]]],
+  ["Hair and clothes"],
+  ["cloth", "Cloth physics", "Pieces hanging free below the hips (skirt, coat tails, cape) swing with spring physics.",
+    [AUTO("the survey decides: on when much of the model hangs free"), [true, "on", "They sway and trail as you move."],
+      [false, "off", "They bend with the legs like skin: no swinging."]]],
+  ["ahoge", "Ahoge spring", "The single hair strand sticking up from the top of the head, if the model has one.",
+    [[true, "on", "It bounces when the head moves."], [false, "off", "It stays stiff."]]],
+  ["loose_pieces", "Repair torn straps", "Straps, belts and chains that cross between two limbs are weighted so they don't tear apart when the limbs move apart.",
+    [[true, "on (recommended)", "Repaired."], [false, "off", "Left as rigged: they can stretch into long spikes."]]],
+  ["repair_shoulder_seams", "Repair shoulder seams", "Closes gaps that open at the shoulders between the body and a sleeve when the arms go up.",
+    [[true, "on (recommended)", "Repaired."], [false, "off", "Left as rigged."]]],
+  ["Body and hands"],
+  ["skinning", "Body weights", "How the skin follows the bones when the character moves. With Tripo's rig (Model page) the rig's own weights are used instead.",
+    [["heat", "computed (recommended)", "Worked out from the model's shape, with the app's rules for arms and body."],
+      ["template", "copied from VRoid (experimental)", "Copies a VRoid body's weights onto this one. Measured worse on model A (the arms stretched far more)."]]],
+  ["fingers", "Fingers", "Finger bones, so hand tracking can open and close the hands.",
+    [["guides", "found on the surface (recommended)", "Finds each finger on the mesh and lays the bones along it, the way model A and model B were done."],
+      ["auto", "quick guess", "Older, faster detection; less exact on curled or touching fingers."],
+      ["none", "none", "No finger bones: each hand moves as one piece. For mittens, or if the fingers come out broken."]]],
+  ["tpose", "Final pose", "VRM apps expect the avatar saved standing in a T-pose; this is how the model gets there.",
+    [["spec", "T-pose, flat hands (recommended)", "Arms straight out and fingers straight, like a VRoid avatar: finger tracking in Warudo works best from this."],
+      ["plain", "T-pose, hands as modelled", "Arms straight out; the fingers keep their modelled curl."],
+      ["none", "no T-pose", "Keeps the modelled pose. No final .vrm is made: for testing the rig only."]]],
+];
+function renderOptions() {
+  if (!manifest) return;
+  const resolved = status?.options || {};
+  $("option-grid").innerHTML = OPTION_UI.map((row) => {
+    if (row.length === 1) return `<h3 style="margin:14px 0 2px;font-size:15px">${row[0]}</h3>`;
+    const [key, title, what, choices] = row, v = manifest.options[key] ?? null;
+    return `<div class="opt"><b>${title}</b><p class="help">${what}</p>
+      <select data-option="${key}">${choices.map(([val, label]) =>
+        `<option value='${JSON.stringify(val)}' ${JSON.stringify(val) === JSON.stringify(v) ? "selected" : ""}>${label}</option>`).join("")}</select>
+      <p class="choice" data-choice="${key}"></p></div>`;
+  }).join("");
+  const explain = (sel) => {
+    const [key, , , choices] = OPTION_UI.find((r) => r[0] === sel.dataset.option);
+    const val = JSON.parse(sel.value), [, , text] = choices.find(([c]) => JSON.stringify(c) === sel.value);
+    // what "auto" came to for this model, when the survey has run
+    const picked = val === null && key in resolved ? choices.find(([c]) => c !== null && JSON.stringify(c) === JSON.stringify(resolved[key])) : null;
+    document.querySelector(`[data-choice="${key}"]`).textContent = text + (picked ? `. For this model: ${picked[1]}.` : "");
+  };
+  document.querySelectorAll("[data-option]").forEach((sel) => {
+    explain(sel);
+    sel.onchange = async () => {
+      explain(sel);
+      try {
+        await call("set", { key: sel.dataset.option, value: JSON.parse(sel.value) });
+        manifest = await call("manifest"); status = await call("status"); renderSteps();
+        say("options-msg", `Saved (${new Date().toLocaleTimeString()}). Rebuild on the Build page for it to count.`);
+      } catch (e) { say("options-msg", e.message, true); }
+    };
+  });
+}
+
+// ---------- build
+let selectedStep = null;
+function renderSteps() {
+  const body = $("step-rows");
+  renderTodo();
+  if (!status) { body.innerHTML = ""; $("check").innerHTML = ""; return; }
+  body.innerHTML = status.steps.map((s) => `<tr data-step="${s.step}" class="${s.step === selectedStep ? "sel" : ""}" style="cursor:pointer">
+    <td>${s.step.replaceAll("_", " ")}</td><td class="${s.status.split(" ")[0]}">${s.runs ? s.status : "off"}</td>
+    <td>${s.seconds ? s.seconds + " s" : ""}</td><td class="msg" style="margin:0">${!s.runs ? s.skip_reason
+      : s.status === "failed" ? `built without it: ${esc(plain(s.step, s.reason))}` : ""}</td></tr>`).join("");
+  body.querySelectorAll("tr").forEach((tr) => tr.onclick = () => { selectedStep = tr.dataset.step; $("run-from").disabled = $("run-only").disabled = false; renderSteps(); });
+  const v = status.verdict;
+  const line = (cls) => ([page, text]) => `<p class="${cls}" style="margin:3px 0">• ${esc(text)} <a href="#${page}" style="color:var(--accent)">${page}</a></p>`;
+  $("verdict").innerHTML = !v ? "" : (v.ready ? `<p class="done">Ready for Warudo${v.looks.length ? ", with a few things worth a look" : ": every check passed"}. Try it pose by pose (Review).</p>` : "")
+    + v.issues.map(line("failed")).join("") + v.looks.map(line("warn")).join("");
+  // the baseline: what the user said was good, and what this build did differently
+  const a = status.approved, since = status.since_approved;
+  $("approved").innerHTML = (a ? `<p class="msg" style="margin:6px 0 2px">Compared with the build you marked good on ${esc(a.when.replace("T", " "))}${a.note ? ` (${esc(a.note)})` : ""}:
+      ${since && !since.worse.length && !since.better.length ? "no change past the noise." : ""}</p>`
+      + (since?.better || []).map((b) => `<p class="done" style="margin:2px 0">• better: ${esc(b)}</p>`).join("")
+    : `<p class="msg" style="margin:6px 0 2px">No build marked good yet: once one looks right in Warudo, mark it, and later builds are compared with it.</p>`)
+    + (v.ready || status.steps.find((s) => s.step === "vrm_check")?.status === "done"
+      ? `<button class="act alt" id="approve" style="margin-top:4px">Mark this build as good</button>` : "");
+  $("approve")?.addEventListener("click", async () => {
+    const note = prompt("What did you check it with? (e.g. \"Warudo, face and arms\")", "") ?? null;
+    if (note === null) return;
+    try { await call("approve", { note }); status = await call("status"); renderSteps(); } catch (e) { $("events").textContent += `\n${e.message}`; }
+  });
+  const failed = status.check_failed;
+  $("check").innerHTML = (failed == null ? `<p class="msg">not checked yet</p>` : failed.length ? failed.map((f) => `<p class="failed">• ${f}</p>`).join("") : `<p class="done">nothing over the limits</p>`)
+    + spotsHtml(status.steps.find((s) => s.step === "check")?.report?.spots);
+}
+// the rig check's worst stretch and squash, close up: at rest, then in the pose that did it
+const served = (path) => { const tail = String(path).replaceAll("\\", "/").split("/out/")[1]; return tail ? `/out/${tail}?t=${Date.now()}` : ""; };
+function spotsHtml(spots) {
+  if (!spots?.length) return "";
+  return spots.map((s) => `<p class="msg" style="margin:8px 0 2px">Where it ${esc(s.what)} (${esc(s.pose)}), red dots on the edge's ends:</p>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px">${["face", "side"].flatMap((v) => ["rest", "posed"].map((st) =>
+      `<figure style="margin:0"><img src="${served(s.files[`${v}_${st}`])}" style="width:100%;border-radius:4px" alt="${v} ${st}"><figcaption class="msg" style="margin:0">${v === "face" ? (s.at[1] > 0 ? "back" : "front") : "side"}, ${st === "rest" ? "at rest" : s.pose}</figcaption></figure>`)).join("")}</div>`).join("");
+}
+// What to do next, in order, each with the button that does it: the steps table alone left the
+// user reading notes like "no face points, or face tracking off" with no way on.
+function renderTodo() {
+  if (!manifest || !status) { $("todo").innerHTML = `<p class="help">Open or create a character first (Model page).</p>`; return; }
+  const steps = Object.fromEntries(status.steps.map((s) => [s.step, s])), items = [];
+  const add = (text, label, act, kind = "warn") => items.push({ text, label, act, kind });
+  if (steps.survey?.status !== "done") add("Survey the model: reads how it stands and what it's made of.", "Run survey", () => job("run", { only: "survey" }));
+  if (!listing) add("List the pieces, then give any hair, hat, cape or sleeve its role.", "Go to Parts", () => go("parts"));
+  if (!manifest.face) add("Mark the eyes and mouth. Without them the avatar has only a basic blink and mouth: no face tracking, and the eyes don't move.", "Go to Face", () => go("face"));
+  const failed = status.steps.filter((s) => s.runs && s.status === "failed");
+  const pending = status.steps.filter((s) => s.runs && !["done", "failed"].includes(s.status));
+  const built = status.steps.some((s) => s.step !== "survey" && ["done", "stale", "failed"].includes(s.status));
+  if (!built) add("Build the avatar: 10–20 minutes, one step after another.", "Build everything", () => job("run", {}));
+  else if (pending.length) {
+    const first = pending[0];
+    add(`${pending.length} step${pending.length > 1 ? "s" : ""} to (re)build, from “${first.step.replaceAll("_", " ")}”${first.status === "stale" ? ": something before it changed" : ""}.`,
+      `Run from ${first.step.replaceAll("_", " ")}`, () => job("run", { from: first.step }));
+  }
+  for (const f of failed) add(`“${f.step.replaceAll("_", " ")}” failed and the avatar was built without it: ${plain(f.step, f.reason)}`,
+    "Try it again", () => job("run", { from: f.step }), "failed");
+  for (const [page, text] of status.verdict?.issues || []) if (page !== "build") add(text, `Go to ${page[0].toUpperCase() + page.slice(1)}`, () => go(page), "failed");
+  for (const [page, text] of status.verdict?.looks || []) if (page !== "face" || manifest.face) add(text, `Go to ${page[0].toUpperCase() + page.slice(1)}`, () => go(page));
+  if (status.verdict?.ready) add("Load the .vrm in Warudo and try it pose by pose; note what you see on the Review page.", "Go to Review", () => go("review"), "done");
+  $("todo").innerHTML = items.length ? items.map((it, i) => `<div class="todo"><span class="${it.kind}">• ${esc(it.text)}</span>
+    <button class="act alt" data-todo="${i}">${esc(it.label)}</button></div>`).join("") : `<p class="done">Nothing left.</p>`;
+  $("todo").querySelectorAll("[data-todo]").forEach((b) => b.onclick = items[+b.dataset.todo].act);
+}
+$("run-all").onclick = () => job("run", {});
+$("run-from").onclick = () => job("run", { from: selectedStep });
+$("run-only").onclick = () => job("run", { only: selectedStep });
+
+let polling = false;
+async function job(route, body) {
+  try { await call(route, body); } catch (e) { $("events").textContent += `\n${e.message}`; return; }
+  $("events").textContent = "";
+  if (!polling) poll(0);
+}
+async function poll(since) {
+  polling = true;
+  // not call(): a failed job's report has an "error" field, which call() throws on, and the poll
+  // then stopped with the page stuck on "working" and the error never shown
+  const state = await (await fetch(`/api/events?since=${since}`)).json();
+  for (const e of state.events) $("events").textContent += `${e.step} ${e.status}${e.seconds ? ` (${e.seconds} s)` : ""}${e.reason ? ": " + e.reason : ""}\n`;
+  $("busy").textContent = state.running ? `working: ${state.running}` : "idle";
+  if (state.running) { setTimeout(() => poll(state.next), 1500); return; }
+  polling = false;
+  if (state.error) {
+    $("events").textContent += `\n${state.error}`;
+    for (const id of ["pieces-msg", "render-msg", "movement-msg", "patch-msg"]) say(id, state.error, true);
+  }
+  if (state.result?.urls) $("renders").innerHTML = state.result.urls.filter(Boolean).map((u) => `<img src="${u}?t=${Date.now()}" alt="render">`).join("");
+  if (manifestPath) await openProject(manifestPath);
+}
+
+// ---------- review and help
+$("render").onclick = () => job("render", { pose: $("pose").value });
+async function lastVrmUrl() {
+  const vrm = [...(status?.steps || [])].reverse().find((s) => s.vrm && s.status === "done");
+  return vrm ? (await call("url", { path: vrm.vrm })).url : null;
+}
+$("move-viewer-open").onclick = async () => {
+  const url = await lastVrmUrl();
+  if (!url) return say("move-viewer-msg", "no finished .vrm yet: build first", true);
+  $("move-viewer").hidden = false; $("move-viewer").src = `/viewer/index.html?model=${encodeURIComponent(url)}`;
+};
+$("viewer-open").onclick = async () => {
+  const vrm = [...(status?.steps || [])].reverse().find((s) => s.vrm && ["done"].includes(s.status));
+  if (!vrm) return say("render-msg", "no finished .vrm yet", true);
+  const { url } = await call("url", { path: vrm.vrm });
+  $("viewer").hidden = false; $("viewer").src = `/viewer/index.html?model=${encodeURIComponent(url)}`;
+  $("face-test").hidden = false;
+};
+// Warudo feedback: a note and screenshots per build, listed newest first
+async function renderFeedback() {
+  if (!manifestPath) { $("fb-list").innerHTML = ""; return; }
+  const { feedback } = await call("feedback_list");
+  $("fb-list").innerHTML = feedback.map((f) => `<div style="margin:8px 0;border-top:1px solid var(--line,#333);padding-top:6px">
+    <span class="msg" style="margin:0">${esc(f.when.replace("T", " "))} · ${esc(f.vrm.split(/[\\/]/).slice(-2).join("/") || "no .vrm yet")}</span>
+    <p style="margin:2px 0;white-space:pre-wrap">${esc(f.note)}</p>
+    ${f.urls.filter(Boolean).map((u) => `<a href="${u}" target="_blank"><img src="${u}" style="height:90px;margin:2px;border-radius:4px"></a>`).join("")}</div>`).join("");
+}
+$("fb-save").onclick = async () => {
+  const read = (file) => new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = fail; r.readAsDataURL(file); });
+  try {
+    const images = await Promise.all([...$("fb-shots").files].map(read));
+    await call("feedback", { note: $("fb-note").value, images });
+    $("fb-note").value = ""; $("fb-shots").value = ""; say("fb-msg", "saved");
+    renderFeedback();
+  } catch (e) { say("fb-msg", e.message, true); }
+};
+
+// A blink as trackers send it: shut and open in about 0.15 s every few seconds, which is why a
+// partial squeeze reads as a blink. Talking and looking cycle the mouth and gaze presets.
+let faceTest = null;
+function expression(name, value) {
+  const slider = $("viewer").contentDocument?.querySelector(`input[data-expression="${name}"]`);
+  if (!slider) return false;
+  slider.value = value; slider.dispatchEvent(new Event("input"));
+  return true;
+}
+const FACE = {
+  blink: (t) => ({ blink: Math.max(0, 1 - Math.abs((t % 3) - 0.15) / 0.075) }),
+  talk: (t) => ({ aa: Math.max(0, Math.sin(t * 9)) * 0.8, oh: Math.max(0, Math.sin(t * 9 + 2)) * 0.5 }),
+  look: (t) => { const k = ["lookLeft", "lookUp", "lookRight", "lookDown"][Math.floor(t / 1.2) % 4]; return { lookLeft: 0, lookRight: 0, lookUp: 0, lookDown: 0, [k]: 1 }; },
+};
+document.querySelectorAll("[data-face]").forEach((b) => b.onclick = () => {
+  clearInterval(faceTest);
+  for (const name of ["blink", "aa", "oh", "lookLeft", "lookRight", "lookUp", "lookDown"]) expression(name, 0);
+  faceTest = null; say("face-test-msg", "");
+  if (b.dataset.face === "stop") return;
+  // a timer, not animation frames: those stop while the window is behind another
+  const start = performance.now(), drive = FACE[b.dataset.face];
+  const step = () => {
+    const missing = Object.entries(drive((performance.now() - start) / 1000)).filter(([n, v]) => !expression(n, v)).map(([n]) => n);
+    if (missing.length) say("face-test-msg", `this file has no ${missing.join(", ")}`, true);
+  };
+  step();
+  faceTest = setInterval(step, 20);
+});
+$("bundle").onclick = async () => {
+  try {
+    const made = await call("bundle", { note: $("note").value });
+    $("bundle-out").hidden = false;
+    $("bundle-out").textContent = `Gathered in ${made.bundle}\n\nIn Claude Code, in this repository, say:\n\n` +
+      `Read docs/agent/app.md, then look at the problem bundle in ${made.bundle} and fix it with python -m app.`;
+  } catch (e) { $("bundle-out").hidden = false; $("bundle-out").textContent = e.message; }
+};
+
+showExamples();
+go(location.hash.slice(1) || "model");
+addEventListener("hashchange", () => go(location.hash.slice(1) || "model"));
+loadProjects().catch((e) => say("create-msg", e.message, true));
+</script>
+</body>
+</html>

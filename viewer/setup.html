@@ -9,6 +9,8 @@
   body { display: grid; grid-template-columns: 1fr 300px; }
   #stage { position: relative; min-width: 0; overflow: hidden; cursor: crosshair; }
   #stage canvas { display: block; width: 100%; height: 100%; }
+  [hidden] { display: none !important; }
+  .side { position: absolute; top: 8px; padding: 2px 8px; border-radius: 4px; background: rgba(0,0,0,.55); color: #fff; font-size: 12px; pointer-events: none; }
   #hint { position: absolute; inset: 0; display: grid; place-items: center; color: #8a8f9c; pointer-events: none; text-align: center; padding: 16px; }
   aside { overflow-y: auto; padding: 12px 14px; background: #2a2d34; }
   h2 { font-size: 13px; font-weight: 600; margin: 16px 0 6px; color: #b4b9c6; }
@@ -25,12 +27,13 @@
 <body>
 <div id="stage">
   <canvas id="canvas"></canvas>
+  <div class="side" style="left:8px">◀ character's RIGHT side</div><div class="side" style="right:8px">character's LEFT side ▶</div>
   <div id="hint">Drop the front face image here, or open with ?image=path/to/face.png</div>
 </div>
 <aside>
   <input type="file" id="file" accept="image/*">
   <h2>Points</h2>
-  <p class="tip">Click to place the highlighted point. Drag any point to move it. Scroll to zoom, right-drag to pan. "Right eye" is the character's right, on the left of the image.</p>
+  <p class="tip">Click to place the highlighted point. Drag any point to move it. Scroll to zoom, right-drag to pan. Left and right always mean the <b>character's</b> own sides, as labelled on the image: the character faces you, so their right is on your left.</p>
   <ol id="steps"></ol>
   <h2>File</h2>
   <button id="undo">Undo last point</button>
@@ -45,12 +48,13 @@
 // lashes meet the white, not the lash tips). Mouth: the corners and the middle of the lip line
 // above and below the opening. Curves through inner/top/outer and inner/bottom/outer are drawn.
 const FEATURES = [
-  ["right_eye", "Right eye", ["inner", "outer", "top", "bottom"], "#4ad7ff"],
-  ["left_eye", "Left eye", ["inner", "outer", "top", "bottom"], "#7dff6b"],
+  ["right_eye", "Right eye (image left)", ["inner", "outer", "top", "bottom"], "#4ad7ff"],
+  ["left_eye", "Left eye (image right)", ["inner", "outer", "top", "bottom"], "#7dff6b"],
   ["mouth", "Mouth", ["left", "right", "top", "bottom"], "#ff6bb5"],
 ];
-const LABELS = { inner: "inner corner", outer: "outer corner", top: "top of opening", bottom: "bottom of opening",
-                 left: "left corner (image left)", right: "right corner (image right)" };
+// the mouth's "left"/"right" keys are image sides (face.json keeps them so); named here by the character's
+const LABELS = { inner: "inner corner (nearer the nose)", outer: "outer corner", top: "top of opening", bottom: "bottom of opening",
+                 left: "right corner (image left)", right: "left corner (image right)" };
 const STEPS = FEATURES.flatMap(([key, title, names, color]) => names.map((name) => ({ key, title, name, color })));
 
 const canvas = document.getElementById("canvas");
@@ -69,7 +73,8 @@ function fit() {
   const r = stage.getBoundingClientRect();
   canvas.width = r.width * devicePixelRatio;
   canvas.height = r.height * devicePixelRatio;
-  if (image && !view.fitted) {
+  // not while hidden: inside the app the page loads on a hidden tab, and a fit at size 0 stuck at scale 0
+  if (image && !view.fitted && canvas.width > 0 && canvas.height > 0) {
     view.scale = Math.min(canvas.width / image.width, canvas.height / image.height);
     view.x = (canvas.width - image.width * view.scale) / 2;
     view.y = (canvas.height - image.height * view.scale) / 2;
@@ -148,6 +153,7 @@ function refresh() {
   }
   document.getElementById("save").disabled = !!next;
   document.getElementById("result").textContent = Object.keys(points).length ? JSON.stringify(result(), null, 1) : "Nothing placed yet";
+  if (embedded && image) parent.postMessage({ type: "face-points-draft", data: result(), complete: !next }, location.origin);
   draw();
 }
 
@@ -235,6 +241,7 @@ document.getElementById("undo").onclick = () => {
   if (placed.length) { delete points[id(placed[placed.length - 1])]; refresh(); }
 };
 document.getElementById("save").onclick = () => {
+  if (embedded) { parent.postMessage({ type: "face-points-save", data: result() }, location.origin); return; }
   const blob = new Blob([JSON.stringify(result(), null, 2)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -245,12 +252,27 @@ const loader = document.getElementById("load");
 document.getElementById("open").onclick = () => loader.click();
 loader.addEventListener("change", (e) => e.target.files[0] && readJson(e.target.files[0]));
 function readJson(file) {
-  file.text().then((text) => {
-    const data = JSON.parse(text);
-    points = {};
-    for (const [key, , names] of FEATURES) for (const n of names) if (data[key]?.[n]) points[`${key}.${n}`] = data[key][n];
-    refresh();
+  file.text().then((text) => usePoints(JSON.parse(text)));
+}
+function usePoints(data) {
+  points = {};
+  for (const [key, , names] of FEATURES) for (const n of names) if (data?.[key]?.[n]) points[`${key}.${n}`] = data[key][n];
+  refresh();
+}
+
+// Inside the app (?embed=1) the page gets its image and saved points from the app and hands
+// the points back, live and on Save, instead of loading and downloading files.
+const embedded = new URLSearchParams(location.search).has("embed");
+if (embedded) {
+  // the app saves the points (automatically once all twelve are placed, and with its Save button)
+  for (const id of ["file", "open", "save"]) document.getElementById(id).hidden = true;
+  window.addEventListener("message", (e) => {
+    if (e.origin !== location.origin || e.data?.type !== "face-image") return;
+    const img = new Image();
+    img.onload = () => { image = img; imageName = e.data.name || "face_patch.png"; view.fitted = false; hint.hidden = true; fit(); usePoints(e.data.points); };
+    img.src = e.data.src;
   });
+  parent.postMessage({ type: "face-marker-ready" }, location.origin);
 }
 
 window.addEventListener("resize", fit);

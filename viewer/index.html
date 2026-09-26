@@ -37,6 +37,7 @@
   <h2>Motion</h2>
   <button id="swing" aria-pressed="false">Swing head and body (spring bones)</button>
   <button id="raise-arm" aria-pressed="false">Raise left arm</button>
+  <button id="look-around" aria-pressed="false">Look around (eyes)</button>
   <h2>Expressions</h2>
   <div id="expressions"></div>
   <h2>Summary</h2>
@@ -73,7 +74,7 @@ loader.register((parser) => new VRMLoaderPlugin(parser));
 
 let vrm = null;
 let modelLabel = "";
-const motion = { swing: false, raiseArm: false };
+const motion = { swing: false, raiseArm: false, look: false };
 const clock = new THREE.Clock();
 
 function resize() {
@@ -176,6 +177,7 @@ document.getElementById("focus-face").addEventListener("click", () => vrm && foc
 document.getElementById("focus-body").addEventListener("click", () => vrm && focusBody());
 document.getElementById("swing").addEventListener("click", (event) => toggle(event.currentTarget, "swing"));
 document.getElementById("raise-arm").addEventListener("click", (event) => toggle(event.currentTarget, "raiseArm"));
+document.getElementById("look-around").addEventListener("click", (event) => toggle(event.currentTarget, "look"));
 
 function showError(error) {
   console.error(error);
@@ -206,6 +208,11 @@ function animate() {
     vrm.scene.position.x = motion.swing ? Math.sin(time * 4) * 0.15 : 0;
     const upperArm = vrm.humanoid.getNormalizedBoneNode("leftUpperArm");
     if (upperArm) upperArm.rotation.z = motion.raiseArm ? 1.0 : 0;
+    if (vrm.lookAt) {
+      // sweeps the whole look-at range (the VRM's range maps reach full at 90 degrees)
+      vrm.lookAt.yaw = motion.look ? Math.sin(time * 1.3) * 90 : 0;
+      vrm.lookAt.pitch = motion.look ? Math.sin(time * 1.9) * 90 : 0;
+    }
     vrm.update(delta);
   }
   controls.update();
@@ -214,7 +221,7 @@ function animate() {
 animate();
 
 // For inspection from the browser console.
-window.viewer = { get vrm() { return vrm; }, summarize, focusFace, focusBody, motion };
+window.viewer = { get vrm() { return vrm; }, summarize, focusFace, focusBody, motion, camera, controls, frame, THREE };
 </script>
 </body>
 </html>
