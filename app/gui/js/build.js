@@ -1,0 +1,170 @@
+// Build: what's left, the steps with their logs, the verdict, the .vrm, and every earlier run.
+import { $, S, app, call, esc, plain, served, stepName, lastVrm, refreshStatus } from "./core.js";
+import { ask, toast } from "./ui.js";
+import { job } from "./jobs.js";
+import { nextRun } from "./nav.js";
+
+let selectedStep = null;
+
+export function renderSteps() {
+  const body = $("step-rows");
+  renderTodo(); renderVrm();
+  if (!S.status) { body.innerHTML = ""; $("check").innerHTML = ""; $("verdict").innerHTML = ""; $("approved").innerHTML = ""; $("step-detail").hidden = true; return; }
+  body.innerHTML = S.status.steps.map((s) => `<tr data-step="${s.step}" class="${s.step === selectedStep ? "sel" : ""}">
+    <td>${stepName(s.step)}</td><td><span class="chip ${s.runs ? s.status.split(" ")[0] : "off"}">${s.runs ? esc(s.status) : "off"}</span></td>
+    <td>${s.seconds ? s.seconds + " s" : ""}</td><td class="msg">${!s.runs ? esc(s.skip_reason)
+      : s.status === "failed" ? `built without it: ${esc(plain(s.step, s.reason))}` : ""}</td></tr>`).join("");
+  body.querySelectorAll("tr").forEach((tr) => tr.onclick = () => { selectedStep = selectedStep === tr.dataset.step ? null : tr.dataset.step; renderSteps(); });
+  renderDetail();
+  const v = S.status.verdict;
+  const line = (cls) => ([page, text]) => `<li class="${cls}">${esc(text)} <a href="#${page}">${page}</a></li>`;
+  $("verdict").innerHTML = !v ? "" : (v.ready ? `<p class="done">Ready for Warudo${v.looks.length ? ", with a few things worth a look" : ": every check passed"}. Try it pose by pose (Review).</p>` : "")
+    + `<ul class="plain">${v.issues.map(line("failed")).join("")}${v.looks.map(line("warn")).join("")}</ul>`;
+  // the baseline: what the user said was good, and what this build did differently
+  const a = S.status.approved, since = S.status.since_approved;
+  $("approved").innerHTML = (a ? `<p class="msg">Compared with the build you marked good on ${esc(a.when.replace("T", " "))}${a.note ? ` (${esc(a.note)})` : ""}:
+      ${since && !since.worse.length && !since.better.length ? "no change past the noise." : ""}</p>`
+      + `<ul class="plain">${(since?.better || []).map((b) => `<li class="done">better: ${esc(b)}</li>`).join("")}</ul>`
+    : `<p class="msg">No build marked good yet: once one looks right in Warudo, mark it, and later builds are compared with it.</p>`)
+    + (v?.ready || S.status.steps.find((s) => s.step === "vrm_check")?.status === "done"
+      ? `<button class="act alt" id="approve">Mark this build as good</button>` : "");
+  $("approve")?.addEventListener("click", async () => {
+    const note = await ask("Mark this build as good", { text: "What did you check it with? Later builds are compared with this one.", input: true, value: "Warudo: face, arms", ok: "Mark as good" });
+    if (note === null) return;
+    try { await call("approve", { note }); await refreshStatus(); app.renderAll(); toast("Marked as good."); } catch (e) { toast(e.message, "bad"); }
+  });
+  const failed = S.status.check_failed;
+  $("check").innerHTML = (failed == null ? `<p class="msg">not checked yet</p>` : failed.length ? `<ul class="plain">${failed.map((f) => `<li class="failed">${esc(f)}</li>`).join("")}</ul>` : `<p class="done">nothing over the limits</p>`)
+    + spotsHtml(S.status.steps.find((s) => s.step === "check")?.report?.spots);
+}
+
+// One step up close: what it read and made, why it failed, and its log's end.
+async function renderDetail() {
+  const box = $("step-detail"), s = S.status?.steps.find((x) => x.step === selectedStep);
+  box.hidden = !s;
+  if (!s) return;
+  // a failed step's log is named in its reason ("... (see <log>)"), not kept as its own field
+  const log = s.log || String(s.reason || "").match(/see (.+?\.log)\)/)?.[1];
+  const file = (p) => p ? `<code>${esc(String(p).replaceAll("\\", "/").split("/").slice(-2).join("/"))}</code>` : "";
+  box.innerHTML = `<div class="title">${stepName(s.step)} <span class="chip ${s.status.split(" ")[0]}">${esc(s.runs ? s.status : "off")}</span></div>
+    <dl>${s.finished ? `<dt>finished</dt><dd>${esc(s.finished.replace("T", " "))}${s.seconds ? `, ${s.seconds} s` : ""}</dd>` : ""}
+      ${!s.runs ? `<dt>off</dt><dd>${esc(s.skip_reason)}</dd>` : ""}
+      ${s.blend ? `<dt>made</dt><dd>${file(s.blend)}${s.vrm ? `, ${file(s.vrm)}` : ""}</dd>` : s.json ? `<dt>report</dt><dd>${file(s.json)}</dd>` : ""}
+      ${s.reason ? `<dt>why</dt><dd class="failed">${esc(plain(s.step, s.reason))}</dd>` : ""}</dl>
+    <div class="row"><button class="act alt small" data-job id="detail-from" ${s.runs ? "" : "disabled"}>Run from here</button>
+      <button class="act alt small" data-job id="detail-only" ${s.runs ? "" : "disabled"}>Run only this</button>
+      ${log ? `<button class="act alt small" id="detail-reveal">Show log in folder</button>` : ""}</div>
+    ${log ? `<pre id="detail-log">loading the log…</pre>` : ""}`;
+  $("detail-from").onclick = () => job("run", { from: s.step });
+  $("detail-only").onclick = () => job("run", { only: s.step });
+  $("detail-reveal")?.addEventListener("click", () => reveal(log));
+  if (!$("runbar").hidden) box.querySelectorAll("[data-job]").forEach((b) => b.disabled = true);
+  if (!log) return;
+  try {
+    const { url } = await call("url", { path: log });
+    const text = url ? await (await fetch(url)).text() : "";
+    $("detail-log").textContent = text ? text.split(/\r?\n/).slice(-60).join("\n") : "the log is gone";
+    $("detail-log").scrollTop = 1e9;
+  } catch (e) { $("detail-log").textContent = e.message; }
+}
+
+// the rig check's worst stretch and squash, close up: at rest, then in the pose that did it
+function spotsHtml(spots) {
+  if (!spots?.length) return "";
+  return spots.map((s) => `<p class="msg" style="margin:8px 0 2px">Where it ${esc(s.what)} (${esc(s.pose)}), red dots on the edge's ends:</p>
+    <div class="spots">${["face", "side"].flatMap((v) => ["rest", "posed"].map((st) => {
+      const caption = `${v === "face" ? (s.at[1] > 0 ? "back" : "front") : "side"}, ${st === "rest" ? "at rest" : s.pose}`;
+      return `<figure><img src="${served(s.files[`${v}_${st}`])}" alt="${esc(caption)}"><figcaption>${esc(caption)}</figcaption></figure>`;
+    })).join("")}</div>`).join("");
+}
+
+// What to do next, in order, each with the button that does it: the steps table alone left the
+// user reading notes like "no face points, or face tracking off" with no way on.
+function renderTodo() {
+  if (!S.manifest || !S.status) { $("todo").innerHTML = `<p class="help">Open or create a character first (Characters).</p>`; return; }
+  const steps = Object.fromEntries(S.status.steps.map((s) => [s.step, s])), items = [];
+  const add = (text, label, act, kind = "warn", isJob = false) => items.push({ text, label, act, kind, isJob });
+  if (steps.survey?.status !== "done") add("Survey the model: reads how it stands and what it's made of.", "Run survey", () => job("run", { only: "survey" }), "warn", true);
+  if (!S.listing) add("List the pieces, then give any hair, hat, cape or sleeve its role.", "Go to Parts", () => app.go("parts"));
+  if (!S.manifest.face) add("Mark the eyes and mouth. Without them the avatar has only a basic blink and mouth: no face tracking, and the eyes don't move.", "Go to Face", () => app.go("face"));
+  const failed = S.status.steps.filter((s) => s.runs && s.status === "failed");
+  const built = S.status.steps.some((s) => s.step !== "survey" && ["done", "stale", "failed"].includes(s.status));
+  const next = nextRun(S.status);
+  if (!built) add("Build the avatar: 10–20 minutes, one step after another.", "Build everything", () => job("run", {}), "warn", true);
+  else if (next) add(`${next.count} step${next.count > 1 ? "s" : ""} to (re)build, from “${stepName(next.from)}”${next.stale ? ": something before it changed" : ""}.`,
+    `Run from ${stepName(next.from)}`, () => job("run", { from: next.from }), "warn", true);
+  for (const f of failed) add(`“${stepName(f.step)}” failed and the avatar was built without it: ${plain(f.step, f.reason)}`,
+    "Try it again", () => job("run", { from: f.step }), "failed", true);
+  const pageName = (page) => page[0].toUpperCase() + page.slice(1);
+  for (const [page, text] of S.status.verdict?.issues || []) if (page !== "build") add(text, `Go to ${pageName(page)}`, () => app.go(page), "failed");
+  for (const [page, text] of S.status.verdict?.looks || []) if (page !== "face" || S.manifest.face) add(text, `Go to ${pageName(page)}`, () => app.go(page));
+  if (S.status.verdict?.ready) add("Load the .vrm in Warudo and try it pose by pose; note what you see on the Review page.", "Go to Review", () => app.go("review"), "done");
+  $("todo").innerHTML = items.length ? items.map((it, i) => `<div class="todo"><span class="${it.kind}">${esc(it.text)}</span>
+    <button class="act alt small" data-todo="${i}" ${it.isJob ? "data-job" : ""} ${it.isJob && !$("runbar").hidden ? "disabled" : ""}>${esc(it.label)}</button></div>`).join("") : `<p class="done">Nothing left.</p>`;
+  $("todo").querySelectorAll("[data-todo]").forEach((b) => b.onclick = items[+b.dataset.todo].act);
+}
+$("run-all").onclick = () => job("run", {});
+
+// ---------- the .vrm: where it is, for loading into Warudo
+export async function reveal(path) {
+  try { await call("reveal", { path }); } catch (e) { toast(e.message, "bad"); }
+}
+export async function copyPath(path) {
+  try { await navigator.clipboard.writeText(path); }
+  catch {
+    const t = Object.assign(document.createElement("textarea"), { value: path });
+    document.body.append(t); t.select(); document.execCommand("copy"); t.remove();
+  }
+  toast("Path copied: paste it into Warudo's file dialog.", "info");
+}
+function renderVrm() {
+  const vrm = lastVrm();
+  for (const id of ["vrm-show", "vrm-copy", "review-vrm-show", "review-vrm-copy"]) $(id).disabled = !vrm;
+  $("vrm-path").innerHTML = vrm ? `<code>${esc(vrm)}</code>` : "";
+}
+$("vrm-show").onclick = $("review-vrm-show").onclick = () => reveal(lastVrm());
+$("vrm-copy").onclick = $("review-vrm-copy").onclick = () => copyPath(lastVrm());
+
+// ---------- history: every run folder, to open, render or compare
+let ticked = [];
+export async function loadRuns() {
+  S.runs = S.manifestPath ? (await call("runs")).runs : [];
+  ticked = ticked.filter((r) => S.runs.some((x) => x.run === r));
+  renderRuns();
+}
+function renderRuns() {
+  const body = $("run-rows");
+  $("runs-compare").disabled = ticked.length !== 2;
+  if (!S.runs.length) { body.innerHTML = `<tr><td colspan="5" class="msg">No runs yet.</td></tr>`; return; }
+  body.innerHTML = S.runs.map((r) => {
+    const when = r.when ? new Date(r.when).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : r.run;
+    const check = r.failed == null ? `<span class="msg">—</span>` : r.failed.length ? `<span class="warn" title="${esc(r.failed.join("\n"))}">${r.failed.length} over the limits</span>` : `<span class="done">passed</span>`;
+    return `<tr data-run="${esc(r.run)}"><td><input type="checkbox" aria-label="compare" ${ticked.includes(r.run) ? "checked" : ""} ${r.check ? "" : "disabled"}></td>
+      <td>${esc(when)} ${r.approved ? `<span class="chip good">good</span>` : ""}${r.current ? ` <span class="chip info" title="the steps' latest files come from this run">in use</span>` : ""}</td>
+      <td class="msg" title="${esc(r.steps.join(", "))}">${r.steps.length > 3 ? `${esc(stepName(r.steps[0]))} … ${esc(stepName(r.steps.at(-1)))} (${r.steps.length})` : esc(r.steps.map(stepName).join(", "))}</td>
+      <td>${check}</td>
+      <td class="row" style="flex-wrap:nowrap">${r.vrm_url ? `<button class="act alt small" data-view title="open this run's .vrm in the viewer (Review)">View</button>` : ""}
+        <button class="act alt small" data-render data-job title="render this run's last model in the Review page's pose">Render</button>
+        <button class="act alt small" data-folder title="show this run's files">Folder</button></td></tr>`;
+  }).join("");
+  body.querySelectorAll("tr[data-run]").forEach((tr) => {
+    const r = S.runs.find((x) => x.run === tr.dataset.run);
+    tr.querySelector("input").onchange = (e) => {
+      ticked = e.target.checked ? [...ticked, r.run].slice(-2) : ticked.filter((x) => x !== r.run);
+      renderRuns();
+    };
+    tr.querySelector("[data-view]")?.addEventListener("click", () => { app.go("review"); app.openViewer(r.vrm_url, `run of ${r.when?.replace("T", " ") || r.run}`); });
+    tr.querySelector("[data-render]").onclick = () => { app.go("review"); job("render", { pose: $("pose").value, run: r.run }); };
+    tr.querySelector("[data-folder]").onclick = () => reveal(r.folder);
+    if (!$("runbar").hidden) tr.querySelector("[data-render]").disabled = true;
+  });
+}
+$("runs-compare").onclick = async () => {
+  // older first: the report says what got better or worse since
+  const [before, after] = ticked.map((t) => S.runs.find((r) => r.run === t)).sort((a, b) => a.run.localeCompare(b.run));
+  try {
+    const out = await call("compare", { before: before.check, after: after.check });
+    $("runs-out").hidden = false;
+    $("runs-out").textContent = `${before.run} → ${after.run}${out.worse ? "  (something got worse)" : ""}\n\n${out.report}`;
+  } catch (e) { toast(e.message, "bad"); }
+};
