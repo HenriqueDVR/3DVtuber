@@ -30,8 +30,28 @@ def material_base_color_image(material):
         if node.type != "BSDF_PRINCIPLED":
             continue
         links = node.inputs["Base Color"].links
-        if links and links[0].from_node.type == "TEX_IMAGE" and links[0].from_node.image:
-            return links[0].from_node.image
+        if links:
+            image = _upstream_image(links[0].from_node)
+            if image is not None:
+                return image
+    return None
+
+
+def _upstream_image(node, depth=4):
+    """The image texture feeding `node`, through a few nodes in between.
+
+    A baseColorFactor other than 1 (Tripo writes 0.8 on some models) imports as a Multiply node
+    between the texture and Base Color; the texture was found only when wired straight in.
+    """
+    if node.type == "TEX_IMAGE":
+        return node.image
+    if depth == 0:
+        return None
+    for socket in node.inputs:
+        for link in socket.links:
+            image = _upstream_image(link.from_node, depth - 1)
+            if image is not None:
+                return image
     return None
 
 

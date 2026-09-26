@@ -97,6 +97,33 @@ class SkinnedSyntheticCharacter(unittest.TestCase):
         self.assertLess(moved[self.near(self.truth["joints"]["left_hand"])].max(), 0.002)
 
 
+class SkinnedTPoseCharacter(unittest.TestCase):
+    """Arm rules written for hanging arms, applied to arms held out."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mesh, cls.truth = load_fixture("synthetic_character_tpose")
+        joints = landmarks.detect_body(meshdata.world_vertices(cls.mesh), meshdata.triangles(cls.mesh.data))
+        cls.armature = rig.build_armature(joints)
+        rig.skin(cls.mesh, cls.armature)
+        cls.rest = meshdata.world_vertices(cls.mesh)
+
+    def test_forearms_carry_no_torso_weight(self):
+        # _keep_arms_off_chest read every forearm vertex of a level arm as beside it, and the arm
+        # tore 36 cm from the chest when it came down (a T-pose copy of model A)
+        torso = {self.mesh.vertex_groups[rig.BONE_NAMES[k]].index for k in rig.TORSO_KEYS
+                 if rig.BONE_NAMES[k] in self.mesh.vertex_groups}
+        for side in ("left", "right"):
+            with self.subTest(side=side):
+                elbow = np.asarray(self.truth["joints"][f"{side}_lower_arm"])
+                wrist = np.asarray(self.truth["joints"][f"{side}_hand"])
+                forearm = np.linalg.norm(self.rest - (elbow + wrist) / 2, axis=1) < 0.05
+                weight = [sum(g.weight for g in self.mesh.data.vertices[i].groups if g.group in torso)
+                          for i in np.flatnonzero(forearm)]
+                self.assertGreater(len(weight), 10)
+                self.assertLess(max(weight), 0.05)
+
+
 class FillUnweighted(unittest.TestCase):
     def setUp(self):
         verts = [

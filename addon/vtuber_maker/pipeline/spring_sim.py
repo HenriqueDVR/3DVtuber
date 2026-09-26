@@ -26,6 +26,7 @@ class Chain:
         hit_radius,
         gravity_dir=(0.0, 0.0, -1.0),
         names=(),
+        tip_stiffness=None,
     ):
         self.points = np.asarray(points, dtype=float)
         self.parent = parent
@@ -35,6 +36,7 @@ class Chain:
         self.hit_radius = hit_radius
         self.gravity_dir = np.asarray(gravity_dir, dtype=float)
         self.names = list(names)
+        self.tip_stiffness = stiffness if tip_stiffness is None else tip_stiffness
 
 
 class Collider:

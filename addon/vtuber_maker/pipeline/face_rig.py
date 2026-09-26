@@ -1,4 +1,4 @@
-"""Blink and mouth shape keys for faces that are only painted onto the texture.
+﻿"""Blink and mouth shape keys for faces that are only painted onto the texture.
 
 Blink squashes the upper part of each painted eye down onto its lower lash
 line, so the iris compresses into a closed-eye line while the skin above slides
@@ -15,13 +15,16 @@ import numpy as np
 from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
 
-from . import texture_space
+from . import face_points, texture_space
 from .face import HAIR_DISTANCE
 
 MOUTH_MATERIAL = "MouthInside"
 # The mouth-inside patch of a modelled mouth is painted: upper teeth, a dark throat, a tongue.
 MOUTH_PATCH_MATERIAL = "MouthInsidePainted"
 MOUTH_TEXTURE_SIZE = 256
+# With a mouth colour, the throat, gums and tongue keep its hue at these (saturation, value)
+# multipliers, so the inside reads as a deeper shade of the skin rather than a grey slot.
+MOUTH_TINT_SHADES = ((1.6, 0.22), (1.5, 0.4), (1.3, 0.6))
 # How far the cavity's front sits behind the lips, so an open mouth reads as depth.
 CAVITY_RECESS = 0.006
 SIDE_ATTRIBUTE = "mouth_side"
@@ -72,22 +75,55 @@ TEXTURED_LID_MATERIAL = "EyelidTextured"
 
 # A modelled mouth opens by unfolding a dark mouth-inside patch over its slit, flat at rest.
 MOUTH_COVER_PROPERTY = "vtuber_maker_mouth_cover"
+# Painted eyes' boxes (see store_painted_eyes), grown this much in height to take in the lid line.
+PAINTED_EYES_PROPERTY = "vtuber_maker_painted_eyes"
+PAINTED_EYE_GROW = 1.2
 MOUTH_GRID_ATTRIBUTE = "face_rig_mouth_grid"  # (u, v, 1) on mouth patch vertices, zeros elsewhere
 MOUTH_COLUMNS, MOUTH_ROWS = 10, 8
-# Vowel -> (opening height, patch width), as fractions of the mouth's width.
+# Vowel -> (half width, half height, centre below the mouth line) of the opening, as fractions
+# of the mouth's width. Anime mouths open as rounded shapes hanging from the mouth line: a
+# fairly flat top with round corners (superellipse exponent MOUTH_TOP_ROUNDNESS) and a round
+# bottom (MOUTH_BOTTOM_ROUNDNESS).
 MOUTH_SHAPES = {
-    "aa": (0.75, 1.0),
-    "ih": (0.28, 1.1),
-    "ou": (0.45, 0.6),
-    "ee": (0.33, 1.15),
-    "oh": (0.6, 0.78),
+    "aa": (0.42, 0.36, 0.2),
+    "ih": (0.45, 0.13, 0.05),
+    "ou": (0.2, 0.22, 0.08),
+    "ee": (0.5, 0.18, 0.08),
+    "oh": (0.3, 0.36, 0.15),
 }
-# The upper lip opens less than the lower one drops.
-MOUTH_UPPER_SHARE = 0.3
+# A free mouth (its own shape on the face, the painted one painted out) rests as this shape:
+# a short line. Its texture's outline starts this far out from the middle (0..1).
+MOUTH_REST_SHAPE = (0.3, 0.035, 0.0)
+FREE_MOUTH_OUTLINE = 0.8
+MOUTH_TOP_ROUNDNESS = 3.5
+MOUTH_BOTTOM_ROUNDNESS = 2.2
 # How far in front of the lips the patch sits.
 MOUTH_COVER_GAP = 0.0004
+# How far in front of the face an open mouth lies, following the face's curve.
+MOUTH_SURFACE_GAP = 0.0008
 # Modelled mouths barely move their lips: the mouth-inside patch shows the opening.
 MODELLED_MOUTH_OPENING = 0.45
+# reshape_mouth: an open mouth hangs from the mouth line, its top MOUTH_TOP_LIFT mouth widths above
+# it (model A's full "aa" reached 0.11 widths up and read as sliding toward the nose), and the closed
+# patch folds to a line MOUTH_REST_SHARE of the widest vowel, so the small openings a tracker sends
+# while talking open from the middle instead of as a slit the whole mouth wide.
+MOUTH_TOP_LIFT = 0.02
+MOUTH_REST_SHARE = 0.25
+# use_free_mouth paints out (half width, above, below) the mouth line, in mouth widths, grown by
+# face_points.ERASE_GROW: model A's drawn lips have strokes past the corners and a pink lower lip under them.
+FREE_ERASE = (0.65, 0.1, 0.55)
+
+# The squeeze blink for painted eyes (scripts/add_face_tracking.py, eyes.py): the lid comes down
+# and the bottom comes up, meeting at MEET_LINE of the eye's height (0 its bottom, 1 its top), only
+# PAINTED_BLINK of the way by default, as a flattened painted eye looks odd. The painted lid line
+# runs a little past the eye's top: LID_STROKE of the eye's height above it moves with the lid,
+# then the skin fades out over LID_FADE. Across, the eye closes fully within EYE_WIDTH[0] half
+# widths of its middle and not at all past EYE_WIDTH[1].
+MEET_LINE = 0.6
+PAINTED_BLINK = 0.7
+LID_STROKE = 0.6
+LID_FADE = 0.35
+EYE_WIDTH = (1.15, 1.6)
 
 # Vowel -> (how far the lower lip drops, as a fraction of mouth width; horizontal squeeze)
 VOWELS = {
@@ -133,7 +169,7 @@ def cut_mouth(obj, features):
         elif above and not any(above):
             vert[sides] = LOWER_LIP
 
-    material = _mouth_material()
+    material = _mouth_material(features.get("mouth_color"))
     if material.name not in mesh.materials:
         mesh.materials.append(material)
     slot = list(mesh.materials).index(material)
@@ -267,7 +303,7 @@ def _add_mouth_cover(obj, features, rest, parts):
     front = float(rest[lips, 1].min()) if lips.any() else mouth.y
     obj[MOUTH_COVER_PROPERTY] = {"x": mouth.x, "y": front - MOUTH_COVER_GAP, "z": mouth.z, "width": width}
 
-    material = _mouth_patch_material()
+    material = _mouth_patch_material(features.get("mouth_color"), features.get("free_mouth", False))
     if material.name not in mesh.materials:
         mesh.materials.append(material)
     slot = mesh.materials.find(material.name)
@@ -306,14 +342,200 @@ def _add_mouth_cover(obj, features, rest, parts):
 
 
 def _mouth_shape(grid, cover, vowel):
-    """Mouth patch vertex positions for one vowel (grid holds (u, v, 1) per patch vertex)."""
-    height, width_share = MOUTH_SHAPES[vowel]
-    width = cover["width"]
+    """Mouth patch vertex positions for one vowel (grid holds (u, v, 1) per patch vertex).
+
+    The square grid maps onto the opening radially: its border traces a superellipse, flatter
+    at the top than the bottom, so the outline is round all the way round with no points.
+    """
+    shape = MOUTH_SHAPES[vowel] if isinstance(vowel, str) else vowel
+    half_width, half_height, drop = (share * cover["width"] for share in shape)
     u, v = grid[:, 0], grid[:, 1]
-    half_width = 0.5 * width * width_share
-    x = cover["x"] + half_width * u * np.sqrt(np.clip(1.0 - v * v, 0.0, 1.0))
-    z = cover["z"] + height * width * np.where(v > 0, MOUTH_UPPER_SHARE * v, v) / 2
+    radius = np.maximum(np.abs(u), np.abs(v))
+    angle = np.arctan2(v, u)
+    roundness = np.where(v > 0, MOUTH_TOP_ROUNDNESS, MOUTH_BOTTOM_ROUNDNESS)
+    cos, sin = np.cos(angle), np.sin(angle)
+    x = cover["x"] + radius * half_width * np.sign(cos) * np.abs(cos) ** (2.0 / roundness)
+    z = cover["z"] - drop + radius * half_height * np.sign(sin) * np.abs(sin) ** (2.0 / roundness)
     return np.stack([x, np.full(len(u), cover["y"]), z], axis=1)
+
+
+def reshape_mouth(obj, rest_share=MOUTH_REST_SHARE, lift=MOUTH_TOP_LIFT, scale=1.0, rest_height=0.0):
+    """Hang the mouth patch's vowel keys from the mouth line, `scale` their size, and remake its closed shape.
+
+    Assumes a finished mesh with the mouth patch (MOUTH_GRID_ATTRIBUTE), its vowel keys and the
+    cover property. Only patch vertices move. Each vowel is scaled about the top middle of its
+    opening, which is put `lift` mouth widths above the line. The closed patch is the widest vowel
+    squeezed to `rest_share` of its width and `rest_height` mouth widths of height: a line with no
+    area (0) where the face still has its painted mouth, or the drawn closed mouth of a free one
+    (see use_free_mouth). Every other key keeps its patch delta, moved onto the new closed shape:
+    keys built from the vowels (add_face_tracking.py's mouth shapes) must be rebuilt afterwards.
+    Returns {"rest_size": (width, height) m, "tops": {vowel: (old, new) top above the line, m},
+    "sizes": {vowel: (width, height) m}}.
+    """
+    mesh = obj.data
+    keys = mesh.shape_keys.key_blocks
+    basis_key = mesh.shape_keys.reference_key
+    grid = np.empty(len(mesh.vertices) * 3)
+    mesh.attributes[MOUTH_GRID_ATTRIBUTE].data.foreach_get("vector", grid)
+    patch = grid.reshape(-1, 3)[:, 2] > 0.5
+    cover = obj[MOUTH_COVER_PROPERTY].to_dict()
+    top = cover["z"] + lift * cover["width"]
+
+    def co(key):
+        values = np.empty(len(key.data) * 3)
+        key.data.foreach_get("co", values)
+        return values.reshape(-1, 3)
+
+    def store(key, values):
+        key.data.foreach_set("co", values.astype(np.float32).ravel())
+
+    def cell(shape):
+        return np.ptp(shape[:, 0]) / MOUTH_COLUMNS, max(np.ptp(shape[:, 2]) / MOUTH_ROWS, 1e-4)
+
+    basis = co(basis_key)
+    polygons = [p.vertices[:] for p in mesh.polygons if not patch[list(p.vertices)].all()]
+
+    def surface(points):
+        return BVHTree.FromPolygons([Vector(v) for v in points], polygons)
+
+    vowels = [name for name in VOWELS if name in keys]
+    tops, shapes, moved_keys = {}, {}, {}
+    for name in vowels:
+        moved = co(keys[name])
+        shape = moved[patch]
+        tops[name] = (float(shape[:, 2].max() - cover["z"]), float(top - cover["z"]))
+        shape[:, 2] += top - shape[:, 2].max()
+        shape[:, 0] = cover["x"] + scale * (shape[:, 0] - cover["x"])
+        shape[:, 2] = top + scale * (shape[:, 2] - top)
+        # in front of the face as this key moves it: the vowels drop the lower lip too, and a patch
+        # laid on the still face sank behind it; model A's dropped lip bulged through between vertices
+        moved[patch] = _in_front_of_face(shape, surface(moved), cell(shape))
+        shapes[name], moved_keys[name] = moved[patch], moved
+    widest = shapes[max(vowels, key=lambda name: np.ptp(shapes[name][:, 0]))].copy()
+    rest = widest.copy()
+    rest[:, 0] = cover["x"] + rest_share * (rest[:, 0] - cover["x"])
+    rest[:, 2] = top + (rest[:, 2] - top) * rest_height * cover["width"] / np.ptp(widest[:, 2])
+    rest = _in_front_of_face(rest, surface(basis), cell(rest))
+
+    for key in keys:
+        if key == basis_key:
+            continue
+        if key.name in moved_keys:
+            store(key, moved_keys[key.name])
+            continue
+        moved = co(key)
+        moved[patch] = rest + moved[patch] - basis[patch]
+        store(key, moved)
+    basis[patch] = rest
+    store(basis_key, basis)
+    mesh.vertices.foreach_set("co", basis.astype(np.float32).ravel())
+    mesh.update()
+    return {"rest_size": (float(np.ptp(rest[:, 0])), float(np.ptp(rest[:, 2]))), "tops": tops,
+            "sizes": {name: (float(np.ptp(shape[:, 0])), float(np.ptp(shape[:, 2]))) for name, shape in shapes.items()}}
+
+
+def use_free_mouth(obj):
+    """Paint the drawn mouth out of the face patch and give the mouth patch the free mouth's texture.
+
+    For a finished mesh built with the painted mouth kept: the drawn lips stayed on the face while
+    the patch opened over them, so talking looked like a second mouth appearing. After this the
+    patch is the mouth, closed too (reshape_mouth with a rest_height draws the closed line). What
+    is painted out is found from the patch's own line (the cover), FREE_ERASE round it: model A's
+    face.json marks its mouth on the nose, and painting those out erased the nose.
+    What else shows from the front there (model A's original mouth piece) takes the face patch too.
+    Returns {"box": painted (left, top, right, bottom) in face patch pixels, y down, or None,
+    "polygons": how many polygons took the face patch}.
+    """
+    image = face_points._patch_image(obj)
+    box, moved = None, 0
+    if image is not None:
+        cover = obj[MOUTH_COVER_PROPERTY]
+        centre = obj.matrix_world @ Vector((cover["x"], cover["y"], cover["z"]))
+        width = cover["width"] * _scale(obj)
+        au, av = face_points._patch_mapping(obj)
+        size = image.size
+
+        def pixel(x, z):
+            return [float((au[0] * x + au[1]) * size[0]), float((1.0 - (av[0] * z + av[1])) * size[1])]
+
+        half, above, below = (share * width for share in FREE_ERASE)
+        mouth = {"left": pixel(centre.x - half, centre.z), "right": pixel(centre.x + half, centre.z),
+                 "top": pixel(centre.x, centre.z + above), "bottom": pixel(centre.x, centre.z - below)}
+        face_points.erase_mouth(obj, {"size": list(size), "mouth": mouth})
+        box = (mouth["left"][0], mouth["top"][1], mouth["right"][0], mouth["bottom"][1])
+        grow = face_points.ERASE_GROW
+        moved = _front_onto_patch(obj, (centre.x - grow * half, centre.z - grow * below, centre.x + grow * half, centre.z + grow * above),
+                          au, av)
+    material = obj.data.materials[obj.data.materials.find(MOUTH_PATCH_MATERIAL)]
+    inside = _mouth_inside_image(None, free=True)
+    for node in material.node_tree.nodes:
+        if node.type == "TEX_IMAGE":
+            node.image = inside
+    extension = getattr(material, "vrm_addon_extension", None)
+    if extension is not None and extension.mtoon1.enabled:
+        extension.mtoon1.pbr_metallic_roughness.base_color_texture.index.source = inside
+        extension.mtoon1.extensions.vrmc_materials_mtoon.shade_multiply_texture.index.source = inside
+    return {"box": box, "polygons": moved}
+
+
+def _front_onto_patch(obj, box, au, av, step=0.0002):
+    """Give what shows from the front in world box (x0, z0, x1, z1) the face patch, mapped from the front.
+
+    Model A's original mouth is a separate piece in the model's own texture, its drawn lips showing at
+    the corners in front of the face patch once the patch's mouth was painted out. The mouth patch
+    itself is left alone. Returns how many polygons changed.
+    """
+    mesh = obj.data
+    matrix = np.array(obj.matrix_world)
+    local = np.empty(len(mesh.vertices) * 3)
+    mesh.vertices.foreach_get("co", local)
+    verts = local.reshape(-1, 3) @ matrix[:3, :3].T + matrix[:3, 3]
+    mesh.calc_loop_triangles()
+    tris = np.empty(len(mesh.loop_triangles) * 3, np.int64)
+    mesh.loop_triangles.foreach_get("vertices", tris)
+    polys = np.empty(len(mesh.loop_triangles), np.int64)
+    mesh.loop_triangles.foreach_get("polygon_index", polys)
+    tree = BVHTree.FromPolygons([Vector(v) for v in verts], tris.reshape(-1, 3).tolist())
+    keep = {mesh.materials.find(FACE_PATCH_MATERIAL), mesh.materials.find(MOUTH_PATCH_MATERIAL)}
+    x0, z0, x1, z1 = box
+    found = set()
+    for x in np.arange(x0, x1 + step, step):
+        for z in np.arange(z0, z1 + step, step):
+            index = tree.ray_cast(Vector((x, -10.0, z)), Vector((0.0, 1.0, 0.0)), 20.0)[2]
+            if index is not None and mesh.polygons[int(polys[index])].material_index not in keep:
+                found.add(int(polys[index]))
+    slot = mesh.materials.find(FACE_PATCH_MATERIAL)
+    uv = mesh.uv_layers.active.data
+    for index in found:
+        poly = mesh.polygons[index]
+        poly.material_index = slot
+        for li in poly.loop_indices:
+            x, _y, z = verts[mesh.loops[li].vertex_index]
+            uv[li].uv = (au[0] * x + au[1], av[0] * z + av[1])
+    mesh.update()
+    return len(found)
+
+
+def _in_front_of_face(points, surface, cell, samples=5):
+    """Like _onto_face, but in front of the frontmost face seen anywhere within a cell (x, z) round each point."""
+    result = points.copy()
+    offsets = [(dx, dz) for dx in np.linspace(-cell[0], cell[0], samples) for dz in np.linspace(-cell[1], cell[1], samples)]
+    for index, (x, y, z) in enumerate(points):
+        hits = [surface.ray_cast(Vector((x + dx, y - 0.03, z + dz)), Vector((0.0, 1.0, 0.0)), 0.06)[0] for dx, dz in offsets]
+        depths = [hit.y for hit in hits if hit is not None]
+        if depths:
+            result[index, 1] = min(depths) - MOUTH_SURFACE_GAP
+    return result
+
+
+def _onto_face(points, surface):
+    """Move points along Y onto the surface seen from the front, MOUTH_SURFACE_GAP in front of it."""
+    result = points.copy()
+    for index, (x, y, z) in enumerate(points):
+        hit = surface.ray_cast(Vector((x, y - 0.03, z)), Vector((0.0, 1.0, 0.0)), 0.06)[0]
+        if hit is not None:
+            result[index, 1] = hit.y - MOUTH_SURFACE_GAP
+    return result
 
 
 def _add_lid_covers(obj, bands, skin_color, closed_eyes_image=None):
@@ -455,6 +677,17 @@ def add_shape_keys(obj, features, blink=True):
     surface = BVHTree.FromObject(obj, bpy.context.evaluated_depsgraph_get())
     scale = _scale(obj)
 
+    if features.get("free_mouth") and MOUTH_GRID_ATTRIBUTE in mesh.attributes and mesh.shape_keys is None:
+        # the mouth is its own shape on the face: at rest a short line, which the keys open,
+        # and trackers slide and curl (scripts/add_face_tracking.py)
+        grid = np.empty(len(mesh.vertices) * 3)
+        mesh.attributes[MOUTH_GRID_ATTRIBUTE].data.foreach_get("vector", grid)
+        grid = grid.reshape(-1, 3)
+        patch = grid[:, 2] > 0.5
+        rest[patch] = _onto_face(_mouth_shape(grid[patch], obj[MOUTH_COVER_PROPERTY].to_dict(), MOUTH_REST_SHAPE), surface)
+        mesh.vertices.foreach_set("co", rest.astype(np.float32).ravel())
+        mesh.update()
+
     if mesh.shape_keys is None:
         obj.shape_key_add(name="Basis", from_mix=False)
 
@@ -500,8 +733,10 @@ def add_shape_keys(obj, features, blink=True):
         moved = _open_mouth(rest, sides, mouth, mouth_width, opening * drop, squeeze, corner_reach)
         moved[~free] = rest[~free]
         if mouth_grid is not None:
+            # the mouth opens on its own: the face around it stays still
+            moved = rest.copy()
             patch = mouth_grid[:, 2] > 0.5
-            moved[patch] = _mouth_shape(mouth_grid[patch], obj[MOUTH_COVER_PROPERTY].to_dict(), name)
+            moved[patch] = _onto_face(_mouth_shape(mouth_grid[patch], obj[MOUTH_COVER_PROPERTY].to_dict(), name), surface)
             _add_key(obj, name, moved)
             continue
         _add_key(obj, name, _onto_surface(rest, moved, surface))
@@ -606,6 +841,41 @@ def _onto_surface(rest, moved, surface):
     return result
 
 
+def store_painted_eyes(obj, features):
+    """Record each painted eye's box (object space) for a blink that squeezes the paint.
+
+    Stored as {"left": [x0, z0, x1, z1], "right": ...}, the character's left at +X. Eye inserts
+    can sit away from the painted eyes (under the brow on a mascot), so a blink squeezing the
+    inserts would miss them.
+    """
+    boxes = {}
+    width, height = np.asarray(features["eye_size"]) / _scale(obj)
+    height *= PAINTED_EYE_GROW
+    centres = {key: _to_local(obj, features[key]) for key in ("left_eye", "right_eye")}
+    middle = (centres["left_eye"].x + centres["right_eye"].x) / 2
+    for centre in centres.values():
+        side = "left" if centre.x > middle else "right"
+        boxes[side] = [centre.x - width / 2, centre.z - height / 2, centre.x + width / 2, centre.z + height / 2]
+    obj[PAINTED_EYES_PROPERTY] = boxes
+
+
+def squeeze_shut(points, box, amount):
+    """How far up or down (z) the squeeze blink moves each of `points` (n, 3), for a painted eye.
+
+    `box` is the eye's (x0, z0, x1, z1) in the points' space (see store_painted_eyes); `amount` 1
+    shuts the eye to a line at MEET_LINE.
+    """
+    x0, z0, x1, z1 = box
+    height = z1 - z0
+    line = z0 + MEET_LINE * height
+    z = points[:, 2]
+    across = _fade(np.abs(points[:, 0] - (x0 + x1) / 2) / ((x1 - x0) / 2), *EYE_WIDTH)
+    move = amount * (line - np.clip(z, z0, z1))
+    outside = np.maximum(z - z1 - LID_STROKE * height, z0 - z)
+    move *= _fade(np.maximum(outside, 0.0), 0.0, LID_FADE * height)
+    return move * across
+
+
 def _add_key(obj, name, coords):
     key = obj.shape_key_add(name=name, from_mix=False)
     key.data.foreach_set("co", coords.astype(np.float32).ravel())
@@ -618,7 +888,7 @@ def _fade(distance, full, zero):
     return 1.0 - t * t * (3.0 - 2.0 * t)
 
 
-def _mouth_patch_material():
+def _mouth_patch_material(tint=None, free=False):
     material = bpy.data.materials.get(MOUTH_PATCH_MATERIAL)
     if material is not None:
         return material
@@ -628,26 +898,35 @@ def _mouth_patch_material():
     bsdf = nodes["Principled BSDF"]
     bsdf.inputs["Roughness"].default_value = 1.0
     texture = nodes.new("ShaderNodeTexImage")
-    texture.image = _mouth_inside_image()
+    texture.image = _mouth_inside_image(tint, free)
     texture.extension = "EXTEND"
     material.node_tree.links.new(texture.outputs["Color"], bsdf.inputs["Base Color"])
     return material
 
 
-def _mouth_inside_image():
-    """Paint the inside of an open mouth, u across and v up the opening."""
+def _mouth_inside_image(tint=None, free=False):
+    """Paint the inside of an open mouth, u across and v up the opening.
+
+    With `tint` (sRGB) the throat, gums and tongue are shades of it instead of red and pink,
+    for skin that isn't human-coloured (a mascot, a blue demon). A `free` mouth is also the
+    closed mouth's line, so it gets a dark outline and no teeth, which would show as a pale
+    streak along the line.
+    """
     n = MOUTH_TEXTURE_SIZE
     v, u = np.mgrid[0:n, 0:n] / (n - 1)
     rim = np.clip(np.hypot((u - 0.5) / 0.5, (v - 0.5) / 0.5), 0, 1)
-    throat = np.array([0.10, 0.02, 0.03])
-    gum = np.array([0.42, 0.13, 0.15])
+    throat, gum, tongue_color = np.array([0.10, 0.02, 0.03]), np.array([0.42, 0.13, 0.15]), np.array([0.80, 0.38, 0.42])
+    if tint is not None:
+        throat, gum, tongue_color = (np.array(_shade(tint, *shade)) for shade in MOUTH_TINT_SHADES)
     color = throat + (gum - throat) * (rim**3)[..., None]
-    teeth = (v > 0.8) & (np.abs(u - 0.5) < 0.42)
+    if free:
+        color = np.where((rim > FREE_MOUTH_OUTLINE)[..., None], throat * 0.6, throat + (gum - throat) * (rim**3)[..., None] * 0.6)
+    teeth = (v > 0.8) & (np.abs(u - 0.5) < 0.42) & (not free)
     color[teeth] = (0.96, 0.94, 0.91)
     color[teeth & (v < 0.83)] = (0.78, 0.74, 0.74)  # teeth's lower edge in shadow
     tongue = ((u - 0.5) / 0.34) ** 2 + ((v - 0.08) / 0.3) ** 2 < 1
     shade = np.clip(1.2 - v / 0.38, 0.75, 1.0)[..., None]
-    color = np.where(tongue[..., None], np.array([0.80, 0.38, 0.42]) * shade, color)
+    color = np.where(tongue[..., None], np.clip(tongue_color, 0, 1) * shade, color)
     pixels = np.concatenate([color, np.ones((n, n, 1))], axis=2).astype(np.float32)
     image = bpy.data.images.new(MOUTH_PATCH_MATERIAL, n, n)
     image.pixels.foreach_set(pixels.ravel())
@@ -655,11 +934,21 @@ def _mouth_inside_image():
     return image
 
 
-def _mouth_material():
+def _shade(color, saturation, value):
+    """An sRGB colour with the same hue, its saturation and value scaled (clipped to 1)."""
+    import colorsys
+
+    h, s, v = colorsys.rgb_to_hsv(*(float(c) for c in color[:3]))
+    return colorsys.hsv_to_rgb(h, min(s * saturation, 1.0), min(v * value, 1.0))
+
+
+def _mouth_material(tint=None):
     material = bpy.data.materials.get(MOUTH_MATERIAL) or bpy.data.materials.new(MOUTH_MATERIAL)
     material.use_nodes = True
     bsdf = material.node_tree.nodes["Principled BSDF"]
-    bsdf.inputs["Base Color"].default_value = (0.12, 0.02, 0.03, 1.0)
+    # the tint is sRGB, like the painted texture; material colours are linear
+    dark = (0.12, 0.02, 0.03) if tint is None else tuple(c ** 2.2 for c in _shade(tint, *MOUTH_TINT_SHADES[0]))
+    bsdf.inputs["Base Color"].default_value = (*dark, 1.0)
     bsdf.inputs["Roughness"].default_value = 1.0
     return material
 

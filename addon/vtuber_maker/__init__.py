@@ -61,8 +61,12 @@ CLASSES = (VTUBER_MAKER_OT_make_vrm, VTUBER_MAKER_PT_panel)
 def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
+    from . import hand_setup_ui
+    hand_setup_ui.register()
 
 
 def unregister():
+    from . import hand_setup_ui
+    hand_setup_ui.unregister()
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

@@ -2,7 +2,7 @@
 
     blender -b in.blend -P scripts/rebuild_hair_physics.py -- out.blend out.vrm
 
-Replaces the hair springs and all colliders with make_vrm.py's current design (softer hair,
+Replaces the hair, cloth and hat tip springs and all colliders with make_vrm.py's current design (softer hair,
 colliders fitted to head, neck, shoulders, torso and limbs), and adds colliders on chest jiggle
 bones if there are any. Chest springs are kept. The original file is left alone.
 """
@@ -30,23 +30,26 @@ def main():
               if name in bones}
     spring_bone = arm.data.vrm_addon_extension.spring_bone1
 
-    chains = [[j.node.bone_name for j in s.joints] for s in spring_bone.springs
-              if len(s.joints) and s.joints[0].node.bone_name.startswith("Hair")]
-    # chains as build.py hands them over: the tip joint isn't its own bone in the design
-    chains = [names if names[-1] in bones else names[:-1] for names in chains]
-    print(f"{len(chains)} hair chains")
+    def chains_of(prefix):
+        found = [[j.node.bone_name for j in s.joints] for s in spring_bone.springs
+                 if len(s.joints) and s.joints[0].node.bone_name.startswith(prefix)]
+        # chains as build.py hands them over: the tip joint isn't its own bone in the design
+        return [names if names[-1] in bones else names[:-1] for names in found]
 
-    # drop hair springs, all collider groups and colliders (the chest springs stay)
+    chains, cloth, tips = chains_of("Hair"), chains_of("Cloth"), chains_of("HatTip")
+    print(f"{len(chains)} hair chains, {len(cloth)} cloth chains, {len(tips)} hat tip chains")
+
+    # drop hair, cloth and hat tip springs, all collider groups and colliders (the chest springs stay)
     for index in reversed(range(len(spring_bone.springs))):
         joints_ = spring_bone.springs[index].joints
-        if len(joints_) and joints_[0].node.bone_name.startswith("Hair"):
+        if len(joints_) and joints_[0].node.bone_name.startswith(("Hair", "Cloth", "HatTip")):
             spring_bone.springs.remove(index)
     for index in reversed(range(len(spring_bone.collider_groups))):
         bpy.ops.vrm.remove_spring_bone1_collider_group(armature_object_name=arm.name, collider_group_index=index)
     for index in reversed(range(len(spring_bone.colliders))):
         bpy.ops.vrm.remove_spring_bone1_collider(armature_object_name=arm.name, collider_index=index)
 
-    design = hair_physics.design(mesh, arm, chains, joints)
+    design = hair_physics.design(mesh, arm, chains, joints, cloth, tips)
     for side in ("Left", "Right"):
         name = f"{side}Breast"
         if name in bones:

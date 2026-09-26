@@ -123,6 +123,8 @@ shot("face_neutral", face + front * 0.55, face, 50)
 shot("face_blink", face + front * 0.55, face, 50, {"blink": 1.0, "Blink": 1.0, "blink_left": 1.0, "blink_right": 1.0})
 shot("face_halfblink", face + front * 0.55, face, 50, {"blink_left": 0.5, "blink_right": 0.5})
 shot("face_aa", face + front * 0.55, face, 50, {"aa": 1.0, "A": 1.0, "a": 1.0})
+for vowel in ("ih", "ou", "ee", "oh"):
+    shot(f"face_{vowel}", face + front * 0.55, face, 50, {vowel: 1.0})
 mid = Vector((head.x, head.y, (top + bottom) / 2))
 shot("full_front", mid + front * 4.2, mid, 50, size=(1200, 1800))
 shot("full_34", mid + three_q * 4.2, mid, 50, size=(1200, 1800))

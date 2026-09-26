@@ -10,21 +10,42 @@ import json
 import math
 import os
 import sys
+from pathlib import Path
 
 import bpy
 import numpy as np
 from mathutils import Vector
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "addon"))
+from vtuber_maker.pipeline import normalize  # noqa: E402
+
 argv = sys.argv[sys.argv.index("--") + 1:]
 SRC, OUT = os.path.abspath(argv[0]), os.path.abspath(argv[1])
-RES = int(argv[2]) if len(argv) > 2 else 1024
+RES = int(argv[2]) if len(argv) > 2 and not argv[2].startswith("--") else 1024
+# --head-at F: the head view centred at this fraction of the model's height (the survey's head).
+# Placed by proportion (0.88) it framed the top of whatever is highest: over model C's tall tail the
+# face sat at the frame's bottom edge, cut at the mouth.
+HEAD_AT = float(argv[argv.index("--head-at") + 1]) if "--head-at" in argv else 0.88
 os.makedirs(OUT, exist_ok=True)
 
+def _upstream_texture(node, depth=4):
+    """The image texture node feeding `node`, through a few in between: Tripo's baseColorFactor 0.8
+    imports as a Mix node between the texture and Base Color."""
+    if node.type == "TEX_IMAGE":
+        return node
+    for socket in node.inputs if depth else ():
+        for link in socket.links:
+            found = _upstream_texture(link.from_node, depth - 1)
+            if found is not None:
+                return found
+    return None
+
+
 bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.gltf(filepath=SRC)
+normalize.import_model(Path(SRC))
 mesh = next(o for o in bpy.context.scene.objects if o.type == "MESH")
 orig_mat = mesh.data.materials[0]
-base_node = orig_mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"].links[0].from_node
+base_node = _upstream_texture(orig_mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"].links[0].from_node)
 
 corners = [mesh.matrix_world @ Vector(c) for c in mesh.bound_box]
 lo = Vector([min(c[i] for c in corners) for i in range(3)])
@@ -78,7 +99,7 @@ scene.collection.objects.link(cam)
 scene.camera = cam
 
 # (name, height fraction of tile centre, ortho scale as fraction of height)
-TILES = [("head", 0.88, 0.26), ("torso", 0.64, 0.36), ("hips", 0.40, 0.36), ("legs", 0.15, 0.34)]
+TILES = [("head", HEAD_AT, 0.26), ("torso", 0.64, 0.36), ("hips", 0.40, 0.36), ("legs", 0.15, 0.34)]
 YAWS = [0, 45, 90, 135, 180, 225, 270, 315]
 distance = height * 3
 
@@ -88,7 +109,7 @@ for tile, frac, scale in TILES:
         a = math.radians(yaw)
         loc = Vector((center.x + math.sin(a) * distance, center.y - math.cos(a) * distance, lo.z + frac * height))
         views.append((f"{tile}_{yaw:03d}", loc, (math.radians(90), 0, a), scale * height, tile, yaw))
-views.append(("face_000", Vector((center.x, center.y - distance, lo.z + 0.87 * height)), (math.radians(90), 0, 0), 0.13 * height, "face", 0))
+views.append(("face_000", Vector((center.x, center.y - distance, lo.z + (HEAD_AT - 0.01) * height)), (math.radians(90), 0, 0), 0.13 * height, "face", 0))
 views.append(("top", Vector((center.x, center.y + 0.02 * height, hi.z + distance)), (0, 0, 0), 0.3 * height, "top", 0))
 
 

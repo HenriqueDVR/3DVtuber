@@ -1,0 +1,172 @@
+"""Clothing repairs keep skirt seams on the body and shoulder coverings on the arms."""
+import unittest
+
+import bpy
+import numpy as np
+from mathutils import Vector
+
+from vtuber_maker.pipeline import loose, rig, tpose
+from test_fingers import deformed
+
+
+class ClothingRepair(unittest.TestCase):
+    def setUp(self):
+        for obj in list(bpy.data.objects):
+            bpy.data.objects.remove(obj, do_unlink=True)
+        joints = {"hips": (0, 0, .8), "neck": (0, 0, 1.3), "head": (0, 0, 1.4)}
+        for side, sign in (("left", 1), ("right", -1)):
+            joints.update({f"{side}_upper_arm": (sign * .15, 0, 1.2),
+                           f"{side}_lower_arm": (sign * .23, 0, 1.0),
+                           f"{side}_hand": (sign * .30, 0, .8),
+                           f"{side}_upper_leg": (sign * .07, 0, .75),
+                           f"{side}_lower_leg": (sign * .07, 0, .4),
+                           f"{side}_foot": (sign * .07, 0, .08)})
+        self.arm = rig.build_armature(joints)
+
+    def mesh(self, points, weights, faces=()):
+        data = bpy.data.meshes.new("Clothing")
+        data.from_pydata(points, [], faces)
+        obj = bpy.data.objects.new("Clothing", data)
+        bpy.context.scene.collection.objects.link(obj)
+        for i, row in enumerate(weights):
+            for name, w in row.items():
+                group = obj.vertex_groups.get(name) or obj.vertex_groups.new(name=name)
+                group.add([i], w, "REPLACE")
+        obj.modifiers.new("Armature", "ARMATURE").object = self.arm
+        obj.shape_key_add(name="Basis")
+        key = obj.shape_key_add(name="Expression")
+        key.data[0].co.y += .001
+        bpy.context.view_layer.update()
+        return obj
+
+    def test_torn_seam_is_cut_between_faces_so_no_edge_joins_the_two_limbs(self):
+        # a strip fused across the thigh and the forearm, as a glove resting on a skirt is: splitting
+        # the edges that cross the join once left every one of them joining the two sides
+        points = [(x * .02, 0, z * .02 + .9) for z in range(3) for x in range(6)]
+        weights = [{"LeftUpperLeg": 1} if x < 3 else {"LeftLowerArm": 1} for z in range(3) for x in range(6)]
+        faces = [(z * 6 + x, z * 6 + x + 1, (z + 1) * 6 + x + 1, (z + 1) * 6 + x) for z in range(2) for x in range(5)]
+        obj = self.mesh(points, weights, faces)
+        self.assertGreater(loose.split_torn_seams(obj, self.arm), 0)
+        leader = loose._leading_bones(obj, len(obj.data.vertices))
+        names = {g.index: g.name for g in obj.vertex_groups}
+        for edge in obj.data.edges:
+            self.assertEqual(len({names[leader[i]] for i in edge.vertices}), 1)
+        for face in obj.data.polygons:
+            self.assertEqual(len({names[leader[i]] for i in face.vertices}), 1)
+        for vertex in obj.data.vertices:
+            self.assertAlmostEqual(sum(g.weight for g in vertex.groups), 1, places=6)
+        self.assertEqual(len(obj.data.polygons), 10)
+
+    def test_cut_skirt_copies_rejoin_without_dragging_sleeve_or_hand(self):
+        points = [(-.14, -.03, .90), (-.14, -.03, .90), (-.16, -.03, .92),
+                  (-.16, -.03, .92), (-.29, 0, .90), (-.30, 0, .78), (.14, -.03, .90)]
+        obj = self.mesh(points, [{"Hips": 1}, {"RightLowerArm": 1}, {"Hips": 1},
+                                {"RightLowerArm": 1}, {"RightLowerArm": 1}, {"RightHand": 1},
+                                {"LeftLowerArm": 1}], [(0, 2, 6), (1, 3, 4)])
+        before = [np.array([p.co[:] for p in key.data]) for key in obj.data.shape_keys.key_blocks]
+        faces = [tuple(p.vertices) for p in obj.data.polygons]
+        loose.restore_skirt_weights(obj, self.arm, np.array([True, True, True, True, True, False, True]))
+        for side, sign in (("Left", 1), ("Right", -1)):
+            tpose._point_arm(self.arm, side + "UpperArm", side + "Hand", Vector((sign, 0, 0)))
+        moved = deformed(obj)
+        np.testing.assert_allclose(moved[[0, 1, 2, 3, 6]], np.array(points)[[0, 1, 2, 3, 6]], atol=1e-6)
+        self.assertGreater(np.linalg.norm(moved[4] - points[4]), .1)
+        self.assertGreater(np.linalg.norm(moved[5] - points[5]), .1)
+        self.assertEqual(faces, [tuple(p.vertices) for p in obj.data.polygons])
+        for old, key in zip(before, obj.data.shape_keys.key_blocks):
+            np.testing.assert_array_equal(old, [p.co[:] for p in key.data])
+        self.assert_normalized(obj)
+
+    def test_separates_fused_skirt_sleeve_contact_before_baking(self):
+        points = [(-.14, -.03, .90), (-.14, -.03, .92), (-.29, -.03, .90),
+                  (-.29, -.03, .92)]
+        obj = self.mesh(points, [{"Hips": 1}, {"Hips": 1}, {"RightLowerArm": 1},
+                                {"RightLowerArm": 1}], [(0, 2, 3, 1)])
+        # The same fused contact that a weight-only repair stretches into a ribbon.
+        origin = loose.separate_skirt_contact(obj, self.arm, np.ones(4, dtype=bool))
+        self.assertEqual(len(origin), len(obj.data.vertices))
+        edges = np.array([e.vertices[:] for e in obj.data.edges])
+        before = deformed(obj)
+        tpose._point_arm(self.arm, "RightUpperArm", "RightHand", Vector((-1, 0, 0)))
+        after = deformed(obj)
+        growth = np.linalg.norm(after[edges[:, 0]] - after[edges[:, 1]], axis=1) - np.linalg.norm(before[edges[:, 0]] - before[edges[:, 1]], axis=1)
+        self.assertLess(growth.max(), .01)
+        self.assertEqual(set(obj.data.shape_keys.key_blocks.keys()), {"Basis", "Expression"})
+        self.assert_normalized(obj)
+
+    def test_mantle_follows_both_upper_arms_but_not_collar_or_lower_cape(self):
+        points = [(-.25, -.02, 1.15), (.25, -.02, 1.15), (0, 0, 1.25),
+                  (.23, .05, .60), (.30, 0, .78), (.25, -.02, 1.15)]
+        obj = self.mesh(points, [{"Chest": 1}] * 3 + [{"Hips": 1}, {"LeftHand": 1}, {"Head": 1}])
+        loose.follow_shoulder_cloth(obj, self.arm, np.array([True, True, True, True, False, False]))
+        for side, sign in (("Left", 1), ("Right", -1)):
+            tpose._point_arm(self.arm, side + "UpperArm", side + "Hand", Vector((sign, 0, 0)))
+        moved = deformed(obj)
+        for i in (0, 1):
+            self.assertGreater(np.linalg.norm(moved[i] - points[i]), .06)
+        np.testing.assert_allclose(moved[[2, 3, 5]], np.array(points)[[2, 3, 5]], atol=1e-6)
+        self.assertGreater(np.linalg.norm(moved[4] - points[4]), .1)
+        self.assert_normalized(obj)
+
+    def test_hanging_sleeve_rides_upper_arm_and_keeps_other_groups(self):
+        # A wide sleeve hanging beside the ribs, skinned only to the torso.
+        points = [(.16, -.05, 1.15), (.25, -.05, .95), (.30, .02, .82)]
+        obj = self.mesh(points, [{"Spine": .5, "Chest": .5}] * 3)
+        obj.vertex_groups.new(name="Mask").add([0, 1, 2], .7, "REPLACE")
+        loose.follow_bone(obj, self.arm, [0, 1, 2], "LeftUpperArm")
+        tpose._point_arm(self.arm, "LeftUpperArm", "LeftHand", Vector((.5, 0, 1)).normalized())
+        bone = self.arm.pose.bones["LeftUpperArm"]
+        expected = [bone.matrix @ bone.bone.matrix_local.inverted() @ Vector(p) for p in points]
+        np.testing.assert_allclose(deformed(obj), expected, atol=1e-6)
+        self.assertAlmostEqual(obj.vertex_groups["Mask"].weight(1), .7, places=6)
+
+    def test_detail_borrows_anchor_skinning_without_changing_anchor(self):
+        obj = self.mesh([(-.28, -.04, .85), (-.281, -.04, .85), (-.282, -.04, .85)],
+                        [{"Hips": 1}, {"RightLowerArm": .8, "RightHand": .2}, {"Hips": 1}])
+        loose.attach_clothing_detail(obj, self.arm, [0, 2], [1])
+        tpose._point_arm(self.arm, "RightUpperArm", "RightHand", Vector((-1, 0, 0)))
+        moved = deformed(obj)
+        self.assertLess(np.linalg.norm(moved[0] - moved[1]), .002)
+        self.assertLess(np.linalg.norm(moved[2] - moved[1]), .002)
+        self.assert_normalized(obj)
+
+    def test_inner_forearm_connected_to_upper_sleeve_is_not_skirt(self):
+        # Sleeve and skirt touch at vertex 1/3 but have separate skinning/topology.
+        points = [(-.20, -.03, 1.10), (-.24, -.03, .92), (-.27, -.03, .93),
+                  (-.24, -.03, .92), (-.14, -.03, .89), (-.12, -.03, .88)]
+        obj = self.mesh(points, [{"RightUpperArm": 1}, {"RightLowerArm": 1},
+                                {"RightLowerArm": 1}, {"Hips": 1}, {"Hips": 1}, {"Hips": 1}],
+                        [(0, 1, 2), (3, 4, 5)])
+        loose.restore_skirt_weights(obj, self.arm, np.ones(len(points), dtype=bool))
+        tpose._point_arm(self.arm, "RightUpperArm", "RightHand", Vector((-1, 0, 0)))
+        moved = deformed(obj)
+        bone = self.arm.pose.bones["RightLowerArm"]
+        expected = bone.matrix @ bone.bone.matrix_local.inverted() @ Vector(points[1])
+        np.testing.assert_allclose(moved[1], expected, atol=1e-6)
+        np.testing.assert_allclose(moved[[3, 4, 5]], np.array(points)[[3, 4, 5]], atol=1e-6)
+
+    def test_history_transfer_restores_whole_selected_covering_not_just_outer_tip(self):
+        points = [(.16, 0, 1.18), (.24, 0, 1.12), (.25, .02, .6)]
+        target = self.mesh(points, [{"Chest": 1}, {"LeftUpperArm": 1}, {"Hips": 1}])
+        donor = self.mesh(points, [{"LeftUpperArm": .8, "Chest": .2},
+                                  {"LeftUpperArm": 1}, {"Chest": 1}])
+        loose.transfer_clothing_weights(target, self.arm, donor, [0, 1], [0, 1])
+        tpose._point_arm(self.arm, "LeftUpperArm", "LeftHand", Vector((1, 0, 0)))
+        np.testing.assert_allclose(deformed(target)[:2], deformed(donor)[:2], atol=1e-6)
+        np.testing.assert_allclose(deformed(target)[2], points[2], atol=1e-6)
+        self.assert_normalized(target)
+
+    def test_history_transfer_rejects_unmatched_geometry_before_editing(self):
+        target = self.mesh([(.2, 0, 1.1)], [{"Chest": 1}])
+        donor = self.mesh([(.5, 0, 1.1)], [{"LeftUpperArm": 1}])
+        with self.assertRaises(ValueError):
+            loose.transfer_clothing_weights(target, self.arm, donor, [0], [0])
+        self.assertEqual(target.vertex_groups["Chest"].weight(0), 1)
+
+    def assert_normalized(self, obj):
+        for vertex in obj.data.vertices:
+            self.assertAlmostEqual(sum(g.weight for g in vertex.groups), 1, places=6)
+
+
+if __name__ == "__main__":
+    unittest.main()

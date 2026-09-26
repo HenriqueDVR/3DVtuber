@@ -113,6 +113,19 @@ class SkinParts(PartsFixture):
         moved = self.displacement_after_bending("left_upper_arm", 60)
         self.assertLess(moved[self.near(self.truth["hair"]["left_long_tip"], 0.02)].max(), 0.002)
 
+    def test_raising_the_arms_leaves_the_middle_of_the_chest(self):
+        # arm and shoulder weight spread onto the chest caves it in as the arms move
+        hips, neck = self.joints["hips"], self.joints["neck"]
+        chest = ((np.abs(self.verts[:, 0] - hips[0]) < 0.03)
+                 & (self.verts[:, 2] > hips[2] + 0.3 * (neck[2] - hips[2]))
+                 & (self.verts[:, 2] < neck[2] - 0.03) & ~self.found.hair)
+        self.assertTrue(chest.any(), "fixture should have a chest")
+        for bone in ("left_upper_arm", "left_shoulder"):
+            with self.subTest(bone=bone):
+                moved = self.displacement_after_bending(bone, 45)
+                self.assertLess(moved[chest].max(), 0.003)
+                self.tearDown()
+
     def test_hair_turns_with_the_head(self):
         moved = self.displacement_after_bending("head", 30)
         self.assertGreater(moved[self.near(self.truth["hair"]["left_long_tip"], 0.02)].mean(), 0.05)
@@ -173,19 +186,20 @@ class FaceShapesFromInserts(PartsFixture):
         self.assertLess(moved[self.found.labels == self.found.eyes["right"]].max(), 1e-4)
         self.assertLess(moved[self.found.hair].max(), 1e-4)
 
-    def test_aa_drops_the_lower_lip(self):
-        mouth = self.features["mouth"]
-        width = self.features["mouth_width"]
-        rest = self.rest[: len(self.found.labels)]
-        lower_lip = (
-            (self.found.labels == self.found.face)
-            & (np.abs(rest[:, 0] - mouth[0]) < 0.3 * width)
-            & (rest[:, 2] < mouth[2] - 0.004)
-            & (rest[:, 2] > mouth[2] - 0.012)
-            & (rest[:, 1] < mouth[1] + 0.01)
-        )
-        self.assertTrue(lower_lip.any(), "fixture should have face surface below the mouth insert")
-        self.assertLess(self.displacement_with("aa")[lower_lip, 2].mean(), -0.002)
+    def test_aa_opens_the_mouth_without_moving_the_face(self):
+        # the mouth opens as its own patch; bending a coarse face round it dents the face
+        moved = np.abs(self.displacement_with("aa"))
+        self.assertLess(moved[self.found.labels == self.found.face].max(), 1e-6)
+
+    def test_open_mouth_is_round_at_the_corners(self):
+        self.mesh.data.shape_keys.key_blocks["aa"].value = 1.0
+        mouth, width = self.features["mouth"], self.features["mouth_width"]
+        half_width, half_height, drop = (share * width for share in face_rig.MOUTH_SHAPES["aa"])
+        middle_z = mouth[2] - drop
+        # well inside the side of the opening, but not at its top or bottom corner
+        self.assertEqual(self.front_material(mouth[0] + 0.85 * half_width, middle_z), face_rig.MOUTH_PATCH_MATERIAL)
+        self.assertNotEqual(self.front_material(mouth[0] + 0.85 * half_width, middle_z - 0.9 * half_height),
+                            face_rig.MOUTH_PATCH_MATERIAL)
 
 
 class BuildAvatarFromParts(unittest.TestCase):

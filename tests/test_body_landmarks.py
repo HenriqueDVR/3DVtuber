@@ -68,3 +68,14 @@ class DetectBodyWithArmsHangingIntoHair(DetectBodyOnSyntheticCharacter):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DetectBodyOnTPoseCharacter(DetectBodyOnSyntheticCharacter):
+    """Arms held out to the sides lie along the horizontal bands; they are traced across X."""
+
+    FIXTURE = "synthetic_character_tpose"
+
+    def test_arms_are_held_out(self):
+        for side in ("left", "right"):
+            arm = np.asarray(self.joints[f"{side}_hand"]) - np.asarray(self.joints[f"{side}_upper_arm"])
+            self.assertLess(abs(arm[2]), 0.1 * np.linalg.norm(arm), f"{side} arm isn't level: {arm.round(3)}")

@@ -19,15 +19,20 @@ FIXTURE_OUT = TESTS / "fixtures" / "out"
 sys.path.insert(0, str(REPO / "addon"))
 sys.path.insert(0, str(TESTS))
 
+# Variants the suite builds on demand; the others are made by the tests that need them.
+VARIANTS = ("synthetic_character", "synthetic_character_arms_down", "synthetic_character_parts",
+            "synthetic_character_robe", "synthetic_character_tpose")
+
 
 def ensure_fixture():
-    if (FIXTURE_OUT / "synthetic_character.glb").exists():
-        return
     script = TESTS / "fixtures" / "make_synthetic_character.py"
-    subprocess.run(
-        [bpy.app.binary_path, "-b", "--factory-startup", "-P", str(script), "--", str(FIXTURE_OUT)],
-        check=True,
-    )
+    for name in VARIANTS:
+        if (FIXTURE_OUT / f"{name}.glb").exists():
+            continue
+        subprocess.run(
+            [bpy.app.binary_path, "-b", "--factory-startup", "-P", str(script), "--", str(FIXTURE_OUT), name],
+            check=True,
+        )
 
 
 def main():

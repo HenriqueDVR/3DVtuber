@@ -29,3 +29,32 @@ def sample_surface(verts, tris, count, seed=0):
     outside = u + v > 1
     u[outside], v[outside] = 1 - u[outside], 1 - v[outside]
     return corners[chosen, 0] + u[:, None] * edge_a[chosen] + v[:, None] * edge_b[chosen]
+
+
+def welded_edges(obj, verts, tolerance=1e-5):
+    """(weld, a, b): each vertex's representative at its position, and the edges between them.
+
+    Imported meshes split vertices along UV seams, so anything walking the surface has to
+    treat vertices sharing a position as one.
+    """
+    keys = np.round(verts / tolerance).astype(np.int64)
+    _, first, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+    weld = first[inverse.ravel()]
+    edges = np.empty(len(obj.data.edges) * 2, dtype=np.int64)
+    obj.data.edges.foreach_get("vertices", edges)
+    return weld, weld[edges[0::2]], weld[edges[1::2]]
+
+
+def pieces(obj, verts=None):
+    """Label each vertex with its separate piece of the mesh (UV seams don't split pieces)."""
+    verts = world_vertices(obj) if verts is None else verts
+    weld, a, b = welded_edges(obj, verts)
+    labels = np.arange(len(verts))
+    while True:
+        updated = labels.copy()
+        np.minimum.at(updated, a, labels[b])
+        np.minimum.at(updated, b, labels[a])
+        updated = updated[updated]
+        if np.array_equal(updated, labels):
+            return labels[weld]
+        labels = updated

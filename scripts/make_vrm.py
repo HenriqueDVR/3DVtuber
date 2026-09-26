@@ -16,7 +16,7 @@ import bpy
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "addon"))
 
-from vtuber_maker.pipeline import build  # noqa: E402
+from vtuber_maker.pipeline import build, manifest  # noqa: E402
 
 IMPORTERS = {
     ".glb": lambda path: bpy.ops.import_scene.gltf(filepath=path),
@@ -36,8 +36,31 @@ def parse_args():
     parser.add_argument("--blend", type=Path, help="also save the rigged scene here, to fix weights by hand and re-export")
     parser.add_argument("--keep-eyes", action="store_true", help="leave the eyes as modelled: no blink")
     parser.add_argument("--face", type=Path, help="face.json with eye and mouth points, from viewer/setup.html")
+    parser.add_argument("--joints", type=Path,
+                        help="joints.json of {joint: [x, y, z]} in the scaled avatar's space, replacing detected joints")
+    parser.add_argument("--rigid-head", action="store_true",
+                        help="hat, helmet or solid head instead of hair: no hair chains, head pieces rigid")
+    parser.add_argument("--cloth", action="store_true", help="spring chains for hanging capes, coat tails and skirts")
+    parser.add_argument("--hat-tip", action="store_true", help="with --rigid-head: a spring chain for a pointed hat's tip")
+    parser.add_argument("--free-mouth", action="store_true",
+                        help="with --face: paint the drawn mouth out and make the mouth its own shape, "
+                             "so face tracking can slide and curl it")
+    parser.add_argument("--mouth-colour",
+                        help='tint the inside of the mouth: "skin" (the face colour) or a hex colour like "#3a7bd5"')
+    parser.add_argument("--skinning", choices=("heat", "template"), default="heat",
+                        help="bone heat and rules, or weights from a fitted template body (template_skin.py)")
+    parser.add_argument("--manifest", type=Path,
+                        help="character manifest: its hair, hat, swing_cloth, appendage and body pieces override detection")
     parser.add_argument("--closed-eyes", type=Path, help="closed-eyes version of the face patch texture, for blink lids")
     return parser.parse_args(sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else [])
+
+
+def _colour(value):
+    """None, "skin", or a hex colour as sRGB floats."""
+    if value is None or value == "skin":
+        return value
+    value = value.lstrip("#")
+    return tuple(int(value[i:i + 2], 16) / 255 for i in (0, 2, 4))
 
 
 def main():
@@ -47,6 +70,7 @@ def main():
     if importer is None:
         sys.exit(f"Unsupported model type {model.suffix}; use one of {', '.join(IMPORTERS)}")
 
+    data = manifest.load(args.manifest) if args.manifest else None
     bpy.ops.wm.read_homefile(use_empty=True)
     importer(str(model))
     report = build.build_avatar(
@@ -58,9 +82,21 @@ def main():
         closed_eyes_image=args.closed_eyes.resolve() if args.closed_eyes else None,
         face_points_path=args.face.resolve() if args.face else None,
         keep_eyes=args.keep_eyes,
+        joints_override=json.loads(args.joints.read_text()) if args.joints else None,
+        rigid_head=args.rigid_head,
+        cloth_physics=args.cloth,
+        hat_tip=args.hat_tip,
+        mouth_color=_colour(args.mouth_colour),
+        free_mouth=args.free_mouth,
+        pieces=manifest.pieces_for(data, "build") if data else None,
+        pieces_reference=manifest.path_of(data, "reference") if data else None,
+        rig_path=manifest.path_of(data, "rig") if data else None,
+        skinning=args.skinning,
     )
     if args.blend:
         bpy.ops.wm.save_as_mainfile(filepath=str(args.blend.resolve()))
+    for warning in report.get("warnings", []):
+        print(f"BUILD WARNING {warning}")
     print("VTUBER_MAKER_REPORT " + json.dumps(report))
 
 

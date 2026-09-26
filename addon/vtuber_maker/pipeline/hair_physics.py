@@ -17,6 +17,27 @@ HAIR_TIP_STIFFNESS = 0.5
 HAIR_GRAVITY_POWER = 0.1
 HAIR_DRAG_FORCE = 0.7
 HAIR_HIT_RADIUS = 0.012
+# Hanging cloth (capes, coat tails): heavier and slower than hair, and thicker to collide.
+CLOTH_STIFFNESS = 1.0
+CLOTH_TIP_STIFFNESS = 0.4
+CLOTH_GRAVITY_POWER = 0.3
+CLOTH_DRAG_FORCE = 0.6
+CLOTH_HIT_RADIUS = 0.02
+# A pointed hat's tip: firm at the crown so it keeps its shape, loose at the end and lightly
+# damped so it bounces after the head moves.
+TIP_STIFFNESS = 0.8
+TIP_TIP_STIFFNESS = 0.25
+TIP_GRAVITY_POWER = 0.05
+TIP_DRAG_FORCE = 0.12
+TIP_HIT_RADIUS = 0.01
+# Wings, tails and big ears (manifest role "appendage"): they hold their shape and sway rather
+# than hang. With cloth-like springs (1.2 stiff, 0.05 gravity) model C's wings sagged at rest and her
+# 24 chains flailed in the viewer: no gravity, stiff, well damped.
+APPENDAGE_STIFFNESS = 3.0
+APPENDAGE_TIP_STIFFNESS = 1.5
+APPENDAGE_GRAVITY_POWER = 0.0
+APPENDAGE_DRAG_FORCE = 0.8
+APPENDAGE_HIT_RADIUS = 0.03
 
 # Colliders sit a little inside the fitted body, so hair resting on it isn't pushed away.
 COLLIDER_SHRINK = 0.9
@@ -64,24 +85,33 @@ class ClippingReport(NamedTuple):
         )
 
 
-def design(mesh_obj, armature, chains, joints):
-    """Spring chains for the hair bone chains, plus colliders fitted to the body under the hair."""
+def design(mesh_obj, armature, chains, joints, cloth_chains=(), tip_chains=(), appendage_chains=()):
+    """Spring chains for the hair, cloth, hat tip and appendage bone chains, plus colliders fitted to the body."""
     bones = armature.data.bones
     springs = []
-    for names in chains:
-        points = [bones[names[0]].head_local] + [bones[name].tail_local for name in names]
-        springs.append(
-            spring_sim.Chain(
-                points=np.array([list(point) for point in points]),
-                parent=bones[names[0]].parent.name,
-                stiffness=HAIR_STIFFNESS,
-                gravity_power=HAIR_GRAVITY_POWER,
-                drag_force=HAIR_DRAG_FORCE,
-                hit_radius=HAIR_HIT_RADIUS,
-                names=names,
+    kinds = (
+        (chains, HAIR_STIFFNESS, HAIR_TIP_STIFFNESS, HAIR_GRAVITY_POWER, HAIR_DRAG_FORCE, HAIR_HIT_RADIUS),
+        (cloth_chains, CLOTH_STIFFNESS, CLOTH_TIP_STIFFNESS, CLOTH_GRAVITY_POWER, CLOTH_DRAG_FORCE, CLOTH_HIT_RADIUS),
+        (tip_chains, TIP_STIFFNESS, TIP_TIP_STIFFNESS, TIP_GRAVITY_POWER, TIP_DRAG_FORCE, TIP_HIT_RADIUS),
+        (appendage_chains, APPENDAGE_STIFFNESS, APPENDAGE_TIP_STIFFNESS, APPENDAGE_GRAVITY_POWER,
+         APPENDAGE_DRAG_FORCE, APPENDAGE_HIT_RADIUS),
+    )
+    for kind, stiffness, tip_stiffness, gravity, drag, hit in kinds:
+        for names in kind:
+            points = [bones[names[0]].head_local] + [bones[name].tail_local for name in names]
+            springs.append(
+                spring_sim.Chain(
+                    points=np.array([list(point) for point in points]),
+                    parent=bones[names[0]].parent.name,
+                    stiffness=stiffness,
+                    gravity_power=gravity,
+                    drag_force=drag,
+                    hit_radius=hit,
+                    names=names,
+                    tip_stiffness=tip_stiffness,
+                )
             )
-        )
-    hair_bones = {name for names in chains for name in names}
+    hair_bones = {name for kind in (chains, cloth_chains, tip_chains, appendage_chains) for names in kind for name in names}
     volume = body_volume.fit(mesh_obj, joints, hair_bones)
     colliders = _body_colliders(volume, joints)
     head = _head_collider(mesh_obj, joints, hair_bones)

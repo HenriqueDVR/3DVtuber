@@ -97,6 +97,12 @@ def main():
 
     hair_w = np.array([sum(w for n, w in weights(i).items() if n.startswith("Hair")) for i in range(len(verts))])
     hair_idx = np.nonzero(hair_w > 0.5)[0]
+    if not len(hair_idx) or not any(b.name.startswith("Hair") for b in arm.data.bones):
+        # a solid head (--rigid-head) has no hair bones: filling unweighted vertices above is
+        # still worth doing, the rest of this script has nothing to work on
+        print("no hair bones: nothing to reweight")
+        export(arm, out_blend, out_vrm)
+        return
     tree = KDTree(len(hair_idx))
     for k, i in enumerate(hair_idx):
         tree.insert(verts[i], k)
@@ -199,6 +205,10 @@ def main():
         mesh.update()
     print(f"removed {len(bridging)} hidden hair faces joining far-apart strands")
 
+    export(arm, out_blend, out_vrm)
+
+
+def export(arm, out_blend, out_vrm):
     bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath(out_blend), copy=True)
     print("exported", bpy.ops.export_scene.vrm(filepath=bpy.path.abspath(out_vrm), armature_object_name=arm.name))
 

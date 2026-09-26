@@ -10,10 +10,14 @@ image is used at full resolution.
 import json
 import os
 import sys
+from pathlib import Path
 
 import bpy
 import numpy as np
 from mathutils import Vector
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "addon"))
+from vtuber_maker.pipeline import normalize  # noqa: E402
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 SRC, VIEWS, VIEW, IMAGE, OUT = (os.path.abspath(argv[0]), os.path.abspath(argv[1]), argv[2],
@@ -33,8 +37,21 @@ Minv = np.linalg.inv(M)
 half = view["ortho_scale"] / 2
 cam_axis = M[:3, 2]
 
+def _upstream_texture(node, depth=4):
+    """The image texture node feeding `node`, through a few in between: Tripo's baseColorFactor 0.8
+    imports as a Mix node between the texture and Base Color."""
+    if node.type == "TEX_IMAGE":
+        return node
+    for socket in node.inputs if depth else ():
+        for link in socket.links:
+            found = _upstream_texture(link.from_node, depth - 1)
+            if found is not None:
+                return found
+    return None
+
+
 bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.gltf(filepath=SRC)
+normalize.import_model(Path(SRC))
 obj = next(o for o in bpy.context.scene.objects if o.type == "MESH")
 mesh = obj.data
 
@@ -73,7 +90,7 @@ base = mesh.materials[0]
 patch = base.copy()
 patch.name = "face_patch"
 bsdf = patch.node_tree.nodes["Principled BSDF"]
-tex_node = bsdf.inputs["Base Color"].links[0].from_node
+tex_node = _upstream_texture(bsdf.inputs["Base Color"].links[0].from_node)
 for link in list(bsdf.inputs["Normal"].links):   # the normal map follows the atlas UVs, not the patch's
     patch.node_tree.links.remove(link)
 img = bpy.data.images.load(IMAGE)
