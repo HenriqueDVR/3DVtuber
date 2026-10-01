@@ -1,6 +1,6 @@
 """Tint a part's sides and back to match the colour its front has in the texture.
 
-    blender -b -P scripts/retexture/match_front_colour.py -- in.glb out.glb --at X,Y,Z [--underside] [--close]
+    blender -b -P scripts/retexture/match_front_colour.py -- in.fbx|in.glb out.glb --at X,Y,Z [--underside] [--close]
 
 Tripo paints what the front view shows and guesses the rest, so a coloured part (a mascot's
 head, dyed skin) can fade to near white round the sides and back. This finds the separate
@@ -14,6 +14,8 @@ front's and the sides' typical colour. Dark texels (lines, eyes) are left alone.
 texels included: Tripo paints whatever sits under a part (a collar under a round head) onto it.
 `--close` caps holes in the lower part of the piece (a round head left open at the bottom)
 with faces in that colour, so tilting the head doesn't show its inside.
+
+Tripo's rigged FBX goes in as it is; the GLB names it as its rig (see matte_materials.py).
 """
 import argparse
 import sys
@@ -25,7 +27,7 @@ from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "addon"))
 
-from vtuber_maker.pipeline import meshdata, texture_space  # noqa: E402
+from vtuber_maker.pipeline import meshdata, normalize, texture_space  # noqa: E402
 
 # Facing is the cosine between a vertex normal and the front (-Y): at or above FRONT the texel
 # keeps its colour; at or below SIDE it gets the full shift.
@@ -55,7 +57,7 @@ def main():
     at = Vector([float(c) for c in args.at.split(",")])
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.import_scene.gltf(filepath=str(Path(args.src).resolve()))
+    rig = normalize.import_unrigged(Path(args.src))
     mesh_obj = next(o for o in bpy.context.scene.objects if o.type == "MESH")
     image = texture_space.material_base_color_image(mesh_obj.data.materials[0])
     width, height = image.size
@@ -104,7 +106,7 @@ def main():
     image.pixels[:] = pixels.ravel()
     image.pack()
     print(f"changed {int((w[..., 0] > 0).sum())} texels")
-    bpy.ops.export_scene.gltf(filepath=str(Path(args.out).resolve()), export_format="GLB")
+    normalize.export_glb(Path(args.out), rig)
     print("wrote", args.out)
 
 

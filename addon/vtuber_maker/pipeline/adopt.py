@@ -17,8 +17,8 @@ import numpy as np
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-from . import fingers, meshdata, normalize
-from .rig import BONE_NAMES, make_active
+from . import compat, fingers, inpaint, meshdata, normalize
+from .rig import BONE_NAMES, FAR_BONES, bone_steps, make_active
 
 # VRoid / Tripo "VRM 1.0 humanoid" names -> ours.
 _TORSO = {"C_Hips": "hips", "C_Spine": "spine", "C_Chest": "chest", "C_UpperChest": "upper_chest", "C_Neck": "neck",
@@ -28,6 +28,8 @@ _LIMBS = {"Shoulder": "shoulder", "UpperArm": "upper_arm", "LowerArm": "lower_ar
 _FINGER_NAMES = {"Thumb": "thumb", "Index": "index", "Middle": "middle", "Ring": "ring", "Little": "little"}
 # The source and the rig's mesh must agree this closely (95th percentile, m) once both are normalized.
 MATCH = 0.01
+# A vertex counts as on a bone (see reaching_across) holding at least this share of it.
+FAR_SHARE = 0.02
 
 
 def names():
@@ -53,7 +55,7 @@ def load(path, height=1.6):
     """
     before = set(bpy.data.objects)
     if str(path).lower().endswith(".fbx"):
-        bpy.ops.import_scene.fbx(filepath=str(path))
+        compat.import_fbx(path)
     else:
         bpy.ops.import_scene.gltf(filepath=str(path))
     imported = set(bpy.data.objects) - before
@@ -141,30 +143,81 @@ def build_armature(bones, name="Armature"):
 
 def transfer_weights(mesh_obj, armature_obj, surface, weights):
     """Weight `mesh_obj` from the rig's mesh: each vertex takes the weights at the nearest point on
-    its surface (interpolated over that triangle), and gets the armature. Returns the 95th
-    percentile distance to that surface, which says whether the rig fits this source at all."""
+    its surface (interpolated over that triangle), and gets the armature.
+
+    Returns (gap, mismatched): the 95th percentile distance to that surface, which says whether
+    the rig fits this source at all, and the mask of vertices failing the robust transfer's match
+    test (inpaint.matched: too far, or facing another way), whose weights `repair_weights` refills.
+    """
     rig_verts, rig_tris = surface
     table, order = weights
     tree = BVHTree.FromPolygons([tuple(v) for v in rig_verts], [tuple(t) for t in rig_tris])
     verts = meshdata.world_vertices(mesh_obj)
+    rig_normals = inpaint.vertex_normals(rig_verts, rig_tris)
     groups = {name: (mesh_obj.vertex_groups.get(name) or mesh_obj.vertex_groups.new(name=name)) for name in order}
     gaps = np.zeros(len(verts))
+    found_at, found_normals = np.zeros_like(verts), np.zeros_like(verts)
     for i, point in enumerate(verts):
         found, _, face, gaps[i] = tree.find_nearest(Vector(point.tolist()))
         a, b, c = (rig_verts[k] for k in rig_tris[face])
-        w = _barycentric(np.array(found), a, b, c)
+        found_at[i] = found
+        w = _barycentric(found_at[i], a, b, c)
+        found_normals[i] = w @ rig_normals[rig_tris[face]]
         mixed = w @ table[rig_tris[face]]
         for k in np.flatnonzero(mixed > 1e-4):
             groups[order[k]].add([i], float(mixed[k] / mixed.sum()), "REPLACE")
     if np.percentile(gaps, 95) > MATCH:
         raise ValueError(f"the rig's mesh doesn't fit this source ({np.percentile(gaps, 95):.3f} m apart): "
                          "another generation of the model?")
+    found_normals /= np.maximum(np.linalg.norm(found_normals, axis=1, keepdims=True), 1e-30)
+    normals = inpaint.vertex_normals(verts, meshdata.triangles(mesh_obj.data))
+    ok = inpaint.matched(verts, normals, found_at, found_normals, float(np.linalg.norm(np.ptp(verts, axis=0))))
     world = mesh_obj.matrix_world.copy()
     mesh_obj.parent = armature_obj
     mesh_obj.matrix_world = world
     modifier = mesh_obj.modifiers.new("Armature", "ARMATURE")
     modifier.object = armature_obj
-    return float(np.percentile(gaps, 95))
+    return float(np.percentile(gaps, 95)), ~ok
+
+
+def reaching_across(mesh_obj, armature_obj):
+    """Vertices weighted (each at least FAR_SHARE) to two bones rig.FAR_BONES or more steps
+    apart in the skeleton (rig.bone_steps)."""
+    bones = armature_obj.data.bones
+    groups = [g for g in mesh_obj.vertex_groups if g.name in bones]
+    count = len(mesh_obj.data.vertices)
+    if not groups:
+        return np.zeros(count, dtype=bool)
+    from .loose import _weight_table
+    table = _weight_table(mesh_obj, count)[[g.index for g in groups]]
+    share = table / np.maximum(table.sum(axis=0, keepdims=True), 1e-12)
+    apart = bone_steps(armature_obj, [g.name for g in groups])
+    heavy = (share >= FAR_SHARE).T.astype(float)
+    return ((heavy @ (apart >= FAR_BONES).astype(float)) * heavy).sum(axis=1) > 0
+
+
+def repair_weights(mesh_obj, armature_obj, mismatched=None, hair=None):
+    """Refill (inpaint.fill_mesh) the adopted weights that can't be right from the ones around them.
+
+    Untrusted: vertices `reaching_across` the skeleton, and `mismatched` ones from
+    `transfer_weights`. The mask `hair` is filled only from hair and the rest only from the rest:
+    Model C's twin-tail lies on her shoulder, so filling across would hand the hair the arm or
+    the shoulder Head again. A stretch
+    with nothing trusted on its side (a whole wing on arm and spine, which the appendage role
+    replaces anyway) keeps its weights. Returns a report of the counts.
+    """
+    far = reaching_across(mesh_obj, armature_obj)
+    count = len(mesh_obj.data.vertices)
+    hair = np.zeros(count, dtype=bool) if hair is None else np.asarray(hair, dtype=bool)
+    mismatched = np.zeros(count, dtype=bool) if mismatched is None else np.asarray(mismatched, dtype=bool)
+    untrusted = far | mismatched
+    report = {"reaching_across": int(far.sum()), "mismatched": int(mismatched.sum()), "filled": 0, "unresolved": 0}
+    for part in (hair, ~hair):
+        if (untrusted & part).any():
+            filled, unresolved = inpaint.fill_mesh(mesh_obj, armature_obj, ~(untrusted & part), ~part)
+            report["filled"] += filled
+            report["unresolved"] += unresolved
+    return report
 
 
 def joints(bones):

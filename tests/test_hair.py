@@ -109,5 +109,65 @@ class HairBonesOnSyntheticCharacter(unittest.TestCase):
         self.assertLess(worst, 0.01)
 
 
+def _sheet(x0, x1, z0, z1, y, nx, nz, offset):
+    """A flat grid of quads in the x-z plane at depth y; vertex indices start at `offset`."""
+    xs, zs = np.meshgrid(np.linspace(x0, x1, nx), np.linspace(z0, z1, nz), indexing="ij")
+    verts = np.stack([xs.ravel(), np.full(xs.size, y), zs.ravel()], axis=1)
+    index = np.arange(nx * nz).reshape(nx, nz) + offset
+    faces = np.stack([index[:-1, :-1].ravel(), index[1:, :-1].ravel(), index[1:, 1:].ravel(),
+                      index[:-1, 1:].ravel()], axis=1)
+    return verts, faces
+
+
+class StrayHairBits(unittest.TestCase):
+    """A strand, a bit too small for a chain lying on it, and one lying well away from it."""
+
+    @classmethod
+    def setUpClass(cls):
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        strand, strand_faces = _sheet(0.10, 0.12, 1.0, 1.6, 0.0, 3, 25, 0)
+        near, near_faces = _sheet(0.10, 0.11, 1.19, 1.21, -0.005, 3, 3, len(strand))
+        far, far_faces = _sheet(0.25, 0.26, 1.19, 1.21, 0.0, 3, 3, len(strand) + len(near))
+        verts = np.vstack([strand, near, far])
+        data = bpy.data.meshes.new("hair")
+        data.from_pydata(verts.tolist(), [], np.vstack([strand_faces, near_faces, far_faces]).tolist())
+        cls.mesh = bpy.data.objects.new("hair", data)
+        bpy.context.scene.collection.objects.link(cls.mesh)
+        joints = {key: np.array(p, float) for key, p in (("hips", (0, 0, 0.9)), ("head", (0, 0, 1.4)))}
+        armature_data = bpy.data.armatures.new("Armature")
+        cls.armature = bpy.data.objects.new("Armature", armature_data)
+        bpy.context.scene.collection.objects.link(cls.armature)
+        rig.make_active(cls.armature)
+        bpy.ops.object.mode_set(mode="EDIT")
+        for key in ("hips", "head"):
+            bone = armature_data.edit_bones.new(rig.BONE_NAMES[key])
+            bone.head, bone.tail = joints[key].tolist(), (joints[key] + [0, 0, 0.1]).tolist()
+        bpy.ops.object.mode_set(mode="OBJECT")
+        body = cls.mesh.vertex_groups.new(name=rig.BONE_NAMES["hips"])
+        body.add(list(range(len(verts))), 1.0, "REPLACE")
+        cls.mesh.vertex_groups.new(name=rig.BONE_NAMES["head"])
+        features ={"left_eye": np.array([0.03, -0.1, 1.5]), "right_eye": np.array([-0.03, -0.1, 1.5])}
+        cls.chains = hair.build_hair_bones(cls.mesh, cls.armature, joints, features, np.ones(len(verts), dtype=bool))
+        cls.near = range(len(strand), len(strand) + len(near))
+        cls.far = range(len(strand) + len(near), len(verts))
+
+    def groups_of(self, index):
+        names = {g.index: g.name for g in self.mesh.vertex_groups}
+        return {names[g.group]: g.weight for g in self.mesh.data.vertices[index].groups if g.weight > 0}
+
+    def test_only_the_strand_gets_a_chain(self):
+        self.assertEqual(len(self.chains), 1)
+
+    def test_a_bit_lying_on_the_strand_moves_with_it(self):
+        for index in self.near:
+            weights = self.groups_of(index)
+            self.assertNotIn(rig.BONE_NAMES["hips"], weights)
+            self.assertTrue(all(name.startswith("Hair") or name == rig.BONE_NAMES["head"] for name in weights))
+
+    def test_a_bit_away_from_the_strand_keeps_its_weights(self):
+        for index in self.far:
+            self.assertEqual(self.groups_of(index), {rig.BONE_NAMES["hips"]: 1.0})
+
+
 if __name__ == "__main__":
     unittest.main()

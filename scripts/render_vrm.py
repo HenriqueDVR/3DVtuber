@@ -69,7 +69,7 @@ def set_keys(values):
 
 
 scene = bpy.context.scene
-scene.render.engine = "BLENDER_EEVEE_NEXT"
+scene.render.engine = "BLENDER_EEVEE_NEXT" if bpy.app.version < (5, 0, 0) else "BLENDER_EEVEE"  # renamed back in 5.0
 scene.render.resolution_x, scene.render.resolution_y = 1600, 1600
 scene.render.film_transparent = True
 scene.view_settings.view_transform = "Standard"

@@ -30,6 +30,11 @@ HANGS_BELOW_CENTER = 0.35
 MIN_CHAIN_LENGTH = 0.4
 # Fraction of a chain's length over which weight hands over from the head bone.
 ROOT_BLEND = 0.12
+# A bit of hanging hair too small for a chain of its own and this close (m) to a strand's
+# vertex moves with that vertex; further off it keeps its weights. Model C's twin-tail region
+# (a box pick on a mesh fused to her body) left 168 vertices in such bits on Tripo's
+# RightUpperArm and thigh weights.
+STRAY_REACH = 0.02
 
 
 def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None):
@@ -87,7 +92,10 @@ def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None):
 
     if chains:
         _add_bones(armature, chains)
-        _reweight(mesh_obj, verts, head, strands)
+        covered = np.zeros(len(verts), dtype=bool)
+        for members, _ in strands:
+            covered[members] = True
+        _reweight(mesh_obj, verts, head, strands, np.flatnonzero(hanging & ~covered))
     return [chain.names for chain in chains]
 
 
@@ -184,8 +192,11 @@ def _add_bones(armature, chains):
     bpy.ops.object.mode_set(mode="OBJECT")
 
 
-def _reweight(mesh_obj, verts, head, strands):
-    """Move each strand's vertices onto its own chains, blending only between those chains."""
+def _reweight(mesh_obj, verts, head, strands, strays=()):
+    """Move each strand's vertices onto its own chains, blending only between those chains.
+
+    `strays` (hanging hair in no strand) within STRAY_REACH of a strand vertex copy its weights.
+    """
     head_group = BONE_NAMES["head"]
     new_weights = {}
     for members, chains in strands:
@@ -211,6 +222,17 @@ def _reweight(mesh_obj, verts, head, strands):
             strongest = sorted(weights.items(), key=lambda item: -item[1])[:MAX_INFLUENCES]
             total = sum(weight for _, weight in strongest)
             new_weights[int(vertex)] = {name: weight / total for name, weight in strongest if weight > 0}
+    if len(strays) and new_weights:
+        from mathutils.kdtree import KDTree
+        done = np.fromiter(new_weights, dtype=np.int64)
+        tree = KDTree(len(done))
+        for k, vertex in enumerate(done):
+            tree.insert(verts[vertex], k)
+        tree.balance()
+        for vertex in strays:
+            _, k, gap = tree.find(verts[vertex])
+            if gap <= STRAY_REACH:
+                new_weights[int(vertex)] = new_weights[int(done[k])]
 
     groups = mesh_obj.vertex_groups
     for _members, chains in strands:

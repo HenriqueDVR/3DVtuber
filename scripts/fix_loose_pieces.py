@@ -13,10 +13,15 @@ Three things, all of which only show once something moves:
 * Small loose pieces (buckles, straps, panels) are put on one bone each, so a piece can't be
   torn between two limbs (see pipeline/loose.py). Big pieces are left alone.
 
+The rig is measured in the poses apps use before and after. If the tidy-up tore it (an edge
+growing by more than loose.TEARS: joining glued model A's cut sleeves back onto its skirt, a 77 cm
+sheet), it is done again without joining, and failing that left out; the report says which.
+
 Run before `add_fingers.py` and `to_tpose.py`. The original file is left alone.
 Needs the VRM Add-on for Blender.
 """
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -36,14 +41,49 @@ def parse_args():
     return parser.parse_args(sys.argv[sys.argv.index("--") + 1:])
 
 
-def main():
-    args = parse_args()
+def skinned():
     armature = next(o for o in bpy.data.objects if o.type == "ARMATURE")
     meshes = [o for o in bpy.data.objects if o.type == "MESH" and any(m.type == "ARMATURE" for m in o.modifiers)]
     if not meshes:
         sys.exit("no skinned mesh in the file")
+    return armature, meshes
 
-    if not args.keep_seams:
+
+def main():
+    args = parse_args()
+    source = bpy.data.filepath
+    armature, meshes = skinned()
+    # measured before and after: the tidy-up must not tear what it tidies (see loose.TEARS)
+    before = loose.worst_stretch(meshes, armature)
+    tidy(armature, meshes, join=not args.keep_seams)
+    after = loose.worst_stretch(meshes, armature)
+    undone = []
+    for join in ([False] if not args.keep_seams else []) + [None]:
+        torn = loose.tore(before, after)
+        if not torn:
+            break
+        what = ", ".join(f"{pose} {b * 100:.1f} -> {a * 100:.1f} cm" for pose, b, a in torn)
+        undone.append(f"the tidy-up tore the rig ({what}): "
+                      + ("done again without joining touching surfaces" if join is False else "left as it was"))
+        print("UNDONE", undone[-1])
+        bpy.ops.wm.open_mainfile(filepath=source)
+        armature, meshes = skinned()
+        if join is None:
+            after = before
+            break
+        tidy(armature, meshes, join=join)
+        after = loose.worst_stretch(meshes, armature)
+    print("VTUBER_MAKER_REPORT " + json.dumps({"stretch_cm": {pose: round(v * 100, 1) for pose, v in after.items()},
+                                               "undone": undone}))
+
+    vrm_export.ensure_vrm_addon()
+    bpy.ops.wm.save_as_mainfile(filepath=str(args.out_blend.resolve()), copy=True)
+    vrm_export.export(args.out_vrm.resolve(), armature)
+    print("wrote", args.out_blend.name, "and", args.out_vrm.name)
+
+
+def tidy(armature, meshes, join):
+    if join:
         for mesh in meshes:
             before = len(mesh.data.vertices)
             joined = loose.join_touching_surfaces(mesh, armature)
@@ -75,11 +115,6 @@ def main():
     for piece in changed[:12]:
         print(f"    {piece['vertices']:5d} verts, {piece['size_cm']:5.1f} cm across -> {piece['bone']}"
               f" (was pulled by {', '.join(piece['was_torn_with'])})")
-
-    vrm_export.ensure_vrm_addon()
-    bpy.ops.wm.save_as_mainfile(filepath=str(args.out_blend.resolve()), copy=True)
-    vrm_export.export(args.out_vrm.resolve(), armature)
-    print("wrote", args.out_blend.name, "and", args.out_vrm.name)
 
 
 main()

@@ -1,14 +1,19 @@
 """Make a generated model's materials matte: no metallic/roughness map, metallic 0, roughness 0.9.
 
-    blender -b -P scripts/matte_materials.py -- in.glb out.glb
+    blender -b -P scripts/matte_materials.py -- in.fbx|in.glb out.glb
 
 Tripo ships a metallic/roughness map that makes skin and cloth look like plastic or metal in
-ordinary viewers. Colour and normal maps are kept. The original file is left alone.
+ordinary viewers. Colour and normal maps are kept. The original file is left alone. Tripo's
+rigged FBX goes in as it is; the GLB that comes out holds the mesh and names the FBX as its rig,
+so the app still finds the rig (manifest.rig_of).
 """
 import sys
 from pathlib import Path
 
 import bpy
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
+from vtuber_maker.pipeline import normalize  # noqa: E402
 
 ROUGHNESS = 0.9
 
@@ -16,7 +21,7 @@ ROUGHNESS = 0.9
 def main():
     src, out = (Path(p).resolve() for p in sys.argv[sys.argv.index("--") + 1:])
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.import_scene.gltf(filepath=str(src))
+    rig = normalize.import_unrigged(src)
     unused = set()
     for material in bpy.data.materials:
         if not material.use_nodes or "Principled BSDF" not in material.node_tree.nodes:
@@ -49,7 +54,7 @@ def main():
         for feeder in feeders:
             if not any(out.links for out in feeder.outputs):
                 tree.nodes.remove(feeder)
-    bpy.ops.export_scene.gltf(filepath=str(out), export_format="GLB")
+    normalize.export_glb(out, rig)
     print("wrote", out)
 
 

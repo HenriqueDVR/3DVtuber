@@ -15,9 +15,14 @@ Plain Python, no bpy: the desktop app and agents read and write manifests outsid
 """
 
 import json
+import os
+import struct
 from pathlib import Path
 
 VERSION = 1
+# {old version: function returning the manifest one version on}. Applied on load, so a character
+# made by an older app keeps opening after the schema changes. Each VERSION bump adds one, with a test.
+MIGRATIONS = {}
 
 # What a piece does, and the stage that acts on it: "build" while rigging (make_vrm.py),
 # "pieces" on the finished A-pose rig before the T-pose bake (scripts/apply_pieces.py).
@@ -52,7 +57,7 @@ OPTIONS = {
     "loose_pieces": True,     # scripts/fix_loose_pieces.py
     "keep_seams": False,      # with it: don't join touching surfaces (model A's verified build kept them)
     "fingers": "guides",      # "guides" (surface guides, the model A/model B route), "auto" or "none"
-    "skinning": "heat",       # "heat" (bone heat and the arm/body rules) or "template" (template_skin.py)
+    "skinning": "heat",       # "heat" (bone heat and the arm/body rules), "template" (template_skin.py) or "voxel" (voxel_skin.py, same rules)
     "tpose": "spec",          # "spec" (spec hands, straight fingers), "plain" or "none"
     "repair_shoulder_seams": True,
     "eyes": None,             # eye tracking: "iris" (moving iris), "slide" (painted patch), "none"; None: from the survey
@@ -62,9 +67,12 @@ OPTIONS = {
 EYES = (None, "none", "iris", "slide")
 FINGERS = ("guides", "auto", "none")
 TPOSE = ("spec", "plain", "none")
-SKINNING = ("heat", "template")
+SKINNING = ("heat", "template", "voxel")
 # Paths, relative to the manifest's folder when not absolute.
 PATHS = ("source", "reference", "face", "out_dir", "rig")
+# The glTF scene extra through which a GLB names the rigged FBX it was made from: the texture
+# steps (matte, tint, face patch) write Tripo's FBX out as the mesh alone.
+RIG_KEY = "vtuber_rig"
 
 
 def new(source, name, author="Unknown"):
@@ -74,10 +82,64 @@ def new(source, name, author="Unknown"):
             "pieces": []}
 
 
+def carries_rig(path):
+    """Whether a model file is an FBX with a VRoid-style skeleton, as Tripo's "VRM 1.0 humanoid" rig
+    exports: then it is its own `rig` (adopt.py). Read as bytes: binary and ASCII FBX both keep
+    bone names as plain text, and the desktop app asks this without Blender."""
+    path = Path(path)
+    if path.suffix.lower() != ".fbx" or not path.is_file():
+        return False
+    marker, tail = b"J_Bip_C_Hips", b""
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            if marker in tail + chunk:
+                return True
+            tail = chunk[-len(marker):]
+    return False
+
+
+def rig_of(path):
+    """The rig file that goes with a model file, or None.
+
+    Tripo's rigged FBX is its own (carries_rig). A GLB the texture steps made from one names it
+    (RIG_KEY), found where it was or, moved along with the GLB, beside it; a named file that no
+    longer carries a rig counts for nothing. Plain bytes, no Blender.
+    """
+    path = Path(path)
+    if carries_rig(path):
+        return path
+    named = _scene_extras(path).get(RIG_KEY)
+    if not isinstance(named, str) or not named:
+        return None
+    for candidate in (Path(named), path.parent / Path(named).name):
+        if carries_rig(candidate):
+            return candidate
+    return None
+
+
+def _scene_extras(path):
+    """The extras on a .glb or .gltf file's scene; {} for any other file, or one that doesn't read."""
+    try:
+        if path.suffix.lower() == ".gltf":
+            data = json.loads(path.read_text(encoding="utf-8"))
+        elif path.suffix.lower() == ".glb":
+            with path.open("rb") as f:
+                head = f.read(20)
+                if len(head) < 20 or head[:4] != b"glTF" or head[16:20] != b"JSON":
+                    return {}
+                data = json.loads(f.read(struct.unpack("<I", head[12:16])[0]))
+        else:
+            return {}
+        extras = (data.get("scenes") or [{}])[data.get("scene", 0)].get("extras")
+        return extras if isinstance(extras, dict) else {}
+    except (OSError, ValueError, IndexError, AttributeError, TypeError):
+        return {}
+
+
 def load(path):
     """Read and check a manifest; paths stay as written, resolve them with `path_of`."""
     path = Path(path)
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = migrate(json.loads(path.read_text(encoding="utf-8")))
     data["options"] = {**OPTIONS, **data.get("options", {})}
     data.setdefault("joints", {})
     data.setdefault("pieces", [])
@@ -88,11 +150,25 @@ def load(path):
     return data
 
 
+def migrate(data):
+    """Carry an older manifest forward to VERSION; refuse one from a newer app rather than misread it."""
+    version = data.get("version")
+    if isinstance(version, int) and version > VERSION:
+        raise ValueError(f"manifest: made by a newer version of the app (version {version}, this one reads {VERSION})")
+    while isinstance(version, int) and version < VERSION and version in MIGRATIONS:
+        data = MIGRATIONS[version](dict(data))
+        version = data["version"]
+    return data
+
+
 def save(data, path):
     path = Path(path)
     validate(data)
     clean = {k: v for k, v in data.items() if not k.startswith("_")}
-    path.write_text(json.dumps(clean, indent=2) + "\n", encoding="utf-8")
+    # through a temporary file: a crash mid-write must not leave the user's decisions half written
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(clean, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def path_of(data, key):

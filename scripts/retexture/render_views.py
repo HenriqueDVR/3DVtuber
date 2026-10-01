@@ -4,7 +4,7 @@ For every view this writes an unlit colour render (the current base colour),
 a raw view-depth EXR used later for visibility tests, and a normalised depth
 PNG (near = white) for ControlNet. Camera data goes to views.json.
 
-    blender -b --python render_views.py -- model.glb out_dir [resolution]
+    blender -b --python render_views.py -- model.glb|model.fbx out_dir [resolution]
 """
 import json
 import math
@@ -42,7 +42,7 @@ def _upstream_texture(node, depth=4):
 
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
-normalize.import_model(Path(SRC))
+normalize.import_unrigged(Path(SRC))  # as face_patch.py imports it, so the views line up
 mesh = next(o for o in bpy.context.scene.objects if o.type == "MESH")
 orig_mat = mesh.data.materials[0]
 base_node = _upstream_texture(orig_mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"].links[0].from_node)
@@ -80,7 +80,7 @@ color_mat = emission_material("rt_color", color_socket)
 depth_mat = emission_material("rt_depth", depth_socket)
 
 scene = bpy.context.scene
-scene.render.engine = "BLENDER_EEVEE_NEXT"
+scene.render.engine = "BLENDER_EEVEE_NEXT" if bpy.app.version < (5, 0, 0) else "BLENDER_EEVEE"  # renamed back in 5.0
 scene.render.resolution_x = scene.render.resolution_y = RES
 scene.render.film_transparent = False
 scene.view_settings.view_transform = "Standard"

@@ -5,7 +5,7 @@ views facing the surface head-on, and texels hidden in a view (depth test) or
 sitting on a depth discontinuity are skipped. Texels no view covers keep the
 original colour.
 
-    blender -b --python project_back.py -- model.glb views_dir image_prefix out.glb [out_texture.png]
+    blender -b --python project_back.py -- model.glb|model.fbx views_dir image_prefix out.glb [out_texture.png]
 
 `image_prefix` picks which images to project, e.g. "color_" (round-trip test)
 or "gen_" (diffusion output), read as <views_dir>/<prefix><view name>.png.
@@ -13,9 +13,13 @@ or "gen_" (diffusion output), read as <views_dir>/<prefix><view name>.png.
 import json
 import os
 import sys
+from pathlib import Path
 
 import bpy
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "addon"))
+from vtuber_maker.pipeline import normalize  # noqa: E402
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 SRC, VIEWS, PREFIX, OUT_GLB = os.path.abspath(argv[0]), os.path.abspath(argv[1]), argv[2], os.path.abspath(argv[3])
@@ -29,7 +33,7 @@ BORDER_FADE = 0.06       # fraction of the image border faded out (tiles overlap
 FACE_PRIORITY = 50.0     # the dedicated face close-up overrides wider views where it sees
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.gltf(filepath=SRC)
+rig = normalize.import_unrigged(Path(SRC))
 mesh = next(o for o in bpy.context.scene.objects if o.type == "MESH")
 mat = mesh.data.materials[0]
 nt = mat.node_tree
@@ -176,5 +180,5 @@ out_img.save()
 final = bpy.data.images.load(OUT_TEX)
 final.colorspace_settings.name = "sRGB"
 base_node.image = final
-bpy.ops.export_scene.gltf(filepath=OUT_GLB, export_format="GLB")
+normalize.export_glb(Path(OUT_GLB), rig)
 print("wrote", OUT_GLB)

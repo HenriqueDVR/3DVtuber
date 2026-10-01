@@ -37,7 +37,8 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
     on `pieces_reference` (the manifest's unmodified model) when given, else on this model.
     `rig_path` is a rig of this same model made elsewhere (Tripo's FBX, see adopt.py): its bones
     and weights replace joint detection and skinning; the rest runs as usual. `skinning`
-    "template" weights the body from a fitted template (template_skin.py) instead of bone heat.
+    "template" weights the body from a fitted template (template_skin.py) instead of bone heat;
+    "voxel" solves the skinning proxy by geodesic voxel binding (voxel_skin.py), rules unchanged.
     """
     warnings = []
     override = {k: np.asarray(v, dtype=float) for k, v in (joints_override or {}).items()}
@@ -109,11 +110,11 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
             rig.weight_head(mesh, armature, found.labels == found.face, found.labels, chin_z=chin)
     elif adopted is None and modelled_face:
         before = found.labels
-        found = rig.skin(mesh, armature, found)
+        found = rig.skin(mesh, armature, found, solver=skinning)
         named = roles.carry(named, before, found.labels, meshdata.world_vertices(mesh))
         rig.weight_head(mesh, armature, found.labels == found.face, found.labels, chin_z=chin)
     elif adopted is None:
-        rig.skin(mesh, armature)
+        rig.skin(mesh, armature, solver=skinning)
     if modelled_face:
         face_rig.set_eyelids_from_inserts(mesh, features, found, closed_eyes_image, lids=not keep_eyes)
     face_rig.add_shape_keys(mesh, features, blink=not keep_eyes)

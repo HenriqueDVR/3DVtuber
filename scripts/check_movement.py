@@ -16,7 +16,10 @@ turns out from under. Nearness to a bone can't tell that apart: an A-pose arm ha
 chest, and model B's brooch and model A's corset trims sat nearer the upper arm than any torso bone
 while rightly staying with the chest they sit on. A piece whose own edges stretch is torn
 (part goes, part stays: a skirt pulled up by the hands resting on it). Each finding gets the
-manifest role that fixed it last time. Changes nothing.
+manifest role that fixed it last time. A piece left behind by a forearm or hand gets none: the
+hanging hand rested on it, and on model A (its 762-vertex waist piece) what was wrong was the part
+of the skirt the hand took along -- following the arm would have put the waist on it. Changes
+nothing.
 """
 
 import argparse
@@ -215,17 +218,21 @@ def main():
                         behind, left = True, np.zeros(len(contact), dtype=bool)
                         drape_bone = f"{side}UpperArm"
             if behind and row.get("role") not in SWINGS:
+                taken = None
                 if left.any():
                     bones, votes = np.unique(nearest[other[left]], return_counts=True)
                     bone = str(bones[np.argmax(votes)])
+                    # the piece that moved away from it
+                    labels_, votes = np.unique(mapped[other[left]], return_counts=True)
+                    taken = int(labels_[np.argmax(votes)])
                 else:
                     bone = drape_bone
-                row["findings"].append({"pose": pose, "kind": "stays behind", "bone": bone,
+                row["findings"].append({"pose": pose, "kind": "stays behind", "bone": bone, "taken_by": taken,
                                         "share": round(float(left.mean()), 2) if left.any() else None})
             elif entry["stretch_cm"] > TORN * scale * 100:
                 row["findings"].append({"pose": pose, "kind": "torn", "stretch_cm": entry["stretch_cm"]})
         if row["findings"]:
-            row["suggested"], row["why"] = _suggest(row, rest[members], shoulder_x, hips_z, looks.get(int(label)))
+            row["suggested"], row["why"] = _suggest(row, rest[members], shoulder_x, hips_z, looks.get(int(label)), named)
             report.append(row)
     report.sort(key=lambda r: -len(r["findings"]))
     # every piece's touching vertices and the most of them left behind in any pose, for tuning
@@ -254,7 +261,7 @@ def _partners(rest, labels, reach):
     return partner
 
 
-def _suggest(row, points, shoulder_x, hips_z, looks=None):
+def _suggest(row, points, shoulder_x, hips_z, looks=None, named=None):
     """(role, why): the manifest role that fixed this kind of finding before, or "" for none."""
     behind = [f for f in row["findings"] if f["kind"] == "stays behind"]
     torn = [f for f in row["findings"] if f["kind"] == "torn"]
@@ -268,6 +275,12 @@ def _suggest(row, points, shoulder_x, hips_z, looks=None):
         # a piece spanning from inside one shoulder joint to inside the other drapes the shoulders
         if points[:, 0].min() < -shoulder_x.get("Right", 0) * .5 and points[:, 0].max() > shoulder_x.get("Left", 0) * .5:
             return "shoulder_cloth", "drapes over both shoulders but stays when the arms move: a mantle"
+        if bone.endswith(("LowerArm", "Hand")):
+            taken = behind[0].get("taken_by")
+            taken = (named or {}).get(taken, {}).get("name") or f"piece {taken}"
+            return "", (f"the hanging {side.lower()} hand rested on it: if it belongs to the body it stays, and {taken}, "
+                        f"which the hand took along, may hang off the forearm (T-pose render): Fitted skirt on {taken}; "
+                        f"if it is part of the sleeve or glove, give it Follows a bone, {side}LowerArm, on Parts")
         return "follow_bone", f"hangs from the {side.lower()} arm but stays when it moves: follow {side}UpperArm"
     # a skirt the hands rest on (model A's) sits about the hips; a coat tearing at the armpit isn't one
     if torn and points[:, 2].mean() < hips_z:

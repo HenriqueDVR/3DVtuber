@@ -23,7 +23,7 @@ most of it. Big pieces (the body, the hair, a coat) are left alone: those are me
 import bmesh
 import numpy as np
 
-from .meshdata import pieces, welded_edges, world_vertices
+from .meshdata import pieces, world_vertices
 
 # A piece counts as a prop when it holds no more than this share of the character's vertices.
 PROP_SHARE = 0.02
@@ -34,6 +34,17 @@ HOLDS = 0.12
 ISLAND = 40
 # Passes of island clearing; each one takes the outermost strays first.
 ISLAND_PASSES = 3
+# Limb joints apps turn far. Two bones on one chain with one of these between them that holds none
+# of a piece move apart as surely as two limbs do (see _torn).
+LIMB_JOINTS = {side + name for side in ("Left", "Right")
+               for name in ("UpperArm", "LowerArm", "Hand", "UpperLeg", "LowerLeg", "Foot")}
+# The tidy-up is measured in these poses (see worst_stretch): arms pointed about world axes as
+# check_avatar.py points them, plus a head turn and a leg lift. A pose whose worst edge grows by
+# more than TEARS (m) across the tidy-up tore something it glued, and the tidy-up is undone
+# (see scripts/fix_loose_pieces.py): joining glued model A's cut sleeves to its skirt, 3.5 -> 77.6 cm
+# with the arms raised. Joining shells at the armpit stretches too, by design: model B's 7.0 -> 13.6 cm.
+GUARD_ARMS = {"arms T-pose": (1, 0, 0), "arms forward": (0.3, -1, -0.3), "arms raised": (0.5, 0, 1)}
+TEARS = 0.2
 
 
 def synchronize_shoulder_seams(mesh_obj, armature_obj, reach=0.4):
@@ -65,8 +76,9 @@ def synchronize_shoulder_seams(mesh_obj, armature_obj, reach=0.4):
     keys = np.round(verts[indices] / 1e-5).astype(np.int64)
     _, inverse = np.unique(keys, axis=0, return_inverse=True)
     ordered = indices[np.argsort(inverse, kind="stable")]
-    labels = np.sort(inverse)
-    runs = np.split(ordered, np.flatnonzero(np.diff(labels)) + 1)
+    labels = np.sort(inverse.ravel())
+    runs = [part for members in np.split(ordered, np.flatnonzero(np.diff(labels)) + 1)
+            for part in _not_far_apart(mesh_obj, armature_obj, members)]
     deform = {g.index for g in mesh_obj.vertex_groups if g.name in armature_obj.data.bones
               and armature_obj.data.bones[g.name].use_deform}
     changed = 0
@@ -96,6 +108,31 @@ def synchronize_shoulder_seams(mesh_obj, armature_obj, reach=0.4):
     return changed
 
 
+def _not_far_apart(mesh_obj, armature_obj, members):
+    """`members` (copies of one point) in groups whose leading bones are under rig.FAR_BONES steps
+    apart. The loose step cuts a twin-tail free of the arm it lies on (split_torn_seams); averaged
+    back together at the shoulder, model C's twin-tail hung 35% on RightUpperArm. Neck and
+    shoulder at a collar (2 steps) still close."""
+    from .rig import FAR_BONES, bone_steps
+    names = {g.index: g.name for g in mesh_obj.vertex_groups if g.name in armature_obj.data.bones}
+    leaders = []
+    for index in members:
+        weights = [(g.weight, names[g.group]) for g in mesh_obj.data.vertices[int(index)].groups if g.group in names]
+        leaders.append(max(weights)[1] if weights else None)
+    bones = sorted({name for name in leaders if name is not None})
+    steps = bone_steps(armature_obj, bones) if len(bones) > 1 else np.zeros((1, 1))
+    at = {name: k for k, name in enumerate(bones)}
+    groups = []
+    for index, name in zip(members, leaders):
+        home = next((g for g in groups if name is None or g[0] is None
+                     or steps[at[name], at[g[0]]] < FAR_BONES), None)
+        if home is None:
+            groups.append((name, [index]))
+        else:
+            home[1].append(index)
+    return [np.array(g[1]) for g in groups]
+
+
 def join_touching_surfaces(mesh_obj, armature_obj, distance=0.0002, verts=None):
     """Merge vertices sitting in the same place, where the surfaces belong together.
 
@@ -104,30 +141,18 @@ def join_touching_surfaces(mesh_obj, armature_obj, distance=0.0002, verts=None):
     at the armpit. Merged, the skin stretches instead. UVs are stored per face corner, so the
     texture and its seams survive the merge, and the shape keys come through with the mesh.
 
-    Only surfaces whose bones belong to one chain are joined. In the pose a character is modelled
-    in, things touch that have no business being joined -- a hand resting against a thigh -- and
-    welding those glues the glove to the skirt: the first time the arm moves, a 3 mm edge draws
-    out into a 40 cm ribbon.
+    Only surfaces whose bones don't move apart are joined (see _together). In the pose a
+    character is modelled in, things touch that have no business being joined -- a hand resting
+    against a thigh -- and welding those glues the glove to the skirt: the first time the arm
+    moves, a 3 mm edge draws out into a 40 cm ribbon.
     """
     verts = world_vertices(mesh_obj) if verts is None else verts
-    leader = _leading_bones(mesh_obj, len(verts))
-    keys = np.round(verts / max(distance, 1e-9)).astype(np.int64)
-    _, first, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
-    representative = first[inverse.ravel()]
+    representative = _together(mesh_obj, armature_obj, verts, distance)
 
     mesh = bmesh.new()
     mesh.from_mesh(mesh_obj.data)
     mesh.verts.ensure_lookup_table()
-    names = {group.index: group.name for group in mesh_obj.vertex_groups}
-    targets = {}
-    for index, rep in enumerate(representative):
-        if index == rep:
-            continue
-        here, there = leader[index], leader[rep]
-        if here >= 0 and there >= 0 and here != there:
-            if _torn(armature_obj, [names[here], names[there]]):
-                continue  # these two only happen to touch; joining them would tie limbs together
-        targets[mesh.verts[index]] = mesh.verts[rep]
+    targets = {mesh.verts[index]: mesh.verts[rep] for index, rep in enumerate(representative) if index != rep}
     if targets:
         bmesh.ops.weld_verts(mesh, targetmap=targets)
         mesh.to_mesh(mesh_obj.data)
@@ -145,6 +170,50 @@ def _leading_bones(mesh_obj, count):
             if entry.weight > best[index]:
                 best[index], leader[index] = entry.weight, entry.group
     return leader
+
+
+def _together(mesh_obj, armature_obj, verts, distance):
+    """Each vertex's representative: the first vertex in its spot (`distance` wide) whose leading
+    bone doesn't move apart from its own (see _torn), or itself.
+
+    A spot on a cut holds a copy of the vertex for each side -- the sleeve cut free of the skirt
+    it rests on, each side with its own UV-seam twins -- and only copies on one side belong
+    together. Joining them all to one copy glued model A's cut sleeves back onto the skirt.
+    """
+    leader = _leading_bones(mesh_obj, len(verts))
+    names = {group.index: group.name for group in mesh_obj.vertex_groups}
+    keys = np.round(verts / max(distance, 1e-9)).astype(np.int64)
+    _, inverse = np.unique(keys, axis=0, return_inverse=True)
+    inverse = inverse.ravel()
+    representative = np.arange(len(verts))
+    order = np.argsort(inverse, kind="stable")
+    apart = {}
+
+    def torn(first, second):
+        if first < 0 or second < 0 or first == second:
+            return False
+        pair = (min(first, second), max(first, second))
+        if pair not in apart:
+            apart[pair] = _torn(armature_obj, [names[pair[0]], names[pair[1]]])
+        return apart[pair]
+
+    for members in np.split(order, np.flatnonzero(np.diff(inverse[order])) + 1):
+        reps = []
+        for index in members:
+            rep = next((r for r in reps if not torn(leader[index], leader[r])), None)
+            if rep is None:
+                reps.append(index)
+            else:
+                representative[index] = rep
+    return representative
+
+
+def _surface(mesh_obj, armature_obj, verts):
+    """(weld, a, b) as meshdata.welded_edges, but a cut's two sides stay apart (see _together)."""
+    weld = _together(mesh_obj, armature_obj, verts, 1e-5)
+    edges = np.empty(len(mesh_obj.data.edges) * 2, dtype=np.int64)
+    mesh_obj.data.edges.foreach_get("vertices", edges)
+    return weld, weld[edges[0::2]], weld[edges[1::2]]
 
 
 def split_torn_seams(mesh_obj, armature_obj, verts=None):
@@ -240,8 +309,11 @@ def rigidify_props(mesh_obj, armature_obj, verts=None):
         if not _torn(armature_obj, holders):
             continue
         # one bone for the whole piece: the one every holder hangs off, so a fin reaching from
-        # one arm to the other rides the chest rather than being pulled in two directions
-        onto = _shared_bone(armature_obj, holders) or mesh_obj.vertex_groups[int(np.argmax(average))].name
+        # one arm to the other rides the chest rather than being pulled in two directions. On one
+        # chain that is the torso (a cuff trim partly on the hips it rests on), which would leave
+        # it behind when the arm lifts: there the bone holding most of it takes it.
+        most = mesh_obj.vertex_groups[int(np.argmax(average))].name
+        onto = most if _one_chain(armature_obj, holders) else _shared_bone(armature_obj, holders) or most
         _set_one(mesh_obj, members, onto)
         changed.append({
             "vertices": int(len(members)),
@@ -271,20 +343,44 @@ def _shared_bone(armature_obj, holders):
 
 
 def _torn(armature_obj, holders):
-    """Whether these bones pull a piece apart: none of them is on the others' own chain."""
+    """Whether these bones pull a piece apart.
+
+    Bones on one chain -- one of them with every other among its ancestors or descendants --
+    bend a piece the way it is meant to (a skirt panel on the hips and the spine, a strand on its
+    spring chain), unless a limb joint between two of them holds none of it (LIMB_JOINTS). The
+    hips are the forearm's ancestor, but with the shoulder and elbow turning in between, a glove
+    resting on the skirt moves 40 cm away from it when the arm lifts. Counting that pair as one
+    chain welded model A's cut sleeves back onto the skirt.
+    """
     bones = [armature_obj.data.bones.get(name) for name in holders]
     bones = [bone for bone in bones if bone is not None]
     if len(bones) < 2:
         return False
+    names = {bone.name for bone in bones}
     for bone in bones:
-        line = {bone.name}
-        parent = bone.parent
-        while parent is not None:
-            line.add(parent.name)
-            parent = parent.parent
-        if all(other.name in line or _descends(other, bone) for other in bones):
+        others = [other for other in bones if other != bone]
+        if not all(_descends(bone, other) or _descends(other, bone) for other in others):
+            continue
+        if not any(_skips_joint(bone, other, names) if _descends(bone, other) else _skips_joint(other, bone, names)
+                   for other in others):
             return False
     return True
+
+
+def _one_chain(armature_obj, holders):
+    """Whether one of these bones has every other among its ancestors or descendants."""
+    bones = [bone for bone in (armature_obj.data.bones.get(name) for name in holders) if bone is not None]
+    return any(all(_descends(bone, other) or _descends(other, bone) for other in bones if other != bone)
+               for bone in bones)
+
+
+def _skips_joint(bone, ancestor, holders):
+    """Whether a limb joint from `bone` up to (not including) `ancestor` is missing from `holders`."""
+    while bone is not None and bone != ancestor:
+        if bone.name in LIMB_JOINTS and bone.name not in holders:
+            return True
+        bone = bone.parent
+    return False
 
 
 def _descends(bone, ancestor):
@@ -322,9 +418,13 @@ def fix_weight_islands(mesh_obj, armature_obj, verts=None):
     skirt to a forearm. Nothing shows until the arm moves and the edge between them draws out
     into a spike. A patch smaller than `ISLAND` whose bone is used by none of its neighbours is
     given the weights of the surface around it instead.
+
+    A cut's two sides share their spots but not their surface (see _surface): walked across it,
+    a glove and the strip of thigh it was cut from read as patches on each other, and one took
+    the other's weights.
     """
     verts = world_vertices(mesh_obj) if verts is None else verts
-    weld, edge_a, edge_b = welded_edges(mesh_obj, verts)
+    weld, edge_a, edge_b = _surface(mesh_obj, armature_obj, verts)
     weights = _weight_table(mesh_obj, len(verts))
     fixed, touched = [], []
     for _ in range(ISLAND_PASSES):
@@ -440,18 +540,7 @@ def _sleeve_tube(mesh_obj, armature_obj, verts, garment):
     contact whose two sides already ride limbs that move apart.
     """
     bones, matrix = armature_obj.data.bones, armature_obj.matrix_world
-    leader = _leading_bones(mesh_obj, len(verts))
-    names = {group.index: group.name for group in mesh_obj.vertex_groups}
-    keys = np.round(verts / 1e-5).astype(np.int64)
-    _, first, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
-    weld = first[inverse.ravel()]
-    for index in np.flatnonzero(weld != np.arange(len(verts))):
-        here, there = leader[index], leader[weld[index]]
-        if here >= 0 and there >= 0 and here != there and _torn(armature_obj, [names[here], names[there]]):
-            weld[index] = index
-    edges = np.empty(len(mesh_obj.data.edges) * 2, dtype=np.int64)
-    mesh_obj.data.edges.foreach_get("vertices", edges)
-    edge_a, edge_b = weld[edges[0::2]], weld[edges[1::2]]
+    weld, edge_a, edge_b = _surface(mesh_obj, armature_obj, verts)
     reached = np.zeros(len(verts), dtype=bool)
     for side, sign in (("Left", 1), ("Right", -1)):
         points = [np.array(matrix @ bones[side + name].head_local) for name in ("UpperArm", "LowerArm")]
@@ -599,6 +688,75 @@ def follow_bone(mesh_obj, armature_obj, members, bone_name):
     """
     group = mesh_obj.vertex_groups.get(bone_name) or mesh_obj.vertex_groups.new(name=bone_name)
     return sum(_blend_skinning(mesh_obj, armature_obj, int(index), {group.index: 1.0}, 1.0) for index in members)
+
+
+def worst_stretch(mesh_objs, armature_obj):
+    """{pose: the most any edge of `mesh_objs` grows (m)} in the GUARD_ARMS poses, a head turn and
+    a leg lift. The pose is put back afterwards."""
+    import bpy
+    from mathutils import Matrix, Vector
+    bones = armature_obj.pose.bones
+    rest = [world_vertices(obj) for obj in mesh_objs]
+    edges = []
+    for obj in mesh_objs:
+        pairs = np.empty(len(obj.data.edges) * 2, dtype=np.int64)
+        obj.data.edges.foreach_get("vertices", pairs)
+        edges.append(pairs.reshape(-1, 2))
+
+    def turn(name, axis, angle):
+        # about a world axis through the bone's head: a bone's own axes twist a limb instead
+        bone = bones[name]
+        head = bone.head.copy()
+        bone.matrix = Matrix.Translation(head) @ Matrix.Rotation(angle, 4, axis) @ Matrix.Translation(-head) @ bone.matrix
+        bpy.context.view_layer.update()
+
+    def arms(direction):
+        for side, mirror in (("Left", 1.0), ("Right", -1.0)):
+            if f"{side}UpperArm" in bones and f"{side}Hand" in bones:
+                now = (bones[f"{side}Hand"].head - bones[f"{side}UpperArm"].head).normalized()
+                want = Vector((mirror * direction[0], direction[1], direction[2])).normalized()
+                axis = now.cross(want)
+                if axis.length > 1e-6:
+                    turn(f"{side}UpperArm", axis.normalized(), now.angle(want))
+
+    poses = {label: (lambda d=direction: arms(d)) for label, direction in GUARD_ARMS.items()}
+    if "Head" in bones:
+        poses["head turn"] = lambda: turn("Head", Vector((0, 0, 1)), 0.6)
+    if "LeftUpperLeg" in bones:
+        poses["leg lift"] = lambda: turn("LeftUpperLeg", Vector((1, 0, 0)), 0.8)
+    kept = {bone.name: bone.matrix_basis.copy() for bone in bones}
+    worst = {}
+    try:
+        for label, pose in poses.items():
+            for bone in bones:
+                bone.matrix_basis = Matrix.Identity(4)
+            bpy.context.view_layer.update()
+            pose()
+            graph = bpy.context.evaluated_depsgraph_get()
+            worst[label] = 0.0
+            for obj, before, pairs in zip(mesh_objs, rest, edges):
+                evaluated = obj.evaluated_get(graph)
+                data = evaluated.to_mesh()
+                coords = np.empty(len(data.vertices) * 3)
+                data.vertices.foreach_get("co", coords)
+                evaluated.to_mesh_clear()
+                matrix = np.array(obj.matrix_world)
+                now = coords.reshape(-1, 3) @ matrix[:3, :3].T + matrix[:3, 3]
+                length = np.linalg.norm(before[pairs[:, 0]] - before[pairs[:, 1]], axis=1)
+                grown = np.linalg.norm(now[pairs[:, 0]] - now[pairs[:, 1]], axis=1) - length
+                # edges with no length at rest are the stitches across sleeve cuts, made to stretch
+                worst[label] = max(worst[label], float(grown[length > 1e-6].max(initial=0.0)))
+    finally:
+        for bone in bones:
+            bone.matrix_basis = kept[bone.name]
+        bpy.context.view_layer.update()
+    return worst
+
+
+def tore(before, after):
+    """[(pose, before, after)] for the poses whose worst stretch grew by more than TEARS (see worst_stretch)."""
+    return [(pose, before.get(pose, 0.0), value) for pose, value in after.items()
+            if value - before.get(pose, 0.0) > TEARS]
 
 
 def _blend_skinning(mesh_obj, armature_obj, index, target, strength):

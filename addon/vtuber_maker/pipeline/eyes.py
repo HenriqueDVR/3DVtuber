@@ -23,7 +23,7 @@ import numpy as np
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-from . import face_points, face_rig, meshdata
+from . import compat, face_points, face_rig, meshdata
 from .rig import BONE_NAMES
 
 SIDE_IDS = face_rig.EYE_INSERT_IDS
@@ -686,7 +686,7 @@ def cut_out(material, blend=False):
         extension.mtoon1.alpha_mode = "BLEND" if blend else "MASK"
         extension.mtoon1.alpha_cutoff = 0.5
         return
-    material.blend_method = "BLEND" if blend else "CLIP"
+    compat.set_alpha(material, blend)
     if material.node_tree is not None:
         bsdf = next((n for n in material.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
         image = next((n for n in material.node_tree.nodes if n.type == "TEX_IMAGE"), None)

@@ -3,7 +3,7 @@ import unittest
 
 import bpy
 import numpy as np
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 from vtuber_maker.pipeline import loose, rig, tpose
 from test_fingers import deformed
@@ -36,6 +36,7 @@ class ClothingRepair(unittest.TestCase):
         obj.shape_key_add(name="Basis")
         key = obj.shape_key_add(name="Expression")
         key.data[0].co.y += .001
+        key.value = 0.0  # 5.x adds new keys at 1.0; the repairs must carry an unused key along
         bpy.context.view_layer.update()
         return obj
 
@@ -56,6 +57,81 @@ class ClothingRepair(unittest.TestCase):
         for vertex in obj.data.vertices:
             self.assertAlmostEqual(sum(g.weight for g in vertex.groups), 1, places=6)
         self.assertEqual(len(obj.data.polygons), 10)
+
+    def test_bones_a_limb_joint_apart_are_torn_even_on_one_chain(self):
+        # the hips are the forearm's ancestor, but the shoulder and elbow lie between them: a
+        # hand resting on a skirt moves 40 cm away from it when the arm lifts
+        torn = lambda *names: loose._torn(self.arm, list(names))
+        self.assertTrue(torn("LeftLowerArm", "Hips"))
+        self.assertTrue(torn("LeftHand", "Spine"))
+        self.assertTrue(torn("LeftLowerLeg", "Hips"))
+        self.assertTrue(torn("LeftLowerArm", "RightLowerArm"))
+        self.assertFalse(torn("LeftUpperArm", "Chest"))  # the armpit: one joint, the skin stretches
+        self.assertFalse(torn("LeftUpperArm", "LeftLowerArm", "LeftHand"))
+        self.assertFalse(torn("Hips", "LeftUpperLeg", "LeftLowerLeg"))  # a panel down to the knee
+        self.assertFalse(torn("Hips", "LeftUpperLeg", "RightUpperLeg"))  # a skirt over both thighs
+        self.assertFalse(torn("Spine", "Hips", "Chest"))
+
+    def grid(self, x0, z0, columns, rows, step=.01):
+        return [(x0 + i * step, -.03, z0 + j * step) for j in range(rows) for i in range(columns)]
+
+    def quads(self, first, columns, rows):
+        return [(first + j * columns + i, first + j * columns + i + 1, first + (j + 1) * columns + i + 1,
+                 first + (j + 1) * columns + i) for j in range(rows - 1) for i in range(columns - 1)]
+
+    def test_glove_resting_on_skirt_is_not_welded_to_it(self):
+        # The sleeve cut leaves the glove and the skirt as two surfaces meeting along a seam;
+        # joining them there drew a 3 mm edge out to 77 cm when the arms rose (model A, A-pose).
+        # A sleeve against the chest at the armpit still joins: one joint apart, it stretches.
+        skirt, glove = self.grid(.26, .78, 3, 3), self.grid(.28, .78, 3, 3)
+        chest, sleeve = self.grid(.10, 1.12, 3, 3), self.grid(.12, 1.12, 3, 3)
+        points = skirt + glove + chest + sleeve
+        weights = ([{"Hips": 1}] * 9 + [{"LeftLowerArm": 1}] * 9 + [{"Chest": 1}] * 9
+                   + [{"LeftUpperArm": .6, "Chest": .4}] * 9)
+        faces = [f for first in (0, 9, 18, 27) for f in self.quads(first, 3, 3)]
+        obj = self.mesh(points, weights, faces)
+        loose.join_touching_surfaces(obj, self.arm)
+        self.assertEqual(len(obj.data.vertices), 36 - 3)  # only the armpit seam joined
+        edges = np.array([e.vertices[:] for e in obj.data.edges])
+        before = deformed(obj)
+        tpose._point_arm(self.arm, "LeftUpperArm", "LeftHand", Vector((.5, 0, 1)).normalized())
+        after = deformed(obj)
+        growth = np.linalg.norm(after[edges[:, 0]] - after[edges[:, 1]], axis=1) - np.linalg.norm(before[edges[:, 0]] - before[edges[:, 1]], axis=1)
+        self.assertLess(growth[(edges < 18).all(axis=1)].max(), .01)  # skirt and glove, not the armpit
+
+    def test_far_side_of_a_cut_is_not_a_stray_patch_on_the_arm(self):
+        # A thigh strip meeting the glove only along a cut: walking the surface across the cut
+        # read it as a patch on the arm and handed it the forearm's weights (17 vertices on model A).
+        glove, thigh = self.grid(.28, .76, 4, 4), self.grid(.25, .76, 4, 2)
+        obj = self.mesh(glove + thigh, [{"LeftLowerArm": 1}] * 16 + [{"LeftUpperLeg": 1}] * 8,
+                        self.quads(0, 4, 4) + self.quads(16, 4, 2))
+        self.assertEqual(loose.fix_weight_islands(obj, self.arm), [])
+        for i in range(24):
+            self.assertEqual({obj.vertex_groups[g.group].name: g.weight for g in obj.data.vertices[i].groups},
+                             {"LeftLowerArm" if i < 16 else "LeftUpperLeg": 1})
+
+    def test_small_piece_torn_between_forearm_and_hips_rides_the_bone_holding_most(self):
+        # a cuff trim bone heat gave partly to the hips it rests on: putting it on the ancestor
+        # both hang from (the hips) would leave it behind when the arm lifts
+        body = self.grid(-.2, .3, 20, 10)
+        trim = [(.30, -.04, .82), (.31, -.04, .82), (.30, -.04, .83)]
+        obj = self.mesh(body + trim, [{"Hips": 1}] * 200 + [{"LeftLowerArm": .7, "Hips": .3}] * 3,
+                        self.quads(0, 20, 10) + [(200, 201, 202)])
+        loose.rigidify_props(obj, self.arm)
+        for i in (200, 201, 202):
+            self.assertEqual({obj.vertex_groups[g.group].name: g.weight for g in obj.data.vertices[i].groups},
+                             {"LeftLowerArm": 1})
+
+    def test_the_tidy_up_guard_measures_a_tear_and_puts_the_pose_back(self):
+        obj = self.mesh([(.30, -.03, .80), (.29, -.03, .80), (.29, -.03, .81)],
+                        [{"LeftLowerArm": 1}, {"Hips": 1}, {"Hips": 1}], [(0, 1, 2)])
+        worst = loose.worst_stretch([obj], self.arm)
+        self.assertGreater(worst["arms raised"], loose.TEARS)
+        self.assertLess(worst["head turn"], 1e-6)
+        self.assertIn("arms raised", [pose for pose, _, _ in loose.tore({"arms raised": .01}, worst)])
+        self.assertEqual(loose.tore(worst, worst), [])
+        for bone in self.arm.pose.bones:
+            self.assertEqual(bone.matrix_basis, Matrix.Identity(4))
 
     def test_cut_skirt_copies_rejoin_without_dragging_sleeve_or_hand(self):
         points = [(-.14, -.03, .90), (-.14, -.03, .90), (-.16, -.03, .92),

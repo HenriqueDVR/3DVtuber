@@ -1,9 +1,11 @@
 """Put an imported character into the shape the rest of the pipeline expects."""
 
+from pathlib import Path
+
 import bpy
 from mathutils import Matrix
 
-from . import orient
+from . import compat, manifest, orient
 from .meshdata import triangles, world_vertices
 from .rig import make_active
 
@@ -14,7 +16,7 @@ ORIENTATION_KEY = "vtuber_orientation"
 IMPORTERS = {
     ".glb": lambda path: bpy.ops.import_scene.gltf(filepath=path),
     ".gltf": lambda path: bpy.ops.import_scene.gltf(filepath=path),
-    ".fbx": lambda path: bpy.ops.import_scene.fbx(filepath=path),
+    ".fbx": compat.import_fbx,
     ".obj": lambda path: bpy.ops.wm.obj_import(filepath=path),
 }
 
@@ -27,11 +29,52 @@ def import_model(path):
     importer(str(path.resolve()))
 
 
+def import_unrigged(path):
+    """Import a model for the texture steps (matte, tint, face patch): any file import_model takes,
+    a rig that came in it (Tripo's rigged FBX) taken off again, the meshes left where they stood.
+
+    Those steps edit and write the mesh alone, as GLB; the rig stays in the FBX, which adopt.py
+    reads. Returns that file -- the model itself, or the one an earlier step's GLB names (see
+    manifest.rig_of) -- for export_glb to name in turn, or None.
+    """
+    path = Path(path)
+    old = set(bpy.data.objects)
+    import_model(path)
+    imported = [obj for obj in bpy.data.objects if obj not in old]
+    if any(obj.type == "ARMATURE" for obj in imported):
+        for obj in imported:
+            if obj.type != "MESH":
+                continue
+            world = obj.matrix_world.copy()
+            obj.parent = None
+            obj.matrix_world = world
+            for modifier in [m for m in obj.modifiers if m.type == "ARMATURE"]:
+                obj.modifiers.remove(modifier)
+            obj.vertex_groups.clear()
+        for obj in imported:
+            if obj.type == "ARMATURE":
+                bpy.data.objects.remove(obj)
+    return manifest.rig_of(path)
+
+
+def export_glb(path, rig=None):
+    """Write the scene as a GLB for the texture steps; with `rig`, its glTF scene names that file
+    (manifest.RIG_KEY), so the app given this GLB still finds the rig."""
+    scene = bpy.context.scene
+    if rig is not None:
+        scene[manifest.RIG_KEY] = str(Path(rig).resolve())
+    elif manifest.RIG_KEY in scene:
+        del scene[manifest.RIG_KEY]
+    bpy.ops.export_scene.gltf(filepath=str(Path(path).resolve()), export_format="GLB", export_extras=rig is not None)
+
+
 def prepare(objects, height=1.6, upright=True):
     """Join the imported meshes into one object, `height` metres tall, standing on z=0 over the origin.
 
     Transforms are baked into the vertices, and non-mesh objects from the import
-    (parent empties, cameras, lights) are removed. With `upright`, the character is
+    (parent empties, cameras, lights, a rig) are removed. A rig that came with the model (Tripo's
+    rigged FBX) goes with its weights and modifier: adopt.py reads it from the file on its own.
+    With `upright`, the character is
     turned to the pipeline's frame (+Z up, facing -Y) first, so a Y-up FBX or a model
     facing away still rigs: see orient.detect. Pass an orient.Orientation to say which
     way it is standing instead of detecting, or False to leave it as imported.
@@ -46,6 +89,12 @@ def prepare(objects, height=1.6, upright=True):
         obj.matrix_world = world
         if obj.data.users > 1:
             obj.data = obj.data.copy()
+        rigs = [m for m in obj.modifiers if m.type == "ARMATURE" and m.object in objects]
+        if rigs:
+            # the rig's J_Bip_* groups would otherwise ride along into our skinning and the export
+            for m in rigs:
+                obj.modifiers.remove(m)
+            obj.vertex_groups.clear()
     for obj in objects:
         if obj.type != "MESH":
             bpy.data.objects.remove(obj)

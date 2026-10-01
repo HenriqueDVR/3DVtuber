@@ -47,8 +47,9 @@ def parse_args():
                              "so face tracking can slide and curl it")
     parser.add_argument("--mouth-colour",
                         help='tint the inside of the mouth: "skin" (the face colour) or a hex colour like "#3a7bd5"')
-    parser.add_argument("--skinning", choices=("heat", "template"), default="heat",
-                        help="bone heat and rules, or weights from a fitted template body (template_skin.py)")
+    parser.add_argument("--skinning", choices=("heat", "template", "voxel"), default="heat",
+                        help="bone heat and rules, weights from a fitted template body (template_skin.py), "
+                             "or geodesic voxel weights and the same rules (voxel_skin.py)")
     parser.add_argument("--manifest", type=Path,
                         help="character manifest: its hair, hat, swing_cloth, appendage and body pieces override detection")
     parser.add_argument("--closed-eyes", type=Path, help="closed-eyes version of the face patch texture, for blink lids")

@@ -10,7 +10,7 @@ from mathutils import Vector
 from mathutils.kdtree import KDTree
 
 from .landmarks import ARM_HANGS
-from .meshdata import pieces, sample_surface, triangles, world_vertices
+from .meshdata import pieces, sample_surface, triangles, welded_edges, world_vertices
 
 # VRM humanoid bone key (as named by the VRM add-on) -> Blender bone name.
 BONE_NAMES = {
@@ -35,6 +35,13 @@ BONE_NAMES = {
     "right_lower_leg": "RightLowerLeg",
     "right_foot": "RightFoot",
 }
+
+# Two bones this many steps apart in the skeleton (see bone_steps) don't blend at any real
+# joint; a surface on both only follows them because two body parts touch in the model. Tripo
+# gave model C's right shoulder 18-45% Head where her twin-tail lies on it (Head to
+# RightUpperArm: 4). Chest and UpperArm at the armpit (3), neck and shoulder at the collar or
+# both thighs at the crotch (2) are real blends.
+FAR_BONES = 4
 
 # Where the spine joints sit along hips -> neck.
 SPINE_AT, CHEST_AT, UPPER_CHEST_AT = 0.25, 0.55, 0.8
@@ -122,6 +129,13 @@ OUTSIDE_FOLLOW = 0.3
 # Sleeve vertices bone heat gave at least this much arm weight keep it (see _keep_arms_off_parts).
 HEAT_TRUST = 0.5
 OVER_ARM_FADE = 0.15
+# ... except cloth lying against the forearm from outside (see _lying_against): it counts from a
+# cosine of the first value between its normal and the direction away from the arm, fully at the
+# second, and from the first multiple of the sleeve's fitted radius out, fully past the second.
+AGAINST_FACING = (-0.1, -0.4)
+AGAINST_BEYOND = (1.1, 1.3)
+# Rings of edges that verdict spreads over, past the sleeve's radius, to the rest of that cloth.
+AGAINST_SPREAD = 8
 # Nothing medial of the shoulders is arm: shoulder weight fades out between these fractions of
 # the arm joint's distance from the body's centre line, and arm weight between the next two,
 # so the chest doesn't fold in when the arms move.
@@ -144,6 +158,24 @@ CUT_SNAP = 0.1
 TORSO_KEYS = ("hips", "spine", "chest", "upper_chest")
 # With a rigid head, pieces whose mean Head weight is above this go fully onto the head.
 MOSTLY_HEAD = 0.5
+
+
+def bone_steps(armature_obj, names):
+    """Steps between every two of the named bones through the skeleton, as a square array: from
+    each up to the bone they share (inf with none). Fingers count as their hand."""
+    bones = armature_obj.data.bones
+    hands = {BONE_NAMES["left_hand"], BONE_NAMES["right_hand"]}
+    chains = []
+    for name in names:
+        chain = [name] + [p.name for p in bones[name].parent_recursive]
+        hand = next((k for k, bone in enumerate(chain) if bone in hands), None)
+        chains.append(chain if hand is None else chain[hand:])
+    steps = np.zeros((len(names), len(names)))
+    for i, a in enumerate(chains):
+        for j, b in enumerate(chains):
+            common = next((x for x in a if x in b), None)
+            steps[i, j] = np.inf if common is None else a.index(common) + b.index(common)
+    return steps
 
 
 def build_armature(joints, name="Armature"):
@@ -192,7 +224,7 @@ def build_armature(joints, name="Armature"):
     return armature
 
 
-def skin(mesh_obj, armature_obj, parts=None):
+def skin(mesh_obj, armature_obj, parts=None, solver="heat"):
     """Weight the mesh to the armature and deform it with an Armature modifier.
 
     Automatic (bone heat) weights fail on the self-intersecting surfaces that
@@ -203,13 +235,14 @@ def skin(mesh_obj, armature_obj, parts=None):
     and follow the head, and parts that don't run along an arm lose arm weights, so
     hair and coat tails hanging beside the hands stay put when the arms move. Sleeves
     joined to the torso are then cut free of it, which adds vertices: the returned
-    parts cover the new vertex list (None without parts).
+    parts cover the new vertex list (None without parts). `solver` "voxel" weights the proxy
+    by geodesic voxel binding (voxel_skin.py) instead of bone heat; the rules are the same.
     """
     rigid = None
     if parts is not None:
         rigid = parts.hair | np.isin(parts.labels, [p for p in list(parts.eyes.values()) + [parts.mouth] if p >= 0])
 
-    proxy = _weighted_proxy(mesh_obj, armature_obj, rigid)
+    proxy = _weighted_proxy(mesh_obj, armature_obj, rigid, solver)
 
     make_active(mesh_obj)
     mesh_obj.vertex_groups.clear()
@@ -467,8 +500,9 @@ def _keep_legs_below_hips(mesh_obj, armature_obj):
                 groups[group].add([int(index)], weight * moved, "ADD")
 
 
-def _weighted_proxy(mesh_obj, armature_obj, rigid):
-    """A voxel remesh of the mesh (without rigid parts) with bone heat weights.
+def _weighted_proxy(mesh_obj, armature_obj, rigid, solver="heat"):
+    """A voxel remesh of the mesh (without rigid parts) with bone heat weights, or with
+    `solver` "voxel" geodesic voxel weights (voxel_skin.py).
 
     Blender's heat solve sometimes fails outright on a remesh ("failed to find solution"),
     leaving every vertex unweighted, and whether it does depends on the voxel size. So other
@@ -494,6 +528,10 @@ def _weighted_proxy(mesh_obj, armature_obj, rigid):
         proxy.data.remesh_voxel_size = mesh_obj.dimensions.z / voxels
         bpy.ops.object.voxel_remesh()
 
+        if solver == "voxel":
+            from . import voxel_skin
+            voxel_skin.weigh(proxy, armature_obj)
+            return proxy
         make_active(armature_obj)
         proxy.select_set(True)
         bpy.ops.object.parent_set(type="ARMATURE_AUTO")
@@ -873,7 +911,12 @@ def _keep_arms_off_parts(mesh_obj, armature_obj, labels, skip):
             sleeve = np.zeros(len(verts), dtype=bool)
             for members, _end in tube_parts:
                 sleeve |= members
+            radius = _tube_radius(verts, along, distance, sleeve & near, start, shaft)
             tube = _inside_tube(verts, along, distance, sleeve & near, start, shaft)
+            # the hanging forearm rests beside a jacket's hip skirt: the tube's margin reaches it and
+            # bone heat fuses it to the sleeve over the gap, and once cut free it rode the forearms
+            # as strips (model A's OBJ); it faces the arm, which no sleeve does
+            against = _lying_against(mesh_obj, verts, chain, radius, along, joints_along)
             # Cloth draped over the top, outside or underside of the arm (a mantle, a bell sleeve
             # joined to the robe) follows it even where it doesn't wrap round it: to the wrist, or
             # only along the upper arm for long cloth reaching below the hips (a cape, a coat).
@@ -895,7 +938,7 @@ def _keep_arms_off_parts(mesh_obj, armature_obj, labels, skip):
                 over_arm = np.clip((until - along) / OVER_ARM_FADE, 0.0, 1.0) * away
                 share = np.maximum(tube, outside * np.clip((until - along) / OVER_ARM_FADE, 0.0, 1.0))
                 share = share * np.where(along > sleeve_end + SLEEVE_STEP, over_arm, 1.0)
-                share = np.maximum(share, heat)
+                share = np.maximum(share, heat) * (1.0 - against)
                 region = members & (near | _has_any(mesh_obj, arm_indices, members))
                 _set_arm_weights(mesh_obj, groups, verts, torso, arm_indices, names, region, share, along, joints_along)
                 # cut the sleeve free of the torso wherever it follows the arm
@@ -911,12 +954,21 @@ def _keep_arms_off_parts(mesh_obj, armature_obj, labels, skip):
 
 def _chain_distance(points, chain):
     """Distance from each point to the nearest of the segments joining `chain`'s points in turn."""
+    return _chain_nearest(points, chain)[0]
+
+
+def _chain_nearest(points, chain):
+    """(distance, nearest point) from each point to the segments joining `chain`'s points in turn."""
     best = np.full(len(points), np.inf)
+    foot = np.zeros_like(points)
     for a, b in zip(chain[:-1], chain[1:]):
         segment = b - a
         t = np.clip((points - a) @ segment / max(segment @ segment, 1e-12), 0.0, 1.0)
-        best = np.minimum(best, np.linalg.norm(points - (a + t[:, None] * segment), axis=1))
-    return best
+        on = a + t[:, None] * segment
+        distance = np.linalg.norm(points - on, axis=1)
+        closer = distance < best
+        best[closer], foot[closer] = distance[closer], on[closer]
+    return best, foot
 
 
 def _torso_weights(groups, torso, z):
@@ -987,6 +1039,16 @@ def _facing_torso(verts, start, shaft):
 
 def _inside_tube(verts, along, distance, sample, start, shaft):
     """Per vertex, 1 inside the arm's tube fading to 0 outside it (see ARM_TUBE_PERCENTILE)."""
+    r = _tube_radius(verts, along, distance, sample, start, shaft)
+    if r is None:
+        return np.ones(len(verts))
+    return np.clip((TUBE_FADE[1] * r - distance) / ((TUBE_FADE[1] - TUBE_FADE[0]) * r), 0.0, 1.0)
+
+
+def _tube_radius(verts, along, distance, sample, start, shaft):
+    """Per vertex, the sleeve's fitted radius at its step along the arm, or None without a sleeve
+    sample: the ARM_TUBE_PERCENTILE distance of the `sample` surface on the side facing away from
+    the torso, where nothing else rests against the arm."""
     _axis, side, up = _arm_frame(start, shaft)
     offset = verts - start
     inward = np.array([-np.sign(start[0]) or -1.0, 0.0, 0.0])
@@ -1002,11 +1064,51 @@ def _inside_tube(verts, along, distance, sample, start, shaft):
         if pick.sum() >= 4:
             radius[s_] = float(np.percentile(distance[pick], ARM_TUBE_PERCENTILE))
     if not radius:
-        return np.ones(len(verts))
+        return None
     known = np.array(sorted(radius))
     length = float(np.linalg.norm(shaft))
-    r = np.minimum(np.interp(step, known, [radius[k] for k in known]), ARM_TUBE_MAX * length)
-    return np.clip((TUBE_FADE[1] * r - distance) / ((TUBE_FADE[1] - TUBE_FADE[0]) * r), 0.0, 1.0)
+    return np.minimum(np.interp(step, known, [radius[k] for k in known]), ARM_TUBE_MAX * length)
+
+
+def _lying_against(mesh_obj, verts, chain, radius, along, joints_along):
+    """Per vertex, 1 for surface past the forearm's fitted sleeve that faces the arm, fading to 0.
+
+    A sleeve faces away from its arm all round, however wide it flares (model B's coat sleeves
+    reach 12 cm on their inner side). Cloth the hanging forearm rests beside -- a jacket's hip
+    skirt, a coat's front -- faces the arm from outside. Only a hanging forearm: an arm held out
+    has nothing resting beside it, and a hand's curled fingers face each other. Off when the
+    sleeve's own surface mostly faces the arm (normals pointing inward).
+    """
+    shaft = chain[-1] - chain[0]
+    if radius is None or -shaft[2] <= ARM_HANGS * np.linalg.norm(shaft):
+        return np.zeros(len(verts))
+    normals = np.empty(len(mesh_obj.data.vertices) * 3)
+    mesh_obj.data.vertices.foreach_get("normal", normals)
+    normals = normals.reshape(-1, 3) @ np.array(mesh_obj.matrix_world)[:3, :3].T
+    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-9)
+    distance, foot = _chain_nearest(verts, chain)
+    facing = np.einsum("ij,ij->i", normals, (verts - foot) / np.maximum(distance, 1e-9)[:, None])
+    elbow, wrist = joints_along
+    forearm = (np.clip((along - elbow + JOINT_BLEND) / JOINT_BLEND, 0.0, 1.0)
+               * np.clip((wrist + JOINT_BLEND - along) / JOINT_BLEND, 0.0, 1.0))
+    fitted = (distance <= radius) & (forearm > 0)
+    if not fitted.any() or np.median(facing[fitted]) <= 0:
+        return np.zeros(len(verts))
+    against = _smoothstep((AGAINST_FACING[0] - facing) / (AGAINST_FACING[0] - AGAINST_FACING[1]))
+    beyond = _smoothstep((distance / radius - AGAINST_BEYOND[0]) / (AGAINST_BEYOND[1] - AGAINST_BEYOND[0]))
+    against = against * beyond * forearm
+    # the rest of that cloth -- its hem, the far side of a panel with some thickness -- faces
+    # elsewhere; it is reached over the surface without coming back within the sleeve's radius
+    weld, a, b = welded_edges(mesh_obj, verts)
+    room = beyond * forearm
+    for _ in range(AGAINST_SPREAD):
+        spot = np.zeros(len(verts))
+        np.maximum.at(spot, weld, against)
+        reach = spot.copy()
+        np.maximum.at(reach, a, spot[b])
+        np.maximum.at(reach, b, spot[a])
+        against = np.maximum(against, reach[weld] * room)
+    return against
 
 
 def _attach_straps(mesh_obj, groups, verts, torso, labels, skip, arm_indices, names, along, joints_along, hugged):

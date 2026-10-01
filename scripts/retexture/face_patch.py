@@ -5,7 +5,9 @@ into the shared atlas blurs it. This moves the polygons a view sees head-on
 onto a new material whose UVs are that view's screen coordinates, so the
 image is used at full resolution.
 
-    blender -b --python face_patch.py -- model.glb views_dir view_name image.png out.glb
+    blender -b --python face_patch.py -- model.glb|model.fbx views_dir view_name image.png out.glb
+
+A rigged FBX (Tripo's) goes in as it is; the GLB names it as its rig (see matte_materials.py).
 """
 import json
 import os
@@ -51,7 +53,7 @@ def _upstream_texture(node, depth=4):
 
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
-normalize.import_model(Path(SRC))
+rig = normalize.import_unrigged(Path(SRC))
 obj = next(o for o in bpy.context.scene.objects if o.type == "MESH")
 mesh = obj.data
 
@@ -108,5 +110,5 @@ for i in chosen:
         x, y, _ = to_view(mw @ mesh.vertices[mesh.loops[li].vertex_index].co)
         uv[li].uv = (x, y)
 
-bpy.ops.export_scene.gltf(filepath=OUT, export_format="GLB")
+normalize.export_glb(Path(OUT), rig)
 print("wrote", OUT)

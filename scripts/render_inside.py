@@ -19,7 +19,7 @@ from mathutils import Matrix, Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 
-from vtuber_maker.pipeline import texture_space  # noqa: E402
+from vtuber_maker.pipeline import compat, texture_space  # noqa: E402
 
 # Where both arms point (shoulder to wrist, for the left arm; the right is mirrored).
 POSES = {"rest": None, "sides": (0.25, 0, -1), "tpose": (1, 0, 0), "forward": (0.3, -1, -0.3), "raised": (0.5, 0, 1)}
@@ -100,7 +100,7 @@ def inside_red(material):
 
 def setup_scene():
     scene = bpy.context.scene
-    scene.render.engine = "BLENDER_EEVEE_NEXT"
+    scene.render.engine = compat.EEVEE
     scene.render.resolution_x = scene.render.resolution_y = RESOLUTION
     scene.view_settings.view_transform = "Standard"
     world = scene.world or bpy.data.worlds.new("inside")

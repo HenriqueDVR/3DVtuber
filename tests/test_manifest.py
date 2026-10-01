@@ -1,5 +1,6 @@
 """The character manifest: pieces named by a point and a size, rebuilt with the roles the user gave them."""
 import json
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -73,6 +74,41 @@ class Manifest(unittest.TestCase):
 
     def test_joint_keys_are_the_rigs(self):
         self.assertEqual(set(manifest.JOINTS), set(rig.BONE_NAMES) - {"left_shoulder", "right_shoulder"})
+
+    def test_a_rigged_fbx_carries_its_rig(self):
+        with tempfile.TemporaryDirectory() as folder:
+            files = {"rigged.fbx": b"\0" * ((1 << 20) - 5) + b"J_Bip_C_Hips\0\1Model",  # across a read boundary
+                     "plain.fbx": b"Kaydara FBX Binary\0Model::Body", "rigged.glb": b"J_Bip_C_Hips"}
+            for name, content in files.items():
+                (Path(folder) / name).write_bytes(content)
+            found = {name: manifest.carries_rig(Path(folder) / name) for name in files}
+        self.assertEqual(found, {"rigged.fbx": True, "plain.fbx": False, "rigged.glb": False})
+
+    def test_a_glb_edited_from_a_rigged_fbx_finds_its_rig(self):
+        # the texture steps write the mesh alone as GLB: the FBX they read it from stays the rig
+        def glb(extras):
+            body = json.dumps({"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [], **extras}]}).encode()
+            body += b" " * (-len(body) % 4)
+            return struct.pack("<4sII", b"glTF", 2, 20 + len(body)) + struct.pack("<I4s", len(body), b"JSON") + body
+
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            rig = folder / "tripo" / "rigged.fbx"
+            rig.parent.mkdir()
+            rig.write_bytes(b"Kaydara FBX Binary\0J_Bip_C_Hips")
+            (folder / "plain.fbx").write_bytes(b"Kaydara FBX Binary\0Model::Body")
+            files = {"matte.glb": {"extras": {manifest.RIG_KEY: str(rig)}}, "plain.glb": {},
+                     "moved.glb": {"extras": {manifest.RIG_KEY: str(folder / "gone" / "plain.fbx")}},
+                     "lost.glb": {"extras": {manifest.RIG_KEY: str(folder / "gone" / "rigged.fbx")}}}
+            for name, extras in files.items():
+                (folder / name).write_bytes(glb(extras))
+            (folder / "broken.glb").write_bytes(b"glTF")
+            found = {name: manifest.rig_of(folder / name) for name in [*files, "broken.glb"]}
+            self.assertEqual(manifest.rig_of(rig), rig)
+            (folder / "rigged.fbx").write_bytes(rig.read_bytes())  # carried along beside the GLB
+            self.assertEqual(manifest.rig_of(folder / "lost.glb"), folder / "rigged.fbx")
+        self.assertEqual(found, {"matte.glb": rig, "plain.glb": None, "moved.glb": None, "lost.glb": None,
+                                 "broken.glb": None})
 
 
 class Roles(unittest.TestCase):
