@@ -31,7 +31,8 @@ def main(argv=None):
     p.add_argument("--manifest", type=Path, help="where to write it (default out/<name>/character.json)")
     p.add_argument("--face", type=Path, help="face.json from viewer/setup.html")
     p.add_argument("--reference", type=Path, help="the unmodified model, when the source had its texture edited")
-    p.add_argument("--rig", type=Path, help="the same model rigged by Tripo (its FBX): its skeleton and weights are used")
+    p.add_argument("--rig", type=Path, help="the same model rigged by Tripo (its FBX), when that is a separate file: "
+                   "its skeleton and weights are used (a rigged FBX model is its own rig without this)")
 
     p = sub.add_parser("status", help="options, plan and what each step produced")
     p.add_argument("manifest", type=Path)
@@ -129,8 +130,12 @@ def cmd_init(args):
         data["reference"] = _relative(args.reference, path)
     if getattr(args, "rig", None):
         data["rig"] = _relative(args.rig, path)
+    elif (rig := manifest.rig_of(args.model)) is not None:
+        # Tripo's rigged FBX is model and rig in one file; a GLB the texture steps made from it names it
+        data["rig"] = data["source"] if rig.resolve() == Path(args.model).resolve() else _relative(rig, path)
     manifest.save(data, path)
-    return {"manifest": str(path), "next": f"python -m app run {path} --only survey"}
+    return {"manifest": str(path), "source": data["source"], "rig": data.get("rig"),
+            "next": f"python -m app run {path} --only survey"}
 
 
 def cmd_status(args):

@@ -10,16 +10,22 @@ Only one Blender runs at a time (two at once hung the machine on 2026-09-23), an
 logs "Malloc returns null" is stopped: out of memory, Blender spins instead of exiting.
 """
 
+import hashlib
 import importlib.util
 import json
 import os
+import platform
+import re
 import shutil
+import struct
 import subprocess
 import sys
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
+
+from . import errors
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
@@ -28,6 +34,11 @@ LOCK = REPO / "out" / ".blender.lock"
 # Longest a single step may run (s); the slowest real steps take about 3 minutes.
 STEP_TIMEOUT = 30 * 60
 OUT_OF_MEMORY = "Malloc returns null"
+# Oldest Blender the pipeline runs on (EEVEE Next, extensions, the VRM Add-on's 4.2 builds), and the
+# series the full test suite has passed on (tests/run_matrix.py). Others at or above the minimum run
+# with a warning; keep in step with addon/vtuber_maker/pipeline/compat.py.
+MIN_BLENDER = (4, 2, 0)
+TESTED = {"4.2", "4.5", "5.2"}
 # Under this many triangles a face has too few vertices to bend without denting.
 COARSE_FACE = 3_000
 
@@ -60,7 +71,11 @@ SPRING_NOISE = 1.0
 
 
 class StepFailed(Exception):
-    pass
+    """`known`: the matching errors.KNOWN entry ({"code", "what", "fix", "options"}), when there is one."""
+
+    def __init__(self, message, known=None):
+        super().__init__(message)
+        self.known = known
 
 
 class Cancelled(Exception):
@@ -107,13 +122,37 @@ SOFT = {"face_tracking", "eyes", "mouth"}
 
 
 def find_blender(given=None):
+    """The Blender to run: --blender, $BLENDER, PATH, else the best installed one.
+
+    Installed ones are ranked tested series first, then newest: a newer untested Blender beside the
+    tested one must not silently take over the user's builds. Below MIN_BLENDER is never picked.
+    """
     for candidate in (given, os.environ.get("BLENDER"), shutil.which("blender")):
         if candidate and Path(candidate).exists():
             return str(candidate)
-    found = sorted(WINDOWS_BLENDER.glob("*/blender.exe")) if WINDOWS_BLENDER.exists() else []
+    found = [(_folder_version(p), p) for p in installed_blenders()]
+    found = [(v, p) for v, p in found if v and v >= MIN_BLENDER]
     if found:
-        return str(found[-1])
-    raise FileNotFoundError("Blender not found: put it on PATH, set $BLENDER, or pass --blender")
+        return str(max(found, key=lambda vp: (".".join(map(str, vp[0][:2])) in TESTED, vp[0]))[1])
+    raise FileNotFoundError(f"Blender {'.'.join(map(str, MIN_BLENDER[:2]))} or later not found: "
+                            "put it on PATH, set $BLENDER, or pass --blender")
+
+
+def installed_blenders():
+    """Every blender.exe in the usual Windows places: the installer's folder, Steam, the Store."""
+    roots = [WINDOWS_BLENDER, Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Steam" / "steamapps" / "common",
+             Path(os.environ.get("LOCALAPPDATA", "")) / "Programs"]
+    found = []
+    for root in roots:
+        if root.is_dir():
+            found += [p for p in root.glob("*/blender.exe") if "blender" in p.parent.name.lower()]
+    return found
+
+
+def _folder_version(path):
+    # "Blender 4.2", "blender-4.5.3-windows-x64": the folder names the series, which is what matters
+    found = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", Path(path).parent.name)
+    return tuple(int(g or 0) for g in found.groups()) if found else None
 
 
 class Project:
@@ -125,7 +164,7 @@ class Project:
         self.name = self.data["name"]
         self.out = manifest.path_of(self.data, "out_dir") or REPO / "out" / self.name
         self.state_path = self.out / "state.json"
-        self.state = json.loads(self.state_path.read_text(encoding="utf-8")) if self.state_path.exists() else {"steps": {}}
+        self.state = _load_state(self.state_path)
         self._blender = blender
 
     @property
@@ -189,7 +228,8 @@ class Project:
         for name, runs, why in self.plan():
             entry = self.state["steps"].get(name, {})
             steps.append({"step": name, "runs": runs, "skip_reason": why, "status": entry.get("status", "not run"),
-                          **{k: entry[k] for k in ("blend", "vrm", "json", "log", "finished", "seconds", "report", "reason")
+                          **{k: entry[k] for k in ("blend", "vrm", "json", "log", "finished", "seconds", "report", "reason",
+                                                     "known", "last_failure")
                              if k in entry}})
         last = self.latest()
         check = self.state["steps"].get("check", {})
@@ -214,7 +254,7 @@ class Project:
                 kept[name] = source
         meta = {"when": datetime.now().isoformat(timespec="seconds"), "vrm": str(self._last_vrm() or ""),
                 "note": note, "reports": kept}
-        (folder / "approved.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        _write_json(folder / "approved.json", meta)
         return meta
 
     def approved(self):
@@ -265,6 +305,11 @@ class Project:
             if steps.get(name, {}).get("status") == "failed":
                 issues.append(("build", f"built without {name.replace('_', ' ')}"))
         looks = []
+        # the loose step measures itself and undoes a tidy-up that tore the rig: the avatar is safe,
+        # but an armpit it meant to join may open
+        loose = steps.get("loose", {})
+        if loose.get("status") == "done":
+            looks += [("build", f"loose pieces: {line}") for line in (loose.get("report") or {}).get("undone", [])]
         movement = _read_json(steps.get("movement", {}).get("json"), {})
         for row in movement.get("pieces", []):
             kinds = sorted({f["kind"] for f in row["findings"]})
@@ -345,6 +390,15 @@ class Project:
         folder = self.out / "runs" / datetime.now().strftime("%Y%m%d-%H%M%S")
         folder.mkdir(parents=True, exist_ok=True)
         with _Lock():
+            # what built this run, so "it was good last week" can be traced to a Blender, add-on and commit
+            made_by = provenance(self.blender, self.manifest_path)
+            _write_json(folder / "run.json", {**made_by, "steps": NAMES[first:last + 1]})
+            version = made_by["blender_version"]
+            if version and tuple(map(int, version.split("."))) < MIN_BLENDER:
+                known = errors.describe("VM-BLENDER-OLD")
+                raise StepFailed(f"Blender {version} [VM-BLENDER-OLD] {known['fix']}", known)
+            for warning in made_by["warnings"]:
+                emit({"step": NAMES[first], "status": "warning", "reason": warning})
             for index in range(first, last + 1):
                 name = NAMES[index]
                 if CANCEL.is_set():
@@ -365,10 +419,14 @@ class Project:
                     emit({"step": name, "status": "cancelled"})
                     raise
                 except StepFailed as error:
+                    failure = {"reason": str(error)[-1500:], "finished": datetime.now().isoformat(timespec="seconds"),
+                               **({"known": error.known} if error.known else {})}
                     if name not in SOFT | CHECKS:
+                        # the step keeps what it last finished (later steps may read it); the failure
+                        # rides beside it so the app can say what went wrong and what to do
+                        self._note_failure(name, failure, folder / f"{index:02d}_{name}.log")
                         raise
-                    entry = {"status": "failed", "reason": str(error)[-1500:],
-                             "finished": datetime.now().isoformat(timespec="seconds")}
+                    entry = {"status": "failed", **failure}
                     # the reason keeps only its end, where the log's name no longer is
                     log = folder / f"{index:02d}_{name}.log"
                     if log.exists():
@@ -405,9 +463,17 @@ class Project:
         if code != 0 or not made:
             if name in OPTIONAL:
                 return {"status": "nothing to do", "log": str(log), "finished": entry["finished"]}
+            known = errors.classify(name, output)
+            said = f" [{known['code']}] {known['what']}; {known['fix']}" if known else ""
             if OUT_OF_MEMORY in output:
-                raise StepFailed(f"{name}: Blender ran out of memory (see {log})")
-            raise StepFailed(f"{name}: failed with exit code {code} (see {log})\n{_tail(output)}")
+                raise StepFailed(f"{name}: Blender ran out of memory (see {log}){said}", known)
+            raise StepFailed(f"{name}: failed with exit code {code} (see {log}){said}\n{_tail(output)}", known)
+        # checked here, at the step that made it: a truncated or half-exported file otherwise
+        # surfaces steps later as someone else's traceback
+        problem = output_problem(entry)
+        if problem:
+            known = errors.describe("VM-BAD-OUTPUT")
+            raise StepFailed(f"{name}: {problem} (see {log}) [VM-BAD-OUTPUT] {known['fix']}", known)
         for tag in ("VTUBER_MAKER_REPORT", "VTUBER_MAKER_PIECES"):
             report = _tagged(output, tag)
             if report is not None:
@@ -504,8 +570,16 @@ class Project:
             for later in NAMES[NAMES.index(name) + 1:]:
                 if self.state["steps"].get(later, {}).get("status") == "done":
                     self.state["steps"][later]["status"] = "stale"
+        self._save_state()
+
+    def _note_failure(self, name, failure, log):
+        entry = self.state["steps"].setdefault(name, {"status": "not run"})
+        entry["last_failure"] = {**failure, **({"log": str(log)} if log.exists() else {})}
+        self._save_state()
+
+    def _save_state(self):
         self.out.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(json.dumps(self.state, indent=2), encoding="utf-8")
+        _write_json(self.state_path, self.state, backup=True)
 
 
 def run_script(blender, script, args, blend_in=None, log=None, extra=()):
@@ -557,14 +631,172 @@ class _Lock:
         try:
             handle = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            held = LOCK.read_text(errors="replace")
-            raise StepFailed(f"another build is running ({held.strip()}); if none is, delete {LOCK}") from None
+            held = LOCK.read_text(errors="replace").strip()
+            found = re.match(r"pid (\d+)", held)
+            if not found or _alive(int(found.group(1))):
+                raise StepFailed(f"another build is running ({held}); if none is, delete {LOCK}") from None
+            # left by a process that crashed or was killed: without this the user had to find and
+            # delete the file by hand. A second taker racing us still loses on O_EXCL.
+            LOCK.unlink(missing_ok=True)
+            try:
+                handle = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                raise StepFailed(f"another build is running ({LOCK.read_text(errors='replace').strip()})") from None
         os.write(handle, f"pid {os.getpid()} since {datetime.now().isoformat(timespec='seconds')}".encode())
         os.close(handle)
         return self
 
     def __exit__(self, *exc):
         LOCK.unlink(missing_ok=True)
+
+
+def _alive(pid):
+    """Whether a process with this pid is running. Never os.kill(pid, 0) on Windows: it terminates."""
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        import ctypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            # no such process, or one we may not look at: only the first frees the lock
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED
+        handle = ctypes.c_void_p(handle)
+        code = ctypes.c_ulong()
+        kernel.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel.CloseHandle(handle)
+        return code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+# The humanoid bones VRM 1.0 requires; an exported file without them won't load in any app.
+REQUIRED_BONES = {"hips", "spine", "head", *(f"{side}{part}" for side in ("left", "right")
+                  for part in ("UpperArm", "LowerArm", "Hand", "UpperLeg", "LowerLeg", "Foot"))}
+# .blend magic: plain, zstd (Blender 3+ compression) and gzip (older compression)
+BLEND_MAGIC = (b"BLENDER", b"\x28\xb5\x2f\xfd", b"\x1f\x8b")
+
+
+def output_problem(entry):
+    """What is wrong with a step's output files, or None. Cheap: headers and the VRM's JSON, no Blender."""
+    if entry.get("blend"):
+        path = Path(entry["blend"])
+        with open(path, "rb") as handle:
+            head = handle.read(7)
+        if not head.startswith(BLEND_MAGIC):
+            return f"{path.name} isn't a .blend file"
+    if entry.get("json") and _read_json(entry["json"], None) is None:
+        return f"{Path(entry['json']).name} isn't readable JSON"
+    if entry.get("vrm"):
+        path = Path(entry["vrm"])
+        if not path.exists():
+            return f"{path.name} wasn't exported"
+        gltf = _glb_json(path)
+        if gltf is None:
+            return f"{path.name} isn't a readable .vrm (GLB)"
+        vrm = (gltf.get("extensions") or {}).get("VRMC_vrm")
+        if not vrm:
+            return f"{path.name} has no VRM 1.0 data (VRMC_vrm)"
+        bones = (vrm.get("humanoid") or {}).get("humanBones") or {}
+        missing = sorted(REQUIRED_BONES - set(bones))
+        if missing:
+            return f"{path.name} lacks required humanoid bones: {', '.join(missing)}"
+        count = len(gltf.get("nodes", []))
+        broken = sorted(b for b, v in bones.items() if not isinstance(v.get("node"), int) or not 0 <= v["node"] < count)
+        if broken:
+            return f"{path.name} names bones with no node: {', '.join(broken)}"
+    return None
+
+
+def _glb_json(path):
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(20)
+            if len(head) < 20 or head[:4] != b"glTF" or head[16:20] != b"JSON":
+                return None
+            return json.loads(handle.read(struct.unpack("<I", head[12:16])[0]))
+    except (OSError, ValueError):
+        return None
+
+
+_BLENDER_VERSIONS = {}
+
+
+def provenance(blender, manifest_path):
+    """What built a run: Blender and VRM Add-on versions, the code's commit, the manifest's hash.
+
+    `warnings` lists what differs from the tested setup (Blender 4.2 LTS). Never raises: a missing
+    git or a Blender that won't print its version must not stop a build.
+    """
+    warnings = []
+    if blender not in _BLENDER_VERSIONS:
+        try:
+            out = subprocess.run([blender, "--version"], capture_output=True, text=True, timeout=60).stdout
+            found = re.search(r"Blender (\d+\.\d+\.\d+)", out)
+            _BLENDER_VERSIONS[blender] = found.group(1) if found else None
+        except Exception:  # noqa: BLE001 -- provenance is a record, never a reason to stop
+            _BLENDER_VERSIONS[blender] = None
+    version = _BLENDER_VERSIONS[blender]
+    if version and ".".join(version.split(".")[:2]) not in TESTED:
+        warnings.append(f"Blender {version}: not yet tested with this pipeline (tested: {', '.join(sorted(TESTED))})")
+    commit = dirty = None
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, timeout=20).stdout.strip() or None
+        # tracked files only: the tree holds large untracked models
+        changed = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=REPO,
+                                 capture_output=True, text=True, timeout=20).stdout
+        dirty = bool(changed.strip())
+    except Exception:  # noqa: BLE001 -- provenance is a record, never a reason to stop
+        pass
+    try:
+        digest = hashlib.sha256(Path(manifest_path).read_bytes()).hexdigest()[:16]
+    except OSError:
+        digest = None
+    return {"started": datetime.now().isoformat(timespec="seconds"), "blender": str(blender),
+            "blender_version": version, "vrm_addon": _vrm_addon_version(version), "commit": commit,
+            "dirty": dirty, "manifest": str(manifest_path), "manifest_sha256": digest,
+            "python": platform.python_version(), "warnings": warnings}
+
+
+def _vrm_addon_version(blender_version):
+    # the extension's own manifest, where Blender 4.2 installs it for this user
+    base = Path(os.environ.get("APPDATA", Path.home() / ".config")) / "Blender Foundation" / "Blender"
+    series = ".".join((blender_version or "4.2").split(".")[:2])
+    for toml in sorted((base / series / "extensions").glob("*/vrm/blender_manifest.toml")):
+        found = re.search(r'^version\s*=\s*"([^"]+)"', toml.read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
+        if found:
+            return found.group(1)
+    return None
+
+
+def _write_json(path, data, backup=False):
+    """Write JSON so a crash mid-write leaves the old file whole, not half of the new one."""
+    path = Path(path)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    if backup and path.exists():
+        shutil.copy2(path, path.with_name(path.name + ".bak"))
+    os.replace(temporary, path)
+
+
+def _load_state(path):
+    """state.json, or its backup when it was left unreadable; a fresh state when neither exists."""
+    path = Path(path)
+    if not path.exists():
+        return {"steps": {}}
+    state = _read_json(path, None)
+    if isinstance(state, dict) and "steps" in state:
+        return state
+    backup = _read_json(path.with_name(path.name + ".bak"), None)
+    if isinstance(backup, dict) and "steps" in backup:
+        return backup
+    raise StepFailed(f"{path} is unreadable and has no usable backup; move it aside to start the build afresh")
 
 
 def _tagged(output, tag):

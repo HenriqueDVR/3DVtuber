@@ -44,13 +44,16 @@ async function renderDetail() {
   box.hidden = !s;
   if (!s) return;
   // a failed step's log is named in its reason ("... (see <log>)"), not kept as its own field
-  const log = s.log || String(s.reason || "").match(/see (.+?\.log)\)/)?.[1];
+  const fail = s.last_failure, known = s.known || fail?.known;
+  const log = s.log || fail?.log || String(s.reason || fail?.reason || "").match(/see (.+?\.log)\)/)?.[1];
   const file = (p) => p ? `<code>${esc(String(p).replaceAll("\\", "/").split("/").slice(-2).join("/"))}</code>` : "";
   box.innerHTML = `<div class="title">${stepName(s.step)} <span class="chip ${s.status.split(" ")[0]}">${esc(s.runs ? s.status : "off")}</span></div>
     <dl>${s.finished ? `<dt>finished</dt><dd>${esc(s.finished.replace("T", " "))}${s.seconds ? `, ${s.seconds} s` : ""}</dd>` : ""}
       ${!s.runs ? `<dt>off</dt><dd>${esc(s.skip_reason)}</dd>` : ""}
       ${s.blend ? `<dt>made</dt><dd>${file(s.blend)}${s.vrm ? `, ${file(s.vrm)}` : ""}</dd>` : s.json ? `<dt>report</dt><dd>${file(s.json)}</dd>` : ""}
-      ${s.reason ? `<dt>why</dt><dd class="failed">${esc(plain(s.step, s.reason))}</dd>` : ""}</dl>
+      ${s.reason ? `<dt>why</dt><dd class="failed">${esc(plain(s.step, s.reason))}</dd>` : ""}
+      ${fail ? `<dt>last try</dt><dd class="failed">${esc(fail.finished.replace("T", " "))}: ${esc(plain(s.step, fail.reason))}</dd>` : ""}
+      ${known ? `<dt>${esc(known.code)}</dt><dd>${esc(known.what)}. What to do: ${esc(known.fix)}</dd>` : ""}</dl>
     <div class="row"><button class="act alt small" data-job id="detail-from" ${s.runs ? "" : "disabled"}>Run from here</button>
       <button class="act alt small" data-job id="detail-only" ${s.runs ? "" : "disabled"}>Run only this</button>
       ${log ? `<button class="act alt small" id="detail-reveal">Show log in folder</button>` : ""}</div>
@@ -78,6 +81,17 @@ function spotsHtml(spots) {
     })).join("")}</div>`).join("");
 }
 
+// [label, action] rerunning a failed step, first setting the options its error code names as the fix
+function retry(step, known) {
+  if (!known?.options) return ["Try it again", () => job("run", { from: step.step })];
+  const change = Object.entries(known.options);
+  return [`Set ${change.map(([k, v]) => `${k} to ${v}`).join(", ")} and rerun`, async () => {
+    try { for (const [key, value] of change) await call("set", { key, value }); await refreshStatus(); }
+    catch (e) { toast(e.message, "bad"); return; }
+    job("run", { from: step.step });
+  }];
+}
+
 // What to do next, in order, each with the button that does it: the steps table alone left the
 // user reading notes like "no face points, or face tracking off" with no way on.
 function renderTodo() {
@@ -93,8 +107,14 @@ function renderTodo() {
   if (!built) add("Build the avatar: 10–20 minutes, one step after another.", "Build everything", () => job("run", {}), "warn", true);
   else if (next) add(`${next.count} step${next.count > 1 ? "s" : ""} to (re)build, from “${stepName(next.from)}”${next.stale ? ": something before it changed" : ""}.`,
     `Run from ${stepName(next.from)}`, () => job("run", { from: next.from }), "warn", true);
-  for (const f of failed) add(`“${stepName(f.step)}” failed and the avatar was built without it: ${plain(f.step, f.reason)}`,
-    "Try it again", () => job("run", { from: f.step }), "failed", true);
+  for (const f of failed) add(`“${stepName(f.step)}” failed and the avatar was built without it: ${plain(f.step, f.reason)}${f.known ? ` (${f.known.code}: ${f.known.fix})` : ""}`,
+    ...retry(f, f.known), "failed", true);
+  // a step that stopped the chain: its last good output stays, the failure rides beside it
+  for (const f of S.status.steps.filter((s) => s.runs && s.last_failure)) {
+    const k = f.last_failure.known;
+    add(`“${stepName(f.step)}” failed on ${f.last_failure.finished.replace("T", " ")}${k ? `: ${k.what}. ${k.fix}` : `: ${plain(f.step, f.last_failure.reason).split("\n")[0]}`}`,
+      ...retry(f, k), "failed", true);
+  }
   const pageName = (page) => page[0].toUpperCase() + page.slice(1);
   for (const [page, text] of S.status.verdict?.issues || []) if (page !== "build") add(text, `Go to ${pageName(page)}`, () => app.go(page), "failed");
   for (const [page, text] of S.status.verdict?.looks || []) if (page !== "face" || S.manifest.face) add(text, `Go to ${pageName(page)}`, () => app.go(page));

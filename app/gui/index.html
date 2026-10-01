@@ -67,21 +67,23 @@
           <code>out\&lt;name&gt;\character.json</code>. To go back to one you already started, open it from Characters.</p></details>
     </header>
     <div class="card w-sm">
-      <label for="new-model">1 · The model (.glb, .obj or .fbx)</label>
-      <div class="field"><input type="text" id="new-model" placeholder="E:\3DVtuber\samples\my_oc.glb">
+      <label for="new-model">1 · The model (.fbx recommended; .glb and .obj work)</label>
+      <div class="field"><input type="text" id="new-model" placeholder="E:\3DVtuber\samples\my_oc.fbx">
         <button class="act alt" data-browse="model" data-for="new-model">Browse…</button></div>
-      <p class="help">The textured model straight from Tripo (P2 works best). Generate it standing in a <b>T-pose</b> (arms
-        straight out) if you can: sleeves then don't fuse to the ribs. An A-pose (arms angled down) still builds.</p>
+      <p class="help">The textured model straight from Tripo (P2 works best). <b>Recommended:</b> in Tripo press
+        <b>Rig</b>, pick "VRM 1.0 humanoid" and export as <b>FBX</b>. That one file holds the model, its texture and
+        Tripo's skeleton, which usually bends better than the app's own; the app finds the skeleton by itself, also
+        through a .glb the texture tools (matte, face patch) made from that FBX. Don't use Tripo's rigged GLB: its
+        skeleton is broken. An unrigged model works too: the app places the skeleton.</p>
+      <p class="help">Generate it standing in a <b>T-pose</b> (arms straight out) if you can: sleeves then don't fuse to
+        the ribs. An A-pose (arms angled down) still builds.</p>
       <label for="new-name">2 · Name</label><input type="text" id="new-name" placeholder="MyOC">
       <p class="help">A folder name for the build: letters, digits, <code>_</code>. Also the avatar's name in Warudo.</p>
       <label for="new-author">Author (optional)</label><input type="text" id="new-author" placeholder="Unknown">
-      <label for="new-rig">3 · Tripo's rig of the same model (optional, recommended)</label>
-      <div class="field"><input type="text" id="new-rig" placeholder="leave empty: the app places the skeleton itself">
-        <button class="act alt" data-browse="rig" data-for="new-rig">Browse…</button></div>
-      <p class="help">Not a second character: it's the <i>same</i> model with a skeleton Tripo already fitted. In Tripo,
-        press <b>Rig</b>, pick "VRM 1.0 humanoid" and export as <b>FBX</b> (its GLB export is broken). Its skeleton and
-        body weights usually bend better than the app's own. You can also add it later on this page.</p>
       <details><summary class="help" style="cursor:pointer">Advanced: files you usually don't have</summary>
+        <label for="new-rig">Tripo's rig as a separate file, only if the model above is an unrigged copy</label>
+        <div class="field"><input type="text" id="new-rig" placeholder="empty: the model's own rig, if it has one">
+          <button class="act alt" data-browse="rig" data-for="new-rig">Browse…</button></div>
         <label for="new-reference">Unmodified model, only if you repainted the texture after generating</label>
         <div class="field"><input type="text" id="new-reference">
           <button class="act alt" data-browse="model" data-for="new-reference">Browse…</button></div>
@@ -111,9 +113,11 @@
       </div>
       <div class="card">
         <div class="title">Tripo's rig (optional)</div>
+        <p class="help" id="rig-state"></p>
         <p class="help">The same model rigged in Tripo (Rig → "VRM 1.0 humanoid" → export FBX). With it, the skeleton and
           body weights come from Tripo instead of the app's own guess, which usually bends better at the shoulders and hips.
-          Without it the app rigs the model itself; that works too.</p>
+          Without it the app rigs the model itself; that works too. A rigged FBX model is its own rig: only fill this in
+          when the rig is a separate file.</p>
         <label for="rig-path">Rig file (.fbx)</label>
         <div class="field"><input type="text" id="rig-path" placeholder="none: the app rigs it itself">
           <button class="act alt" data-browse="rig" data-for="rig-path">Browse…</button></div>

@@ -210,7 +210,7 @@ def _reveal(path):
 
 
 # What each Browse button asks for.
-BROWSE = {"model": ("Model", "*.glb *.gltf *.fbx *.obj *.vrm"), "rig": ("Tripo rig (FBX)", "*.fbx"),
+BROWSE = {"model": ("Model", "*.fbx *.glb *.gltf *.obj *.vrm"), "rig": ("Tripo rig (FBX)", "*.fbx"),
           "face": ("Face points", "*.json")}
 
 

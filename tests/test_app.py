@@ -1,5 +1,6 @@
 """The app's engine plans a character's steps from its manifest, and its server hands out only what it should."""
 import json
+import struct
 import sys
 import tempfile
 import unittest
@@ -8,7 +9,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from app import cli, engine, server  # noqa: E402
+from app import cli, engine, errors, server  # noqa: E402
 from app.engine import Project, manifest  # noqa: E402
 
 
@@ -219,6 +220,14 @@ class Engine(unittest.TestCase):
                                             ("movement", "a piece of 12 vertices is left 14.6 cm behind what it sits on"),
                                             ("movement", "the movement check couldn't run")])
 
+    def test_a_tidy_up_undone_for_tearing_the_rig_is_worth_a_look(self):
+        project = self.project({"options": {}, "triangles": 40000})
+        undone = "the tidy-up tore the rig (arms raised 3.5 -> 77.6 cm): done again without joining touching surfaces"
+        self.finished(project, loose={"status": "done", "report": {"stretch_cm": {"arms raised": 3.5}, "undone": [undone]}})
+        verdict = project.verdict([])
+        self.assertTrue(verdict["ready"])
+        self.assertIn(("build", f"loose pieces: {undone}"), verdict["looks"])
+
     def test_a_rebuild_is_compared_with_the_build_marked_good(self):
         project = self.project({"options": {}, "triangles": 40000})
 
@@ -282,6 +291,123 @@ class Engine(unittest.TestCase):
             cli.save_feedback(self.path, "x", ["data:text/html;base64,PGI+"])
         with self.assertRaisesRegex(ValueError, "say what you saw"):
             cli.save_feedback(self.path, "  ")
+
+
+    def test_a_half_written_state_falls_back_to_its_backup(self):
+        project = self.project()
+        project._record("build", {"status": "done", "blend": "a.blend"})
+        project._record("hair", {"status": "done", "blend": "b.blend"})
+        project.state_path.write_text('{"steps": {"bui', encoding="utf-8")  # a crash mid-write
+        self.assertEqual(Project(self.path).state["steps"]["build"]["blend"], "a.blend")
+        project.state_path.with_name("state.json.bak").write_text("", encoding="utf-8")
+        with self.assertRaisesRegex(engine.StepFailed, "no usable backup"):
+            Project(self.path)
+
+    def test_a_lock_left_by_a_dead_process_is_taken(self):
+        import subprocess
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        real, engine.LOCK = engine.LOCK, self.root / ".blender.lock"
+        try:
+            engine.LOCK.write_text(f"pid {dead.pid} since yesterday")
+            with engine._Lock():
+                self.assertIn(f"pid {engine.os.getpid()}", engine.LOCK.read_text())
+            engine.LOCK.write_text(f"pid {engine.os.getpid()} since now")  # alive: still refused
+            with self.assertRaisesRegex(engine.StepFailed, "another build is running"):
+                with engine._Lock():
+                    pass
+        finally:
+            engine.LOCK.unlink(missing_ok=True)
+            engine.LOCK = real
+
+    def test_known_failures_name_their_code_and_fix(self):
+        self.assertEqual(errors.classify("tpose", "Writing\nMalloc returns null\n")["code"], "VM-OOM")
+        eyes = errors.classify("eyes", "wrote x\nFAILED: left iris over the lids\n")
+        self.assertEqual((eyes["code"], eyes["options"]), ("VM-EYES-REFUSED", {"eyes": "slide"}))
+        self.assertIsNone(errors.classify("tpose", "FAILED: something"))  # the eyes' refusal only on the eye step
+        named = errors.classify("build", 'VTUBER_MAKER_ERROR {"code": "VM-OOM", "detail": "proxy 512"}')
+        self.assertEqual((named["code"], named["detail"]), ("VM-OOM", "proxy 512"))
+        self.assertIsNone(errors.classify("build", "Traceback: KeyError"))
+
+    def test_a_failure_that_stops_the_chain_rides_beside_the_last_good_output(self):
+        project = self.project({"options": {}, "triangles": 40000})
+        project._record("build", {"status": "done", "blend": "good.blend"})
+
+        def fails(name, index, folder):
+            raise engine.StepFailed("build: failed", errors.describe("VM-OOM"))
+        project._run_step = fails
+        real = engine.LOCK
+        engine.LOCK = self.root / ".blender.lock"
+        try:
+            with self.assertRaises(engine.StepFailed):
+                project.run(only="build")
+        finally:
+            engine.LOCK = real
+        build = project.state["steps"]["build"]
+        self.assertEqual((build["status"], build["blend"]), ("done", "good.blend"))
+        self.assertEqual(build["last_failure"]["known"]["code"], "VM-OOM")
+        shown = next(s for s in Project(self.path).status()["steps"] if s["step"] == "build")
+        self.assertIn("last_failure", shown)
+        # every run says what built it
+        made_by = json.loads(next((project.out / "runs").glob("*/run.json")).read_text())
+        self.assertEqual(made_by["steps"], ["build"])
+        self.assertIn("commit", made_by)
+        project._record("build", {"status": "done", "blend": "new.blend"})
+        self.assertNotIn("last_failure", project.state["steps"]["build"])
+
+    def test_outputs_are_checked_where_they_are_made(self):
+        def glb(bones):
+            gltf = json.dumps({"nodes": [{}] * 20, "extensions": {"VRMC_vrm": {"humanoid": {"humanBones": bones}}}}).encode()
+            gltf += b" " * (-len(gltf) % 4)
+            path = self.root / "a.vrm"
+            path.write_bytes(b"glTF" + struct.pack("<II", 2, 20 + len(gltf)) + struct.pack("<I", len(gltf)) + b"JSON" + gltf)
+            return str(path)
+        blend = self.root / "a.blend"
+        blend.write_bytes(b"BLENDER-v402")
+        every = {b: {"node": i} for i, b in enumerate(sorted(engine.REQUIRED_BONES))}
+        self.assertIsNone(engine.output_problem({"blend": str(blend), "vrm": glb(every)}))
+        self.assertIn("leftFoot", engine.output_problem({"vrm": glb({k: v for k, v in every.items() if k != "leftFoot"})}))
+        self.assertIn("no node", engine.output_problem({"vrm": glb({**every, "head": {"node": 99}})}))
+        self.assertIn("wasn't exported", engine.output_problem({"vrm": str(self.root / "missing.vrm")}))
+        blend.write_bytes(b"")  # truncated
+        self.assertIn("isn't a .blend", engine.output_problem({"blend": str(blend)}))
+
+    def test_the_tested_blender_is_picked_before_a_newer_untested_one(self):
+        folders = ["Blender 4.2", "Blender 4.10", "blender-5.1.0-windows-x64", "Blender 3.6"]
+        paths = [self.root / f / "blender.exe" for f in folders]
+        for path in paths:
+            path.parent.mkdir()
+            path.write_text("")
+        real = engine.installed_blenders, engine.shutil.which, engine.os.environ.pop("BLENDER", None)
+        real_tested = set(engine.TESTED)
+        engine.TESTED.clear()
+        engine.TESTED.add("4.2")
+        engine.installed_blenders, engine.shutil.which = lambda: paths, lambda name: None
+        try:
+            self.assertEqual(engine.find_blender(), str(paths[0]))
+            engine.TESTED.add("4.10")  # parsed as numbers: 4.10 is newer than 4.2
+            self.assertEqual(engine.find_blender(), str(paths[1]))
+            engine.TESTED.clear()  # nothing tested: the newest, never one below 4.2
+            self.assertEqual(engine.find_blender(), str(paths[2]))
+        finally:
+            engine.TESTED.clear()
+            engine.TESTED.update(real_tested)
+            engine.installed_blenders, engine.shutil.which = real[:2]
+            if real[2]:
+                engine.os.environ["BLENDER"] = real[2]
+
+    def test_an_older_manifest_is_carried_forward_and_a_newer_one_refused(self):
+        real = manifest.VERSION, dict(manifest.MIGRATIONS)
+        try:
+            manifest.VERSION = 2
+            manifest.MIGRATIONS[1] = lambda data: {**data, "version": 2, "carried": True}
+            self.assertTrue(manifest.migrate(json.loads(self.path.read_text()))["carried"])
+            with self.assertRaisesRegex(ValueError, "newer version"):
+                manifest.migrate({"version": 3})
+        finally:
+            manifest.VERSION = real[0]
+            manifest.MIGRATIONS.clear()
+            manifest.MIGRATIONS.update(real[1])
 
 
 class Server(unittest.TestCase):

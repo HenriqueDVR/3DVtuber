@@ -18,7 +18,7 @@ export function renderHome() {
         <span class="when">${when ? `last run ${esc(when)} · ` : ""}${esc(where)}</span></div></button>`;
   });
   $("cards").innerHTML = `<button class="char new" data-new><div class="pic">+</div><div class="body"><span class="name">New character</span>
-    <span class="when">from a Tripo model (.glb, .obj, .fbx)</span></div></button>` + cards.join("");
+    <span class="when">from a Tripo model (rigged .fbx best)</span></div></button>` + cards.join("");
   $("cards").querySelectorAll("[data-manifest]").forEach((b) => b.onclick = async () => {
     await app.openProject(b.dataset.manifest);
     const p = S.projects.find((q) => q.manifest === b.dataset.manifest);
@@ -33,7 +33,9 @@ $("create").onclick = async () => {
     const made = await call("init", { model: $("new-model").value.trim(), name: $("new-name").value.trim(),
       author: $("new-author").value.trim(), face: $("new-face").value.trim(), reference: $("new-reference").value.trim(),
       rig: $("new-rig").value.trim() });
-    toast(`Made ${made.manifest}`);
+    toast(!made.rig || $("new-rig").value.trim() ? `Made ${made.manifest}`
+      : made.rig === made.source ? `Made ${made.manifest}. Tripo's rig found in the model: it will be used.`
+      : `Made ${made.manifest}. The model names Tripo's rig it was made from (${made.rig}): it will be used.`);
     say("create-msg", "");
     await app.loadProjects(made.manifest);
   } catch (e) { say("create-msg", e.message, true); }
@@ -56,7 +58,11 @@ export async function renderSurvey() {
   // read as two ways to start, and a rigged FBX looked like a second character to create
   const m = S.manifest;
   $("model-new").hidden = !!m; $("model-open").hidden = !m;
+  // a rigged FBX model is its own rig: the same path twice reads as a mistake without a word
+  const ownRig = !!m?.rig && m.rig === m.source;
   $("rig-path").value = m?.rig || "";
+  $("rig-state").innerHTML = !m ? "" : ownRig ? "<b>In use: Tripo's rig inside the model file</b> (clear the field and save to rig it yourself)."
+    : m.rig ? "<b>In use: the rig file below.</b>" : "No rig: the app places the skeleton itself.";
   $("model-files").innerHTML = m ? `Model in use: <code>${esc(m.source)}</code>`
     + (m.reference ? `<br>Original, before the face patch: <code>${esc(m.reference)}</code>` : "") : "";
   const entry = S.status?.steps.find((s) => s.step === "survey");
