@@ -2,8 +2,9 @@
 
 The 3D views are three.js and three-vrm and the viewer's webcam test is MediaPipe's face
 tracker; the pages name all of them by their CDN addresses, so without a connection the views
-stayed empty. `fetch` keeps a copy under app/gui/vendor/ (third-party files, 17 MB: not in git),
-and the server then gives the pages that copy (`local`).
+stayed empty. The copies live in app/gui/vendor/ (17 MB, in the repository so a fresh checkout
+runs offline; their licences in THIRD_PARTY.md there), and the server gives the pages those
+copies (`local`). `fetch` puts back any that is missing, and is how a newer version gets in.
 
 Every file is pinned by its SHA-256. jsDelivr serves an npm version's files unchanged for good
 and publishes these hashes itself (data.jsdelivr.com); the model comes from Google's own bucket,

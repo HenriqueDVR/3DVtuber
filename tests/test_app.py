@@ -875,6 +875,18 @@ class Vendor(unittest.TestCase):
         self.assertEqual(kept, ["a.js"])  # the good one stays, the other left neither itself nor a .part
         self.assertEqual(vendor.local('"https://cdn.example/npm/lib@1.0.0/a.js"'), '"https://cdn.example/npm/lib@1.0.0/a.js"')
 
+    def test_the_copies_in_the_repository_are_the_pinned_files(self):
+        # byte for byte: a line-ending conversion on checkout (.gitattributes keeps them out) or an
+        # edited copy would otherwise go unnoticed, since the pages only ask whether a file is there
+        import hashlib
+        vendor.FOLDER, vendor.PACKAGES = self.real
+        for _, address, files in vendor.PACKAGES:
+            for name, pinned in files.items():
+                path = vendor.FOLDER / vendor._under(address) / name
+                with self.subTest(file=name):
+                    self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), pinned)
+        self.assertEqual((vendor.status()["views"], vendor.status()["tracker"]), (True, True))
+
     def test_every_three_file_the_pages_import_is_pinned(self):
         # with a copy kept, three/addons/ resolves here: an addon a page imports and this list lacks would be a 404
         import re
