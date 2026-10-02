@@ -1,6 +1,7 @@
 """Fill in the VRM add-on's data on an armature and export a .vrm file."""
 
 import json
+import os
 import struct
 
 import addon_utils
@@ -51,6 +52,15 @@ class ExportMismatch(RuntimeError):
 # How far an exported joint may sit from its bone's rest head (m); a re-posed finger is off by
 # millimetres to centimetres, float32 and the matrix round trip by under a micrometre.
 EXPORT_TOLERANCE = 1e-4
+
+# Set (to anything) by the app's engine for the steps between the build and its own export step:
+# each wrote a .vrm nothing read, 6-9 s and 75-100 MB a step on model A. The .blend is the chain.
+SKIP_EXPORT = "VTUBER_MAKER_NO_EXPORT"
+
+
+def skipped():
+    """Whether this run was told to leave the .vrm to a later step."""
+    return bool(os.environ.get(SKIP_EXPORT))
 
 
 def ensure_vrm_addon():
@@ -205,6 +215,9 @@ def use_toon_shading(mesh_obj):
 
 
 def export(filepath, armature):
+    if skipped():
+        print("export left to a later step:", filepath)
+        return
     # Export the rest pose as it is. The VRM Add-on's default "Auto" pose makes its own T-pose on
     # export, re-posing the fingers and mesh: every hand baked here (curled, relaxed or straight)
     # left the file with the same generic straightened hand, and tracking looked the same in all.

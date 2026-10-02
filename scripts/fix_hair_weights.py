@@ -23,7 +23,7 @@ from mathutils.kdtree import KDTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 
-from vtuber_maker.pipeline import parts, rig, texture_space  # noqa: E402
+from vtuber_maker.pipeline import parts, rig, texture_space, vrm_export  # noqa: E402
 
 BODY_BONES = {"Hips", "Spine", "Chest", "UpperChest", "LeftShoulder", "RightShoulder",
               "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm", "LeftHand", "RightHand"}
@@ -210,7 +210,8 @@ def main():
 
 def export(arm, out_blend, out_vrm):
     bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath(out_blend), copy=True)
-    print("exported", bpy.ops.export_scene.vrm(filepath=bpy.path.abspath(out_vrm), armature_object_name=arm.name))
+    if not vrm_export.skipped():
+        print("exported", bpy.ops.export_scene.vrm(filepath=bpy.path.abspath(out_vrm), armature_object_name=arm.name))
 
 
 main()

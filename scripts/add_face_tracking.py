@@ -28,7 +28,7 @@ from mathutils.bvhtree import BVHTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 
-from vtuber_maker.pipeline import eyes, face_rig, fingers, rig  # noqa: E402
+from vtuber_maker.pipeline import eyes, face_rig, fingers, rig, vrm_export  # noqa: E402
 
 # Lip corner moves, as (x outward, y forward, z up) in mouth widths, with the vowel mixed in.
 CORNERS = {
@@ -80,7 +80,8 @@ def main():
     bind_blink(arm, obj)
 
     bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath(args.out_blend), copy=True)
-    print("exported", bpy.ops.export_scene.vrm(filepath=bpy.path.abspath(args.out_vrm), armature_object_name=arm.name))
+    if not vrm_export.skipped():
+        print("exported", bpy.ops.export_scene.vrm(filepath=bpy.path.abspath(args.out_vrm), armature_object_name=arm.name))
 
     if args.renders:
         for amount in args.blink_tries:

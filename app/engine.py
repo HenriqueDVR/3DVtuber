@@ -40,7 +40,7 @@ STARTUP = SCRIPTS / "_startup.py"
 # Longest a single step may run (s); the slowest real steps take about 3 minutes.
 STEP_TIMEOUT = 30 * 60
 OUT_OF_MEMORY = "Malloc returns null"
-# Free space a step needs where it writes (bytes): a .blend and a .vrm, up to ~300 MB together on
+# Free space a step needs where it writes (bytes): a .blend or the .vrm, about 100 MB each on
 # the models so far. On a full drive Blender's saves fail in ways that read as code bugs: four
 # steps "failed" on 2026-09-29 with E: at 0 GB. Under the floor, a running step is stopped.
 DISK_NEEDED = 1 << 30
@@ -113,22 +113,26 @@ CANCELLED = -2
 STOPPED = -1
 
 
-# (name, label, what it writes): "vrm" = a .blend and a .vrm, "blend" = a .blend only,
-# "json" = a report only. Order is the build order that produced the model A and model B candidates.
+# (name, label, what it writes): "blend" = a .blend, "vrm" = a .vrm only, "json" = a report only.
+# Order is the build order that produced the model A and model B candidates.
 STEPS = [
     ("survey", "surveying the model", "json"),
-    ("build", "rigging", "vrm"),
-    ("hair", "hair weights", "vrm"),
-    ("ahoge", "ahoge spring", "vrm"),
-    ("face_tracking", "face tracking", "vrm"),
-    ("loose", "loose pieces", "vrm"),
-    ("fingers", "finger bones", "vrm"),
-    ("pieces", "clothing pieces", "vrm"),
+    ("build", "rigging", "blend"),
+    ("hair", "hair weights", "blend"),
+    ("ahoge", "ahoge spring", "blend"),
+    ("face_tracking", "face tracking", "blend"),
+    ("loose", "loose pieces", "blend"),
+    ("fingers", "finger bones", "blend"),
+    ("pieces", "clothing pieces", "blend"),
     ("finger_guides", "finger guides", "blend"),
-    ("tpose", "T-pose", "vrm"),
-    ("eyes", "eye tracking", "vrm"),
-    ("mouth", "mouth shapes", "vrm"),
+    ("tpose", "T-pose", "blend"),
+    ("eyes", "eye tracking", "blend"),
+    ("mouth", "mouth shapes", "blend"),
     ("check", "checking the rig", "json"),
+    # the one .vrm of a build, from the last .blend: every step used to export its own, about a
+    # minute and 700 MB a build on model A for files nothing read. After the check, so its files keep
+    # their number (12_check_spots).
+    ("export", "exporting the VRM", "vrm"),
     ("vrm_check", "checking the exported VRM", "json"),
     # what check_avatar can't see: pieces left behind as limbs move (on the modelled pose), and the
     # springs running as apps run them (on the finished rig); the verdict takes them in
@@ -136,6 +140,9 @@ STEPS = [
     ("springs", "running the physics", "json"),
 ]
 NAMES = [name for name, _, _ in STEPS]
+# Blender arguments that tell a step's script to leave the .vrm to the export step
+# (`vrm_export.skipped`); the scripts still take the file's name, for use by hand.
+NO_EXPORT = ["--python-expr", "import os; os.environ['VTUBER_MAKER_NO_EXPORT'] = '1'"]
 # Steps that exit nonzero when there is nothing for them to do (no ahoge, no loose strap):
 # the chain carries on with the file before them.
 OPTIONAL = {"ahoge", "loose", "fingers"}
@@ -419,7 +426,7 @@ class Project:
     def usage(self):
         """How much disk this character takes, and what `prune` would free.
 
-        Every run keeps a .blend and a .vrm per step, about 300 MB a run on the models so far, and
+        Every run keeps a .blend per step and its .vrm, 400-850 MB a run on the models so far, and
         nothing removed them: E: filled up mid-build on 2026-09-29. A run's models are only needed
         while a step may read them (`_kept_runs`); its reports and logs are what comparing uses.
         """
@@ -539,13 +546,8 @@ class Project:
         entry = {"status": "done", "log": str(log), "input": str(blend_in) if blend_in else None,
                  "finished": datetime.now().isoformat(timespec="seconds"), "seconds": round(time.time() - started)}
         output = log.read_text(encoding="utf-8", errors="replace")
-        if kind == "json":
-            entry["json"] = str(stem.with_suffix(".json"))
-        else:
-            entry["blend"] = str(stem.with_suffix(".blend"))
-            if kind == "vrm":
-                entry["vrm"] = str(stem.with_suffix(".vrm"))
-        made = Path(entry.get("blend") or entry["json"]).exists()
+        entry[kind] = str(stem.with_suffix(f".{kind}"))
+        made = Path(entry[kind]).exists()
         if code != 0 or not made:
             # a step the engine itself stopped (STOPPED) had something to do and didn't get to
             if name in OPTIONAL and code != STOPPED:
@@ -600,13 +602,15 @@ class Project:
                                              ("hat_tip", "--hat-tip"), ("free_mouth", "--free-mouth")) if o[key]]
             if o["mouth_colour"]:
                 args += ["--mouth-colour", o["mouth_colour"]]
-            return args, []
+            return args, NO_EXPORT
         if name == "movement":
             reference = manifest.path_of(data, "reference") or source
             return ["check_movement.py", "--reference", reference, "--json", stem.with_suffix(".json"),
                     "--manifest", self.manifest_path, "--height", o["height"], "--listing", self.out / "pieces.json"], []
         if name == "springs":
             return ["check_springs.py", "--json", stem.with_suffix(".json"), "--height", o["height"]], []
+        if name == "export":
+            return ["export_vrm.py", vrm], []
         script = {"hair": "fix_hair_weights.py", "ahoge": "add_ahoge_spring.py", "face_tracking": "add_face_tracking.py",
                   "loose": "fix_loose_pieces.py", "fingers": "add_fingers.py", "pieces": "apply_pieces.py",
                   "finger_guides": "fix_fingers.py", "tpose": "to_tpose.py", "eyes": "add_eye_tracking.py",
@@ -647,7 +651,7 @@ class Project:
             for key in ("scale", "rest", "lift"):
                 if fix.get(key) is not None:
                     args += [f"--{key}", fix[key]]
-        return args, []
+        return args, NO_EXPORT
 
     def _last_vrm(self):
         for name in reversed(NAMES):

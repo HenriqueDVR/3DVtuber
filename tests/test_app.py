@@ -86,6 +86,20 @@ class Engine(unittest.TestCase):
         mouth, _ = project._arguments("mouth", self.root / "11_mouth", None)
         self.assertEqual([str(a) for a in mouth[3:]], ["--free", "--scale", "1.3"])
 
+    def test_only_the_export_step_writes_a_vrm(self):
+        project = self.project({"options": {}, "triangles": 40000}, tpose="none")
+        kinds = {name: kind for name, _, kind in engine.STEPS}
+        self.assertEqual([name for name in engine.NAMES if kinds[name] == "vrm"], ["export"])
+        for name in ("build", "hair", "tpose", "eyes"):
+            _, extra = project._arguments(name, self.root / name, None)
+            self.assertEqual(extra, engine.NO_EXPORT, name)
+        args, extra = project._arguments("export", self.root / "13_export", None)
+        self.assertEqual(([str(a) for a in args], extra), (["export_vrm.py", str(self.root / "13_export.vrm")], []))
+        # after the last step that changes the model, before the check that re-imports the file
+        self.assertLess(engine.NAMES.index("mouth"), engine.NAMES.index("export"))
+        self.assertLess(engine.NAMES.index("export"), engine.NAMES.index("vrm_check"))
+        self.assertIn("export", self.runs(project))  # a build kept in its modelled pose can still be looked at
+
     def test_a_rerun_step_makes_later_ones_stale_and_they_are_not_read(self):
         project = self.project({"options": {}, "triangles": 40000})
         files = {}

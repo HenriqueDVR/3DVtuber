@@ -15,7 +15,7 @@ from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 
-from vtuber_maker.pipeline import parts  # noqa: E402
+from vtuber_maker.pipeline import parts, vrm_export  # noqa: E402
 
 MAX_SIZE = 0.15          # the ahoge fits in this (m)
 BONES = 2
@@ -133,7 +133,8 @@ def main():
         joint.stiffness, joint.drag_force, joint.gravity_power, joint.hit_radius = STIFFNESS, DRAG, GRAVITY, 0.01
 
     bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath(out_blend), copy=True)
-    print("exported", bpy.ops.export_scene.vrm(filepath=bpy.path.abspath(out_vrm), armature_object_name=arm.name))
+    if not vrm_export.skipped():
+        print("exported", bpy.ops.export_scene.vrm(filepath=bpy.path.abspath(out_vrm), armature_object_name=arm.name))
 
 
 main()
