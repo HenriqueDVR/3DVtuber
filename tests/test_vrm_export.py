@@ -51,7 +51,29 @@ class ExportSyntheticCharacter(unittest.TestCase):
         cls.path = FIXTURE_OUT / "synthetic_character.vrm"
         cls.path.unlink(missing_ok=True)
         vrm_export.export(cls.path, armature)
+        cls.armature = armature
         cls.gltf = read_glb_json(cls.path)
+
+    def test_the_file_holds_the_rest_pose_it_was_built_from(self):
+        vrm_export.verify(self.path, self.armature)  # as export itself just did: no error
+
+    def test_a_file_whose_joints_moved_is_refused(self):
+        # what the add-on's automatic pose did to every export: the .blend right, the file not
+        gltf, binary = vrm_export._read_glb(self.path)
+        hand = rig.BONE_NAMES["left_hand"]
+        node = next(n for n in gltf["nodes"] if n.get("name") == hand)
+        node["translation"] = [node["translation"][0] + 0.02, *node["translation"][1:]]
+        moved = glb(FIXTURE_OUT / "synthetic_moved.vrm", gltf, binary)
+        with self.assertRaisesRegex(vrm_export.ExportMismatch, rf"joints aren't where the rest pose has them \(worst: {hand} 20\.0 mm"):
+            vrm_export.verify(moved, self.armature)
+
+    def test_a_file_whose_joints_are_turned_is_refused(self):
+        gltf, binary = vrm_export._read_glb(self.path)
+        hips = rig.BONE_NAMES["hips"]
+        next(n for n in gltf["nodes"] if n.get("name") == hips)["rotation"] = [0.0, 0.0, 0.7071068, 0.7071068]
+        turned = glb(FIXTURE_OUT / "synthetic_turned.vrm", gltf, binary)
+        with self.assertRaisesRegex(vrm_export.ExportMismatch, rf"1 joints are rotated \({hips}\)"):
+            vrm_export.verify(turned, self.armature)
 
     def test_declares_the_vrm_1_extension(self):
         self.assertIn("VRMC_vrm", self.gltf["extensionsUsed"])

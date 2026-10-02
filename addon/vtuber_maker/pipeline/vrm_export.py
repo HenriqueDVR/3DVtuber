@@ -44,6 +44,15 @@ class VrmAddonMissing(RuntimeError):
     """The VRM Add-on for Blender isn't installed."""
 
 
+class ExportMismatch(RuntimeError):
+    """The written .vrm doesn't hold the armature's rest pose."""
+
+
+# How far an exported joint may sit from its bone's rest head (m); a re-posed finger is off by
+# millimetres to centimetres, float32 and the matrix round trip by under a micrometre.
+EXPORT_TOLERANCE = 1e-4
+
+
 def ensure_vrm_addon():
     """Enable the VRM add-on if it's installed but off (e.g. under --factory-startup)."""
     if "vrm" in dir(bpy.ops.export_scene):
@@ -217,6 +226,48 @@ def export(filepath, armature):
         origin = (armature.matrix_world @ Vector(tuple(origin)))
         origin = (origin.x, origin.z, -origin.y)
     normalize_bones(filepath, look_at_origin=origin)
+    verify(filepath, armature)
+
+
+def verify(filepath, armature):
+    """Check a written .vrm against the armature it came from: every joint unrotated, at its
+    bone's rest head. Raises ExportMismatch naming the worst joints.
+
+    The .blend can be right and the file wrong: the add-on's "Auto" pose replaced the baked rest
+    pose in every export until 2026-09-22, and a session of finger variants all tracked alike
+    before anyone looked in the file. Joints are matched to bones by name; assumes the armature
+    is in the rest pose the file was exported with (it is, straight after `export`).
+    """
+    gltf, _ = _read_glb(filepath)
+    nodes = gltf["nodes"]
+    parent = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+    worlds = {}
+
+    def world(i):
+        if i not in worlds:
+            worlds[i] = (world(parent[i]) if i in parent else np.eye(4)) @ _node_matrix(nodes[i])
+        return worlds[i]
+
+    turned, moved = [], []
+    for joint in sorted({j for skin in gltf.get("skins", []) for j in skin["joints"]}):
+        name = nodes[joint].get("name")
+        if not np.allclose(_node_matrix(nodes[joint])[:3, :3], np.eye(3), atol=1e-6):
+            turned.append(name)
+        bone = armature.data.bones.get(name)
+        if bone is None:
+            continue
+        head = armature.matrix_world @ bone.head_local
+        # glTF is Y up with the model facing +Z: Blender's (x, y, z) is (x, z, -y) there
+        off = float(np.linalg.norm(world(joint)[:3, 3] - (head.x, head.z, -head.y)))
+        if off > EXPORT_TOLERANCE:
+            moved.append((off, name))
+    if turned or moved:
+        moved.sort(reverse=True)
+        raise ExportMismatch(
+            f"{filepath}: " + "; ".join(filter(None, (
+                moved and f"{len(moved)} joints aren't where the rest pose has them (worst: "
+                + ", ".join(f"{name} {off * 1000:.1f} mm" for off, name in moved[:3]) + ")",
+                turned and f"{len(turned)} joints are rotated ({', '.join(turned[:3])})"))))
 
 
 def normalize_bones(filepath, look_at_origin=None):

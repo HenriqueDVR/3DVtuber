@@ -86,16 +86,32 @@ def carries_rig(path):
     """Whether a model file is an FBX with a VRoid-style skeleton, as Tripo's "VRM 1.0 humanoid" rig
     exports: then it is its own `rig` (adopt.py). Read as bytes: binary and ASCII FBX both keep
     bone names as plain text, and the desktop app asks this without Blender."""
+    return rig_kind(path) == TRIPO_RIG
+
+
+# The hip bone's name in the skeletons adopt.py reads, by the tool that names it so.
+TRIPO_RIG = "Tripo / VRoid"
+RIG_MARKERS = {b"J_Bip_C_Hips": TRIPO_RIG, b"mixamorig:Hips": "Mixamo", b"CC_Base_Hip": "Character Creator / AccuRig"}
+
+
+def rig_kind(path):
+    """Which tool's skeleton an FBX carries (a RIG_MARKERS value), or None.
+
+    Only Tripo's is taken as the rig by itself (`carries_rig`): it was measured against our own
+    rigging on model C. The others are read by `adopt.py` when the user names the file as the rig,
+    and the app says so when it sees one.
+    """
     path = Path(path)
     if path.suffix.lower() != ".fbx" or not path.is_file():
-        return False
-    marker, tail = b"J_Bip_C_Hips", b""
+        return None
+    keep, tail = max(map(len, RIG_MARKERS)), b""
     with path.open("rb") as f:
         while chunk := f.read(1 << 20):
-            if marker in tail + chunk:
-                return True
-            tail = chunk[-len(marker):]
-    return False
+            for marker, kind in RIG_MARKERS.items():
+                if marker in tail + chunk:
+                    return kind
+            tail = chunk[-keep:]
+    return None
 
 
 def rig_of(path):

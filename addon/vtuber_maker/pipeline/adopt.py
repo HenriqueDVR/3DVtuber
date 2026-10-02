@@ -12,6 +12,8 @@ FBX welds UV seams, 27 242 vertices against the GLB's 33 715). Its FBX, not its 
 export carries broken inverse bind matrices and every bone imports at NaN.
 """
 
+import re
+
 import bpy
 import numpy as np
 from mathutils import Vector
@@ -26,14 +28,41 @@ _TORSO = {"C_Hips": "hips", "C_Spine": "spine", "C_Chest": "chest", "C_UpperChes
 _LIMBS = {"Shoulder": "shoulder", "UpperArm": "upper_arm", "LowerArm": "lower_arm", "Hand": "hand",
           "UpperLeg": "upper_leg", "LowerLeg": "lower_leg", "Foot": "foot"}
 _FINGER_NAMES = {"Thumb": "thumb", "Index": "index", "Middle": "middle", "Ring": "ring", "Little": "little"}
+# Mixamo: mixamorig:Hips, mixamorig:LeftArm, mixamorig:LeftHandIndex1 (some exports drop the prefix).
+_MIXAMO = ({"Hips": "hips", "Spine": "spine", "Spine1": "chest", "Spine2": "upper_chest", "Neck": "neck", "Head": "head"},
+           {"Shoulder": "shoulder", "Arm": "upper_arm", "ForeArm": "lower_arm", "Hand": "hand",
+            "UpLeg": "upper_leg", "Leg": "lower_leg", "Foot": "foot"},
+           {"HandThumb": "thumb", "HandIndex": "index", "HandMiddle": "middle", "HandRing": "ring", "HandPinky": "little"})
+# Character Creator and AccuRig: CC_Base_Hip, CC_Base_L_Upperarm, CC_Base_L_Index1.
+_CREATOR = ({"Hip": "hips", "Waist": "spine", "Spine01": "chest", "Spine02": "upper_chest", "NeckTwist01": "neck", "Head": "head"},
+            {"Clavicle": "shoulder", "Upperarm": "upper_arm", "Forearm": "lower_arm", "Hand": "hand",
+             "Thigh": "upper_leg", "Calf": "lower_leg", "Foot": "foot"},
+            {"Thumb": "thumb", "Index": "index", "Mid": "middle", "Ring": "ring", "Pinky": "little"})
+KNOWN = "VRoid/Tripo (J_Bip_*), Mixamo, Character Creator/AccuRig (CC_Base_*), VRM humanoid names"
 # The source and the rig's mesh must agree this closely (95th percentile, m) once both are normalized.
 MATCH = 0.01
 # A vertex counts as on a bone (see reaching_across) holding at least this share of it.
 FAR_SHARE = 0.02
 
 
-def names():
-    """{rig bone name: our bone name} for the VRoid-style skeleton; toes and eye helpers go to their parent."""
+def names(found=None):
+    """{rig bone name: our bone name} under the naming the rig uses: whichever known one
+    (KNOWN) names the most of `found`, the rig's bone names. Without `found`, Tripo's.
+
+    Only Tripo's has been through real builds (model C); the others are read by name alone and
+    tested on a renamed synthetic rig. A bone no table names (a twist or helper bone) lends its
+    weights to the nearest named bone up its chain: see `read`.
+    """
+    if found is None:
+        return _vroid()
+    found = set(found)
+    prefix = next((m.group(0) for m in (re.match(r"mixamorig\d*:", name) for name in found) if m), "")
+    return max((_vroid(), _numbered(prefix, "{side}", ("Left", "Right"), *_MIXAMO),
+                _numbered("CC_Base_", "{side}_", ("L", "R"), *_CREATOR), _humanoid()), key=lambda table: len(found & set(table)))
+
+
+def _vroid():
+    # toes and eye helpers go to their parent
     table = {f"J_Bip_{k}": BONE_NAMES[v] for k, v in _TORSO.items()}
     for letter, side in (("L", "left"), ("R", "right")):
         table.update({f"J_Bip_{letter}_{k}": BONE_NAMES[f"{side}_{v}"] for k, v in _LIMBS.items()})
@@ -46,13 +75,39 @@ def names():
     return table
 
 
-def load(path, height=1.6):
-    """Read a rigged file without leaving it in the scene.
+def _numbered(prefix, side_form, sides, torso, limbs, finger_names):
+    """A table for rigs naming limbs <prefix><side><part> and finger joints 1-3 from the palm out."""
+    table = {prefix + k: BONE_NAMES[v] for k, v in torso.items()}
+    for mark, side in zip(sides, ("left", "right")):
+        start = prefix + side_form.format(side=mark)
+        table.update({start + k: BONE_NAMES[f"{side}_{v}"] for k, v in limbs.items()})
+        for stem, finger in finger_names.items():
+            for number, segment in enumerate(fingers._segments(finger), 1):
+                table[f"{start}{stem}{number}"] = fingers.bone_name(side, finger, segment)
+    return table
 
-    Returns (bones, surface, weights): bones as {our name: (head, tail, parent our name)} in the
-    normalized frame; surface as (vertices, triangles) of the rig's mesh at rest there; weights as
-    an (vertices, bones) array over `order`, the list of our bone names weighted.
-    """
+
+def _humanoid():
+    # a rig already under VRM's humanoid names, which are ours: UniVRM's, or one this pipeline exported
+    table = {name: name for name in BONE_NAMES.values()}
+    for side in ("left", "right"):
+        for finger in fingers.FINGERS:
+            for segment in fingers._segments(finger):
+                table[fingers.bone_name(side, finger, segment)] = fingers.bone_name(side, finger, segment)
+    return table
+
+
+def required(table, found, path):
+    """Raise ValueError unless the rig has every body bone under names the table knows."""
+    have = {table[name] for name in found if name in table}
+    missing = sorted(set(BONE_NAMES.values()) - have)
+    if missing:
+        raise ValueError(f"{path}: the rig has no {', '.join(missing)} under any bone naming the app knows ({KNOWN}). "
+                         "Clear the rig to let the app place the skeleton itself")
+
+
+def load(path, height=1.6):
+    """Read a rigged file without leaving it in the scene; see `read` for what comes back."""
     before = set(bpy.data.objects)
     if str(path).lower().endswith(".fbx"):
         compat.import_fbx(path)
@@ -62,59 +117,76 @@ def load(path, height=1.6):
     try:
         armature = next(o for o in imported if o.type == "ARMATURE")
         meshes = [o for o in imported if o.type == "MESH" and o.find_armature() == armature]
-        table = names()
-        world = np.array(armature.matrix_world)
-        raw = {}
-        for bone in armature.data.bones:
-            ours = table.get(bone.name)
-            # Root, the eye helpers and the toes only lend their weights to the bone they map to
-            if ours is None or bone.name == "Root" or bone.name.startswith("J_Adj") or bone.name.endswith("ToeBase"):
-                continue
-            head, tail = ((world @ np.array([*p, 1.0]))[:3] for p in (bone.head_local, bone.tail_local))
-            parent = bone.parent
-            while parent is not None and (parent.name not in table or table[parent.name] == ours):
-                parent = parent.parent
-            raw[ours] = (head, tail, table[parent.name] if parent is not None else None)
-        if np.isnan(np.array([h for h, _, _ in raw.values()])).any():
-            raise ValueError(f"{path}: the rig's joints don't import (NaN); Tripo's GLB is broken, use its FBX")
-
-        verts, tris, groups = [], [], []
-        for m in meshes:
-            offset = sum(len(v) for v in verts)
-            verts.append(meshdata.world_vertices(m))
-            tris.append(meshdata.triangles(m.data) + offset)
-            groups.append(m)
-        verts, tris = np.concatenate(verts), np.concatenate(tris)
-        order = sorted({table[g.name] for m in meshes for g in m.vertex_groups if g.name in table})
-        column = {name: k for k, name in enumerate(order)}
-        weights = np.zeros((len(verts), len(order)))
-        row = 0
-        for m in meshes:
-            index = {g.index: column[table[g.name]] for g in m.vertex_groups if g.name in table}
-            for v in m.data.vertices:
-                for g in v.groups:
-                    if g.group in index:
-                        weights[row + v.index, index[g.group]] += g.weight
-            row += len(m.data.vertices)
-        weights /= np.maximum(weights.sum(axis=1, keepdims=True), 1e-9)
-
-        # the same scale and offset normalize.prepare gives this mesh, for bones and surface alike
-        for m in meshes:
-            matrix = m.matrix_world.copy()
-            m.parent = None
-            m.matrix_world = matrix
-            m.modifiers.clear()
-        prepared = normalize.prepare(meshes, height=height)
-        after = meshdata.world_vertices(prepared)
-        if not np.allclose(np.ptp(verts, axis=0) / np.ptp(verts[:, 2]), np.ptp(after, axis=0) / np.ptp(after[:, 2]), atol=1e-3):
-            raise ValueError(f"{path}: normalizing turned the rig's mesh; can't carry its bones over by scale alone")
-        scale = np.ptp(after[:, 2]) / np.ptp(verts[:, 2])
-        shift = after.min(axis=0) - scale * verts.min(axis=0)
-        bones = {k: (scale * h + shift, scale * t + shift, p) for k, (h, t, p) in raw.items()}
-        return bones, (scale * verts + shift, tris), (weights, order)
+        return read(armature, meshes, path, height)
     finally:
         for obj in list(set(bpy.data.objects) - before):
             bpy.data.objects.remove(obj, do_unlink=True)
+
+
+def read(armature, meshes, path, height=1.6):
+    """A rig and the meshes skinned to it, as the build takes them. Normalizes the meshes.
+
+    Returns (bones, surface, weights): bones as {our name: (head, tail, parent our name)} in the
+    normalized frame; surface as (vertices, triangles) of the rig's mesh at rest there; weights as
+    an (vertices, bones) array over `order`, the list of our bone names weighted. `path` names the
+    rig in errors.
+    """
+    table = names(bone.name for bone in armature.data.bones)
+    required(table, [bone.name for bone in armature.data.bones], path)
+    world = np.array(armature.matrix_world)
+    raw, lends = {}, {}
+    for bone in armature.data.bones:
+        # a bone the table doesn't name lends its weights to the nearest one up its chain that is
+        # named: Character Creator's forearm twist bones hold half the forearm
+        up = bone
+        while up is not None and up.name not in table:
+            up = up.parent
+        lends[bone.name] = table[up.name] if up is not None else BONE_NAMES["hips"]
+        ours = table.get(bone.name)
+        # Root, the eye helpers and the toes only lend their weights to the bone they map to
+        if ours is None or bone.name == "Root" or bone.name.startswith("J_Adj") or bone.name.endswith("ToeBase"):
+            continue
+        head, tail = ((world @ np.array([*p, 1.0]))[:3] for p in (bone.head_local, bone.tail_local))
+        parent = bone.parent
+        while parent is not None and (parent.name not in table or table[parent.name] == ours):
+            parent = parent.parent
+        raw[ours] = (head, tail, table[parent.name] if parent is not None else None)
+    if np.isnan(np.array([h for h, _, _ in raw.values()])).any():
+        raise ValueError(f"{path}: the rig's joints don't import (NaN); Tripo's GLB is broken, use its FBX")
+
+    verts, tris = [], []
+    for m in meshes:
+        offset = sum(len(v) for v in verts)
+        verts.append(meshdata.world_vertices(m))
+        tris.append(meshdata.triangles(m.data) + offset)
+    verts, tris = np.concatenate(verts), np.concatenate(tris)
+    order = sorted({lends[g.name] for m in meshes for g in m.vertex_groups if g.name in lends})
+    column = {name: k for k, name in enumerate(order)}
+    weights = np.zeros((len(verts), len(order)))
+    row = 0
+    for m in meshes:
+        index = {g.index: column[lends[g.name]] for g in m.vertex_groups if g.name in lends}
+        for v in m.data.vertices:
+            for g in v.groups:
+                if g.group in index:
+                    weights[row + v.index, index[g.group]] += g.weight
+        row += len(m.data.vertices)
+    weights /= np.maximum(weights.sum(axis=1, keepdims=True), 1e-9)
+
+    # the same scale and offset normalize.prepare gives this mesh, for bones and surface alike
+    for m in meshes:
+        matrix = m.matrix_world.copy()
+        m.parent = None
+        m.matrix_world = matrix
+        m.modifiers.clear()
+    prepared = normalize.prepare(meshes, height=height)
+    after = meshdata.world_vertices(prepared)
+    if not np.allclose(np.ptp(verts, axis=0) / np.ptp(verts[:, 2]), np.ptp(after, axis=0) / np.ptp(after[:, 2]), atol=1e-3):
+        raise ValueError(f"{path}: normalizing turned the rig's mesh; can't carry its bones over by scale alone")
+    scale = np.ptp(after[:, 2]) / np.ptp(verts[:, 2])
+    shift = after.min(axis=0) - scale * verts.min(axis=0)
+    bones = {k: (scale * h + shift, scale * t + shift, p) for k, (h, t, p) in raw.items()}
+    return bones, (scale * verts + shift, tris), (weights, order)
 
 
 def build_armature(bones, name="Armature"):
