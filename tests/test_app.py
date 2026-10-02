@@ -693,9 +693,9 @@ class Engine(unittest.TestCase):
         """This machine with only the given blender.exe paths on it (each a (path, version) pair),
         and every Python package the app uses: the tests run in Blender's Python too, which has no Pillow."""
         real = (engine.installed_blenders, engine.shutil.which, engine.os.environ.pop("BLENDER", None),
-                engine.os.environ.get("APPDATA"), dict(engine._BLENDER_VERSIONS), engine._installed)
+                engine.os.environ.get("APPDATA"), dict(engine._BLENDER_VERSIONS), engine._installed, engine.portable_blenders)
         engine.installed_blenders, engine.shutil.which = lambda: [path for path, _ in found], lambda name: None
-        engine._installed = lambda module: True
+        engine._installed, engine.portable_blenders = lambda module: True, lambda: []
         engine.os.environ["APPDATA"] = str(self.root / "appdata")
         for path, version in found:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -703,7 +703,7 @@ class Engine(unittest.TestCase):
             engine._BLENDER_VERSIONS[str(path)] = version
 
         def restore():
-            engine.installed_blenders, engine.shutil.which, engine._installed = real[0], real[1], real[5]
+            engine.installed_blenders, engine.shutil.which, engine._installed, engine.portable_blenders = real[0], real[1], real[5], real[6]
             for key, value in (("BLENDER", real[2]), ("APPDATA", real[3])):
                 engine.os.environ.pop(key, None)
                 if value:
@@ -722,12 +722,55 @@ class Engine(unittest.TestCase):
         engine.use_blender(str(chosen))
         self.assertEqual(engine.find_blender(), str(chosen))
         self.assertEqual(engine.find_blender(str(installed)), str(installed))  # --blender still wins
-        engine._BLENDER_VERSIONS[str(installed.with_name("old.exe"))] = "3.6.0"
-        installed.with_name("old.exe").write_text("")
-        with self.assertRaisesRegex(ValueError, "isn't a Blender 4.2 or later"):
-            engine.use_blender(str(installed.with_name("old.exe")))
+        old = self.root / "Blender 3.6" / "blender.exe"
+        old.parent.mkdir()
+        old.write_text("")
+        engine._BLENDER_VERSIONS[str(old)] = "3.6.0"
+        with self.assertRaisesRegex(ValueError, r"isn't a Blender 4.2 or later \(it is 3.6.0\)"):
+            engine.use_blender(str(old))
         engine.use_blender("")
         self.assertEqual(engine.find_blender(), str(installed))
+
+    def test_a_blender_the_app_didnt_find_can_be_added_and_taken_off_again(self):
+        installed, mine = self.root / "Blender 4.2" / "blender.exe", self.root / "Apps" / "my build" / "blender.exe"
+        self.no_blender_but((installed, "4.2.1"))
+        mine.parent.mkdir(parents=True)
+        mine.write_text("")
+        engine._BLENDER_VERSIONS[str(mine)] = "5.2.2"   # its folder says nothing: it is asked
+        report = engine.use_blender(str(mine))
+        self.assertEqual((report["blender"], report["version"], report["chosen"]), (str(mine), "5.2.2", str(mine)))
+        rows = {b["path"]: b for b in report["blenders"]}
+        self.assertEqual((rows[str(mine)]["added"], rows[str(mine)]["version"], rows[str(mine)]["missing"]), (True, "5.2.2", False))
+        self.assertFalse(rows[str(installed)]["added"])
+        self.assertEqual([b["path"] for b in report["blenders"]][0], str(mine))  # newest first
+        engine.use_blender(str(mine))  # chosen twice: listed once
+        self.assertEqual(sum(b["added"] for b in engine.known_blenders()), 1)
+        # gone from the disk: said so, and builds fall back to one the app finds
+        mine.unlink()
+        gone = engine.setup()
+        self.assertTrue(next(b for b in gone["blenders"] if b["added"])["missing"])
+        self.assertEqual(gone["blender"], str(installed))
+        self.assertIn("is gone", next(c for c in gone["checks"] if c["name"] == "Chosen Blender")["text"])
+        after = engine.forget_blender(str(mine))
+        self.assertEqual((after["chosen"], [b["added"] for b in after["blenders"]]), (None, [False]))
+
+    def test_only_a_file_named_blender_is_ever_started(self):
+        # the path comes from a file dialog: an installer picked by mistake must not be run to ask its version
+        other = self.root / "Downloads" / "setup.exe"
+        self.no_blender_but()
+        other.parent.mkdir()
+        other.write_text("")
+        real = engine.subprocess.run
+        started = []
+        engine.subprocess.run = lambda command, **rest: started.append(command)
+        try:
+            with self.assertRaisesRegex(ValueError, "isn't a blender.exe"):
+                engine.use_blender(str(other))
+            with self.assertRaisesRegex(ValueError, "isn't a blender.exe"):
+                engine.use_blender(str(self.root / "nowhere" / "blender.exe"))
+        finally:
+            engine.subprocess.run = real
+        self.assertEqual(started, [])
 
     def test_setup_says_what_is_missing_and_what_to_do(self):
         self.no_blender_but()

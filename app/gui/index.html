@@ -34,6 +34,7 @@
   <div class="cue" id="rebuild" hidden><b>Changes not built yet</b><span id="rebuild-text"></span>
     <button class="act" id="rebuild-run" data-job>Rebuild</button></div>
   <div class="foot">
+    <a href="#setup" id="nav-blender" title="the Blender that runs the builds: change it on Setup"></a>
     <span id="busy">idle</span>
     <label title="a notification and a chime when a long run ends"><input type="checkbox" id="notify"> tell me when a run ends</label>
   </div>
@@ -434,6 +435,12 @@
       <table><thead><tr><th>Blender</th><th>Where</th><th>VRM Add-on</th><th></th></tr></thead><tbody id="setup-blenders"></tbody></table>
       <div class="row" style="margin-top:var(--s2)"><button class="act alt small" id="setup-auto" hidden>Let the app pick</button>
         <span class="msg" id="setup-msg"></span></div>
+      <label for="setup-add-path">A Blender that isn't on the list (installed somewhere else, or unzipped into a folder)</label>
+      <div class="field"><input type="text" id="setup-add-path" placeholder="D:\Apps\blender-5.2.2\blender.exe">
+        <button class="act alt" data-browse="blender" data-for="setup-add-path">Browse…</button>
+        <button class="act alt" id="setup-add">Add and use it</button></div>
+      <p class="help">Pick the <code>blender.exe</code> inside that Blender's folder. It is asked for its version (4.2 or later),
+        added to the list above and used for builds from then on.</p>
     </div>
   </div>
 </section>

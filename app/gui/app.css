@@ -39,6 +39,8 @@ nav { background: var(--panel); border-right: 1px solid var(--line); padding: va
 .cue button { margin-top: var(--s2); width: 100%; }
 nav .foot { margin-top: auto; color: var(--dim); font-size: 12px; display: flex; flex-direction: column; gap: var(--s1); }
 nav .foot label { display: flex; gap: 6px; align-items: center; margin: 0; cursor: pointer; }
+nav .foot a { color: var(--dim); text-decoration: none; } nav .foot a:hover { color: var(--text); text-decoration: underline; }
+nav .foot a.failed { color: var(--bad); } nav .foot a:empty { display: none; }
 
 /* ---------- main, pages */
 main { overflow: auto; position: relative; container-type: inline-size; }

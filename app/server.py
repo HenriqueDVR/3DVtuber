@@ -90,10 +90,10 @@ def api(route, query, body):
         return engine.setup()
     if route == "vendor":
         return JOBS.start("keeping a copy for offline use", lambda emit: vendor.fetch(on_event=emit))
-    if route == "use_blender":
+    if route in ("use_blender", "forget_blender"):
         if JOBS.running:
             raise StepFailed(f"busy: {JOBS.running} is still running")
-        return engine.use_blender(body.get("path") or "")
+        return engine.use_blender(body.get("path") or "") if route == "use_blender" else engine.forget_blender(body["path"])
     if route == "disk":
         return _disk()
     if route == "prune":
@@ -251,9 +251,10 @@ def _reveal(path):
     return {"shown": str(path)}
 
 
-# What each Browse button asks for.
+# What each Browse button asks for, and where its dialog opens.
 BROWSE = {"model": ("Model", "*.fbx *.glb *.gltf *.obj *.vrm"), "rig": ("Tripo rig (FBX)", "*.fbx"),
-          "face": ("Face points", "*.json")}
+          "face": ("Face points", "*.json"), "blender": ("Blender", "blender.exe blender")}
+BROWSE_FROM = {"blender": engine.WINDOWS_BLENDER.parent}
 
 
 def _browse(kind):
@@ -261,12 +262,13 @@ def _browse(kind):
     import tkinter
     from tkinter import filedialog
     title, pattern = BROWSE.get(kind, BROWSE["model"])
+    start = BROWSE_FROM.get(kind, REPO / "samples")
     root = tkinter.Tk()
     root.withdraw()
     root.attributes("-topmost", True)  # over the app's window, not behind it
     try:
         chosen = filedialog.askopenfilename(title=f"Choose the {title.lower()}", filetypes=[(title, pattern), ("All files", "*.*")],
-                                            initialdir=str(REPO / "samples"))
+                                            initialdir=str(start if start.is_dir() else Path.home()))
     finally:
         root.destroy()
     return str(Path(chosen)) if chosen else None

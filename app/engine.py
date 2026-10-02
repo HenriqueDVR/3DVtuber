@@ -1115,18 +1115,41 @@ def vrm_addon_version(blender, version):
 
 
 def known_blenders():
-    """Every Blender the Setup page can offer: the installed ones and the portable copies in
-    tools/blender, newest first, each with its series and whether it has the VRM Add-on."""
-    found = []
-    for path in [*installed_blenders(), *(REPO / "tools" / "blender").glob("*/blender.exe")]:
-        version = _folder_version(path)
-        if version and version >= MIN_BLENDER:
-            series = ".".join(map(str, version[:2]))
-            # as the folder names it ("4.2", "5.2.2"): asking each Blender itself takes seconds
-            found.append({"path": str(path), "version": re.search(r"\d+\.\d+(?:\.\d+)?", path.parent.name).group(0),
-                          "series": series, "tested": series in TESTED, "portable": (path.parent / "portable").is_dir(),
-                          "vrm_addon": vrm_addon_version(path, series)})
-    return sorted(found, key=lambda b: _folder_version(b["path"]), reverse=True)
+    """Every Blender the Setup page can offer, newest first: the installed ones, the portable
+    copies in tools/blender, and the ones the user added by hand (`use_blender`: a Blender kept
+    where the app doesn't look). Each with its series, whether it has the VRM Add-on, and whether
+    it was `added` and is `missing` (added once, gone since)."""
+    numbers = lambda version: tuple(map(int, version.split("."))) if version else (0,)  # noqa: E731
+    found, seen = [], set()
+    listed = [(path, False) for path in [*installed_blenders(), *portable_blenders()]]
+    listed += [(Path(path), True) for path in _read_json(SETTINGS, {}).get("blenders") or []]
+    for path, added in listed:
+        if _same_file(path) in seen:
+            continue
+        seen.add(_same_file(path))
+        missing = not Path(path).is_file()
+        # a found one is named by its folder ("4.2", "5.2.2"): asking each Blender itself takes
+        # seconds. An added one may sit in any folder, so it is asked, once
+        named = re.search(r"\d+\.\d+(?:\.\d+)?", Path(path).parent.name)
+        version = (None if missing else blender_version(path)) if added else named.group(0) if named else None
+        if not added and numbers(version) + (0, 0) < MIN_BLENDER:
+            continue
+        series = ".".join(version.split(".")[:2]) if version else None
+        found.append({"path": str(path), "version": version, "series": series, "tested": series in TESTED,
+                      "portable": (Path(path).parent / "portable").is_dir(), "added": added, "missing": missing,
+                      "vrm_addon": vrm_addon_version(path, series) if series else None})
+    return sorted(found, key=lambda b: numbers(b["version"]), reverse=True)
+
+
+def portable_blenders():
+    """The portable copies unzipped under tools/blender, each with its own `portable` settings
+    folder. Offered on the Setup page, never picked unasked (`find_blender`)."""
+    return sorted((REPO / "tools" / "blender").glob("*/blender.exe"))
+
+
+def _same_file(path):
+    """A path as a key: two spellings of one file on Windows (case, slashes) are one Blender."""
+    return os.path.normcase(os.path.abspath(str(path)))
 
 
 def setup(given=None):
@@ -1163,6 +1186,10 @@ def setup(given=None):
             if newer else "Blender 5.2 LTS is tested and supported until 2028-07")
     else:
         add("Blender", "ok", f"Blender {version}")
+    chosen = _read_json(SETTINGS, {}).get("blender")
+    if chosen and not Path(chosen).exists() and not given:
+        add("Chosen Blender", "warn", f"the Blender chosen here is gone ({chosen}); the app picked the one above itself",
+            "choose another below, or let the app pick")
     if blender and version:
         addon = vrm_addon_version(blender, version)
         if addon:
@@ -1188,7 +1215,7 @@ def setup(given=None):
             "from the internet", "keep a copy with the app (14 MB): the button below, or python -m app vendor")
     else:
         add("Internet", "ok", "the 3D views and the webcam test are kept with the app: no connection needed")
-    return {"blender": blender, "version": version, "chosen": _read_json(SETTINGS, {}).get("blender"), "blenders": blenders,
+    return {"blender": blender, "version": version, "chosen": chosen, "blenders": blenders,
             "checks": checks, "ready": not any(c["state"] == "bad" for c in checks)}
 
 
@@ -1198,13 +1225,36 @@ def _installed(module):
 
 
 def use_blender(path):
-    """Keep the user's choice of Blender (Setup page); "" goes back to finding one. Returns setup()."""
-    if path:
-        version = blender_version(path) if Path(path).is_file() else None
-        if version is None or tuple(map(int, version.split("."))) < MIN_BLENDER:
-            raise ValueError(f"{path} isn't a Blender 4.2 or later")
+    """Run builds with this blender.exe from now on (Setup page); "" goes back to the app picking
+    one. A Blender the app wouldn't list by itself is remembered, so it stays on the list.
+    Returns setup().
+
+    The path comes from a person: a file dialog, or typed. Only a file named blender is ever
+    started (to ask its version), never whatever else was picked.
+    """
     settings = _read_json(SETTINGS, {})
+    if path:
+        path = Path(path)
+        if not path.is_file() or path.stem.lower() != "blender":
+            raise ValueError(f"{path} isn't a blender.exe: pick the blender.exe inside Blender's folder")
+        version = blender_version(path)
+        if version is None or tuple(map(int, version.split("."))) < MIN_BLENDER:
+            raise ValueError(f"{path} isn't a Blender 4.2 or later" + (f" (it is {version})" if version else " (it doesn't start)"))
+        if _same_file(path) not in {_same_file(b["path"]) for b in known_blenders()}:
+            settings["blenders"] = [*(settings.get("blenders") or []), str(path)]
     settings["blender"] = str(path) if path else None
+    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(SETTINGS, settings)
+    return setup()
+
+
+def forget_blender(path):
+    """Take a Blender the user added off the Setup page's list; if builds ran with it, the app
+    picks one itself again. Returns setup()."""
+    settings = _read_json(SETTINGS, {})
+    settings["blenders"] = [p for p in settings.get("blenders") or [] if _same_file(p) != _same_file(path)]
+    if settings.get("blender") and _same_file(settings["blender"]) == _same_file(path):
+        settings["blender"] = None
     SETTINGS.parent.mkdir(parents=True, exist_ok=True)
     _write_json(SETTINGS, settings)
     return setup()

@@ -26,7 +26,8 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("setup", help="what the app needs and what it found: Blender, the VRM Add-on, disk, memory")
-    p.add_argument("--use", metavar="BLENDER", help="keep this blender.exe as the one to run (\"\" to go back to finding one)")
+    p.add_argument("--use", metavar="BLENDER", help="run builds with this blender.exe from now on, wherever it is (\"\" to go back to the app picking one)")
+    p.add_argument("--forget", metavar="BLENDER", help="take a blender.exe added with --use off the list")
 
     sub.add_parser("vendor", help="keep a copy of three.js, three-vrm and the face tracker with the app, so it runs offline (17 MB)")
 
@@ -139,6 +140,8 @@ def main(argv=None):
 
 
 def cmd_setup(args):
+    if args.forget:
+        return engine.forget_blender(args.forget)
     return engine.use_blender(args.use) if args.use is not None else engine.setup(args.blender)
 
 

@@ -80,6 +80,9 @@ export function renderNav() {
       : b.dataset.go === "movement" && steps.pieces?.status !== "done" && steps.build?.status !== "done" ? "build first" : "";
     b.classList.toggle("locked", !!why); b.title = why;
   });
+  // which Blender runs the builds, a click from changing it
+  $("nav-blender").textContent = !S.setup ? "" : S.setup.version ? `Blender ${S.setup.version}` : "no Blender found";
+  $("nav-blender").className = S.setup && !S.setup.version ? "failed" : "";
   const next = nextRun(st);
   $("rebuild").hidden = !next;
   if (next) {
