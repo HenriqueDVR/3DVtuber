@@ -163,11 +163,24 @@ export async function copyPath(path) {
   }
   toast("Path copied: paste it into Warudo's file dialog.", "info");
 }
+// Copies the finished .vrm into Warudo's Characters folder; asks for the folder once if Steam doesn't have it.
+async function sendToWarudo(folder) {
+  try {
+    const sent = await call("send_warudo", folder === undefined ? {} : { folder });
+    toast(`${sent.already ? "Already in Warudo" : "Sent to Warudo"}: pick ${sent.name} as the character's source there.`, "info");
+  } catch (e) {
+    if (folder !== undefined || !/Warudo wasn't found/.test(e.message)) return toast(e.message, "bad");
+    const given = await ask("Where is Warudo?", { text: "Warudo wasn't found in a Steam library. Paste the path of its Characters folder "
+      + "(Warudo\\Warudo_Data\\StreamingAssets\\Characters); the app remembers it.", input: true, value: "", ok: "Send" });
+    if (given) sendToWarudo(given.trim());
+  }
+}
 function renderVrm() {
   const vrm = lastVrm();
-  for (const id of ["vrm-show", "vrm-copy", "review-vrm-show", "review-vrm-copy"]) $(id).disabled = !vrm;
+  for (const id of ["vrm-send", "vrm-show", "vrm-copy", "review-vrm-send", "review-vrm-show", "review-vrm-copy"]) $(id).disabled = !vrm;
   $("vrm-path").innerHTML = vrm ? `<code>${esc(vrm)}</code>` : "";
 }
+$("vrm-send").onclick = $("review-vrm-send").onclick = () => sendToWarudo();
 $("vrm-show").onclick = $("review-vrm-show").onclick = () => reveal(lastVrm());
 $("vrm-copy").onclick = $("review-vrm-copy").onclick = () => copyPath(lastVrm());
 

@@ -306,6 +306,31 @@ class Project:
     def approved(self):
         return _read_json(self.out / "approved" / "approved.json", None)
 
+    def send_to_warudo(self):
+        """Copy the finished .vrm into Warudo's Characters folder as <name>_<run>.vrm, where its
+        character list finds it. A copy per build, never written over: the note a user writes
+        about what they saw has to stay about that file."""
+        vrm = self._last_vrm()
+        if vrm is None:
+            raise StepFailed("no finished .vrm yet: build first")
+        folder = warudo_folder()
+        if folder is None:
+            raise FileNotFoundError("Warudo wasn't found in a Steam library: give its Characters folder "
+                                    r"(Warudo\Warudo_Data\StreamingAssets\Characters)")
+        target = folder / f"{self.name}_{vrm.parent.name}.vrm"
+        already = target.exists() and target.stat().st_size == vrm.stat().st_size
+        if target.exists() and not already:
+            raise StepFailed(f"{target} is there already and is a different file: rename or remove it in Warudo's folder")
+        if not already:
+            if free_disk(folder) < vrm.stat().st_size + DISK_FLOOR:
+                known = errors.describe("VM-DISK-FULL")
+                raise StepFailed(f"no room for the avatar on {folder.anchor} [VM-DISK-FULL] {known['fix']}", known)
+            # under another name first: a Warudo that is open must not find half a file to load
+            part = target.with_suffix(".part")
+            shutil.copy2(vrm, part)
+            part.replace(target)
+        return {"sent": str(target), "name": target.name, "from": str(vrm), "already": already}
+
     def reports(self):
         """{report name: its JSON file} for the reports this build has finished (see APPROVED)."""
         steps = self.state["steps"]
@@ -1262,6 +1287,41 @@ def forget_blender(path):
     SETTINGS.parent.mkdir(parents=True, exist_ok=True)
     _write_json(SETTINGS, settings)
     return setup()
+
+
+WARUDO_CHARACTERS = Path("steamapps") / "common" / "Warudo" / "Warudo_Data" / "StreamingAssets" / "Characters"
+
+
+def steam_libraries():
+    """Steam's library folders: its own, and the ones on other drives it lists in libraryfolders.vdf."""
+    steam = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Steam"
+    try:
+        listed = re.findall(r'"path"\s+"([^"]+)"', (steam / "steamapps" / "libraryfolders.vdf").read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        listed = []
+    return [steam, *(Path(p.replace("\\\\", "\\")) for p in listed)]
+
+
+def warudo_folder():
+    """Warudo's Characters folder, where it lists avatars: the one set by hand (`use_warudo`), else
+    the one in a Steam library; None when there is neither."""
+    chosen = _read_json(SETTINGS, {}).get("warudo")
+    for folder in ([Path(chosen)] if chosen else []) + [library / WARUDO_CHARACTERS for library in steam_libraries()]:
+        if folder.is_dir():
+            return folder
+    return None
+
+
+def use_warudo(folder):
+    """Send avatars to this folder from now on; "" goes back to the one found in Steam."""
+    if folder and not Path(folder).is_dir():
+        raise ValueError(f"{folder} isn't a folder: pick Warudo's Characters folder "
+                         r"(Warudo\Warudo_Data\StreamingAssets\Characters)")
+    settings = _read_json(SETTINGS, {})
+    settings["warudo"] = str(folder) if folder else None
+    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(SETTINGS, settings)
+    return {"warudo": str(warudo_folder() or "")}
 
 
 def _write_json(path, data, backup=False):

@@ -303,6 +303,7 @@
   <div class="stack">
     <div class="card w-lg"><div class="title">What's left</div><div id="todo"></div></div>
     <div class="row"><button class="act" id="run-all" data-job>Build everything</button>
+      <button class="act alt" id="vrm-send" disabled title="copies the .vrm into Warudo's Characters folder">Send to Warudo</button>
       <button class="act alt" id="vrm-show" disabled>Show .vrm in folder</button>
       <button class="act alt" id="vrm-copy" disabled>Copy .vrm path</button>
       <span class="msg" id="vrm-path"></span></div>
@@ -385,7 +386,8 @@
       <iframe id="viewer" title="VRM viewer" hidden style="margin-top:var(--s3)"></iframe>
     </div>
     <div class="card w-md"><div class="title">In Warudo</div>
-      <div class="row"><button class="act alt" id="review-vrm-show" disabled>Show .vrm in folder</button>
+      <div class="row"><button class="act" id="review-vrm-send" disabled title="copies the .vrm into Warudo's Characters folder">Send to Warudo</button>
+        <button class="act alt" id="review-vrm-show" disabled>Show .vrm in folder</button>
         <button class="act alt" id="review-vrm-copy" disabled>Copy .vrm path</button></div>
       <p class="help">Load the .vrm in Warudo and go through this list. Then write down what you saw (and attach screenshots):
         the note, with the ticks, is kept with this exact .vrm, so later builds can be compared with it. Once a build looks

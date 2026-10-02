@@ -156,6 +156,10 @@ def api(route, query, body):
         return JOBS.cancel()
     if route == "reveal":
         return _reveal(Path(body["path"]))
+    if route == "send_warudo":
+        if "folder" in body:
+            engine.use_warudo(body["folder"])
+        return Project(m).send_to_warudo()
     if route == "movement":
         return JOBS.start("movement check", lambda emit: cli.cmd_movement(_args(manifest=Path(m), step=body.get("step"))))
     if route == "movement_result":

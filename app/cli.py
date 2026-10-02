@@ -107,6 +107,10 @@ def main(argv=None):
     p.add_argument("manifest", type=Path)
     p.add_argument("--note", default="", help="why it is good, e.g. what was checked in Warudo")
 
+    p = sub.add_parser("warudo", help="copy the finished .vrm into Warudo's Characters folder")
+    p.add_argument("manifest", type=Path, nargs="?")
+    p.add_argument("--folder", help="send avatars to this folder from now on ('' = the one found in Steam)")
+
     p = sub.add_parser("compare", help="compare two check reports (scripts/compare_checks.py)")
     p.add_argument("before", type=Path)
     p.add_argument("after", type=Path)
@@ -182,6 +186,14 @@ def cmd_runs(args):
 
 def cmd_approve(args):
     return _project(args).approve(args.note)
+
+
+def cmd_warudo(args):
+    if args.folder is not None:
+        return engine.use_warudo(args.folder)
+    if args.manifest is None:
+        return {"warudo": str(engine.warudo_folder() or "")}
+    return _project(args).send_to_warudo()
 
 
 def cmd_regress(args):
@@ -584,7 +596,7 @@ COMMANDS = {"init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_s
             "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "movement": cmd_movement, "springs": cmd_springs,
             "face-patch": cmd_face_patch, "face": cmd_face, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
             "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup,
-            "regress": cmd_regress, "vendor": cmd_vendor}
+            "regress": cmd_regress, "vendor": cmd_vendor, "warudo": cmd_warudo}
 
 
 def _project(args):

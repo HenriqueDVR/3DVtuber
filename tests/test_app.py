@@ -679,6 +679,40 @@ class Engine(unittest.TestCase):
         self.assertTrue(all(path.exists() for (run, _), path in made.items() if run != "20260101-100000"))
         self.assertEqual(project.usage()["prunable"], 0)
 
+    def test_the_finished_vrm_is_sent_to_warudo_once_and_never_written_over(self):
+        project = self.project()
+        library = self.root / "SteamLibrary"
+        real, engine.steam_libraries = engine.steam_libraries, lambda: [self.root / "Steam", library]
+        try:
+            vrm = project.out / "runs" / "20260104-100000" / "13_export.vrm"
+            vrm.parent.mkdir(parents=True)
+            vrm.write_bytes(b"x" * 1000)
+            with self.assertRaisesRegex(engine.StepFailed, "build first"):
+                project.send_to_warudo()
+            project.state["steps"]["export"] = {"status": "done", "vrm": str(vrm)}
+            with self.assertRaisesRegex(FileNotFoundError, "Warudo wasn't found"):
+                project.send_to_warudo()
+            characters = library / engine.WARUDO_CHARACTERS
+            characters.mkdir(parents=True)
+            sent = project.send_to_warudo()
+            self.assertEqual((sent["name"], sent["already"]), ("Test_20260104-100000.vrm", False))
+            self.assertEqual([p.name for p in characters.iterdir()], ["Test_20260104-100000.vrm"])
+            self.assertTrue(project.send_to_warudo()["already"])
+            (characters / sent["name"]).write_bytes(b"someone else's")
+            with self.assertRaisesRegex(engine.StepFailed, "a different file"):
+                project.send_to_warudo()
+            self.assertEqual((characters / sent["name"]).read_bytes(), b"someone else's")
+            # a folder given by hand wins over Steam's, and only a folder is taken
+            mine = self.root / "Portable Warudo" / "Characters"
+            with self.assertRaisesRegex(ValueError, "isn't a folder"):
+                engine.use_warudo(str(mine))
+            mine.mkdir(parents=True)
+            self.assertEqual(engine.use_warudo(str(mine)), {"warudo": str(mine)})
+            self.assertEqual(Path(project.send_to_warudo()["sent"]).parent, mine)
+            self.assertEqual(engine.use_warudo(""), {"warudo": str(characters)})
+        finally:
+            engine.steam_libraries = real
+
     def test_the_tested_blender_is_picked_before_a_newer_untested_one(self):
         folders = ["Blender 4.2", "Blender 4.10", "blender-5.1.0-windows-x64", "Blender 3.6"]
         paths = [self.root / f / "blender.exe" for f in folders]
