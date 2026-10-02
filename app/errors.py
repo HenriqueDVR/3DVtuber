@@ -12,15 +12,23 @@ import re
 # (code, steps it applies to or None for any, pattern in the log, what happened, what to do,
 #  manifest options that fix it or None)
 KNOWN = [
-    ("VM-OOM", None, r"Malloc returns null",
+    ("VM-OOM", None, r"Malloc returns null|STOPPED by the engine after \d+ s: out of memory",
      "Blender ran out of memory",
      "close other programs and rerun; a model over ~100k triangles is worth decimating first", None),
-    ("VM-TIMEOUT", None, r"STOPPED by the engine",
+    ("VM-DISK-FULL", None, r"STOPPED by the engine after \d+ s: disk full|No space left on device|not enough space on the disk",
+     "the drive the build writes to is full",
+     "free up space (Characters page: it removes old runs' model files and keeps their reports), then rerun", None),
+    ("VM-TIMEOUT", None, r"STOPPED by the engine after \d+ s$",
      "the step ran past the engine's time limit and was stopped",
      "rerun the step alone; if it hangs again, send a bundle", None),
-    ("VM-NO-VRM-ADDON", None, r"export_scene\.vrm|import_scene\.vrm|has no attribute 'vrm'",
-     "the VRM Add-on for Blender isn't enabled",
-     "install and enable the VRM Add-on in Blender 4.2 (Preferences > Get Extensions)", None),
+    # the operator's own "could not be found", not its name: vrm_check's command line, echoed at
+    # the top of its log, names import_scene.vrm, and every failed check read as a missing add-on
+    ("VM-NO-VRM-ADDON", None, r"_scene\.vrm\" error, could not be found|VrmAddonMissing|has no attribute 'vrm'",
+     "the VRM Add-on for Blender isn't installed in this Blender",
+     "install \"VRM format\" in it (Preferences > Get Extensions); the app turns it on by itself", None),
+    ("VM-EXPORT-POSE", None, r"ExportMismatch",
+     "the exported .vrm doesn't hold the rest pose that was built: the VRM Add-on re-posed it on export",
+     "use a VRM Add-on version the app was tested with and rerun the step; if it repeats, send a bundle", None),
     ("VM-TRIPO-MIX", None, r"'ShaderNodeMix' object has no attribute 'image'",
      "the model's material multiplies its colour by a grey factor (newer Tripo exports)",
      "run the matte step on the model first (scripts/matte_materials.py)", None),

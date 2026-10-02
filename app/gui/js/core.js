@@ -6,7 +6,7 @@ export const now = () => new Date().toLocaleTimeString();
 
 // The open character. Pages read and replace these; nothing else holds a copy.
 export const S = { manifestPath: null, manifest: null, status: null, listing: null, movement: null, springs: null,
-  feedback: [], projects: [], runs: [], renders: [] };
+  feedback: [], projects: [], runs: [], renders: [], setup: null };
 // Functions one page calls on another, filled in by the module that owns them (go, job,
 // openProject, ...): the pages import each other's work without importing each other.
 export const app = {};

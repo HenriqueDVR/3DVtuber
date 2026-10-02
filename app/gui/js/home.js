@@ -1,9 +1,17 @@
 // Characters: one card per character, and the new-character form and survey on Model.
 import { $, S, app, call, esc, say } from "./core.js";
-import { toast } from "./ui.js";
+import { ask, toast } from "./ui.js";
 import { job } from "./jobs.js";
 
 export function renderHome() {
+  // a build can't run yet: said where a new user lands, not found out minutes into the first build
+  const stops = (S.setup?.checks || []).filter((c) => c.state === "bad");
+  $("home-notice").hidden = !stops.length;
+  if (stops.length) {
+    $("home-notice").innerHTML = `<b>Not ready to build yet</b>${stops.map((c) => `<div>${esc(c.text)}: ${esc(c.fix)}</div>`).join("")}
+      <button class="act alt small" id="home-setup" style="width:auto">Open Setup</button>`;
+    $("home-setup").onclick = () => app.go("setup");
+  }
   const cards = S.projects.map((p) => {
     const chips = [p.approved ? ["marked good", "good"] : null,
       p.built ? (p.failed?.length ? [`built without ${p.failed.join(", ").replaceAll("_", " ")}`, "warn"] : ["built", "info"])
@@ -27,20 +35,64 @@ export function renderHome() {
   $("cards").querySelector("[data-new]").onclick = async () => { await app.openProject(null); app.go("model"); };
 }
 
+// ---------- disk: what the runs take, and freeing what nothing reads any more
+const gb = (bytes) => bytes >= 2 ** 30 ? `${(bytes / 2 ** 30).toFixed(1)} GB` : `${Math.round(bytes / 2 ** 20)} MB`;
+let disk = null;
+async function loadDisk() {
+  say("disk-msg", "measuring…");
+  try { disk = await (await fetch("/api/disk")).json(); } catch (e) { say("disk-msg", e.message, true); return; }
+  if (disk.error) { say("disk-msg", disk.error, true); return; }
+  say("disk-msg", "");
+  const rows = disk.characters.filter((c) => c.bytes).sort((a, b) => b.bytes - a.bytes);
+  const low = disk.free < 5 * 2 ** 30;
+  $("disk-chip").textContent = `${gb(disk.free)} free on ${disk.drive}`;
+  $("disk-chip").className = `chip ${low ? "warn" : "good"}`;
+  $("disk").innerHTML = `<table><thead><tr><th>Character</th><th>Takes</th><th>Runs</th><th>Can be freed</th></tr></thead><tbody>
+    ${rows.map((c) => `<tr><td>${esc(c.name)}</td><td class="num">${gb(c.bytes)}</td><td class="num">${c.runs.length}</td>
+      <td class="num">${c.prunable ? `${gb(c.prunable)} <span class="msg">from ${c.prunable_runs} old run${c.prunable_runs === 1 ? "" : "s"}</span>` : `<span class="msg">nothing</span>`}</td></tr>`).join("")}
+    </tbody></table>
+    ${disk.other > 2 ** 20 ? `<p class="msg">Also in out\\: ${gb(disk.other)} the app doesn't manage (builds from before it, comparison runs). Delete those by hand if you no longer need them.</p>` : ""}`;
+  $("disk-prune").disabled = !disk.prunable;
+  $("disk-prune").textContent = disk.prunable ? `Free up ${gb(disk.prunable)}…` : "Nothing to free";
+}
+$("disk-check").onclick = loadDisk;
+$("disk-prune").onclick = async () => {
+  const runs = disk.characters.reduce((n, c) => n + c.prunable_runs, 0);
+  const ok = await ask("Free up disk space", { text: `Delete the model files (.blend, .vrm) of ${runs} old run${runs === 1 ? "" : "s"}: ${gb(disk.prunable)}.\n\n`
+    + "Their reports and logs stay. Each character's build in use, the build marked good and builds with a Warudo note are not touched.\n\nThis can't be undone.",
+    ok: `Delete ${gb(disk.prunable)}`, danger: true });
+  if (!ok) return;
+  try {
+    const done = await call("prune", { all: true });
+    toast(`Freed ${gb(done.freed)} (${done.removed} files).`);
+    await loadDisk();
+  } catch (e) { toast(e.message, "bad"); }
+};
+
 // ---------- Model: a new character's form, or the open one's survey and rig
 $("create").onclick = async () => {
   try {
     const made = await call("init", { model: $("new-model").value.trim(), name: $("new-name").value.trim(),
       author: $("new-author").value.trim(), face: $("new-face").value.trim(), reference: $("new-reference").value.trim(),
       rig: $("new-rig").value.trim() });
-    toast(!made.rig || $("new-rig").value.trim() ? `Made ${made.manifest}`
+    toast(made.other_rig ? `Made ${made.manifest}. The model carries a ${made.other_rig} skeleton: the app places its own unless you name this file as the rig too (Model page).`
+      : !made.rig || $("new-rig").value.trim() ? `Made ${made.manifest}`
       : made.rig === made.source ? `Made ${made.manifest}. Tripo's rig found in the model: it will be used.`
-      : `Made ${made.manifest}. The model names Tripo's rig it was made from (${made.rig}): it will be used.`);
+      : `Made ${made.manifest}. The model names Tripo's rig it was made from (${made.rig}): it will be used.`,
+      "good", { ms: made.other_rig ? 12000 : 4500 });
     say("create-msg", "");
     await app.loadProjects(made.manifest);
+    if ($("create-prepare").checked) job("prepare", {});
   } catch (e) { say("create-msg", e.message, true); }
 };
 $("survey-run").onclick = () => job("run", { only: "survey" });
+$("prepare-run").onclick = () => job("prepare", {});
+// Ready: the one thing only the user can do is next, with the way past it for a faceless model.
+app.prepared = () => {
+  app.go("face");
+  toast("Ready. Mark the eyes and mouth on the picture, then press Save and build.", "good",
+    { action: { label: "Build without a face", run: () => { app.go("build"); job("run", {}); } }, ms: 15000 });
+};
 document.querySelectorAll("[data-browse]").forEach((b) => b.onclick = async () => {
   try { const { path } = await call("browse", { kind: b.dataset.browse }); if (path) $(b.dataset.for).value = path; }
   catch (e) { toast(e.message, "bad"); }

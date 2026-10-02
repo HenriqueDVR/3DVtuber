@@ -11,6 +11,7 @@ import { renderOptions } from "./options.js";
 import { renderSteps, loadRuns } from "./build.js";
 import { loadMovement, loadSprings } from "./movement.js";
 import { loadFeedback, loadRenders } from "./review.js";
+import { loadSetup } from "./setup.js";
 
 const LAST = "vtuber-maker-project";
 
@@ -81,4 +82,4 @@ document.querySelectorAll("[data-examples]").forEach((host) => {
 });
 
 go(location.hash.slice(1) || "home");
-loadProjects().then(resume).catch(failed);
+loadProjects().then(resume).then(loadSetup).catch(failed);

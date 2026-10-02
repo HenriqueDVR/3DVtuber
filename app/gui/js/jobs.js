@@ -34,6 +34,8 @@ async function poll(since) {
   if (state.running && !run) run = { route: state.running, started: Date.now(), steps: [], done: 0, current: null };
   for (const e of state.events) {
     $("events").textContent += `${e.step} ${e.status}${e.seconds ? ` (${e.seconds} s)` : ""}${e.reason ? ": " + e.reason : ""}\n`;
+    // short of memory or disk, an untested Blender: said where it is seen, not only in the log
+    if (e.status === "warning") { toast(e.reason, "info", { ms: 12000 }); continue; }
     if (run && e.status === "running") { run.current = e.step; run.stepStarted = Date.now(); }
     else if (run) run.done += 1;
   }
@@ -58,6 +60,7 @@ async function poll(since) {
   if (took > 20) ended(state.error ? "failed" : state.cancelled ? "stopped" : "finished", finished.label);
   app.jobDone?.(state);
   if (S.manifestPath) await app.openProject(S.manifestPath);
+  if (finished.route === "prepare" && !state.error && !state.cancelled) app.prepared?.();
 }
 
 const cap = (t) => t[0].toUpperCase() + t.slice(1);

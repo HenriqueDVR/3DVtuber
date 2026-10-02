@@ -44,13 +44,15 @@ app.jobDone = (state) => {
 };
 
 // ---------- the viewer, springs running
-export async function openViewer(url, what) {
+// `show`: what the viewer opens on, e.g. { pose: "arms raised" } or { weights: "LeftUpperArm" }
+export async function openViewer(url, what, show = {}) {
   if (!url) {
     const vrm = lastVrm();
     url = vrm && (await call("url", { path: vrm })).url;
   }
   if (!url) return toast("No finished .vrm yet: build first.", "bad");
-  $("viewer").hidden = false; $("viewer").src = `/viewer/index.html?model=${encodeURIComponent(url)}`;
+  const extra = Object.entries(show).map(([key, value]) => `&${key}=${encodeURIComponent(value)}`).join("");
+  $("viewer").hidden = false; $("viewer").src = `/viewer/index.html?model=${encodeURIComponent(url)}${extra}`;
   $("face-test").hidden = false;
   $("viewer").scrollIntoView({ behavior: "smooth", block: "nearest" });
   if (what) toast(`Viewing the ${what}.`, "info");

@@ -200,8 +200,10 @@ dialog .row { justify-content: flex-end; margin-top: var(--s4); }
 #lightbox .nav { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(26, 29, 36, .8); border: 1px solid var(--line); color: var(--text); font-size: 22px; width: 44px; height: 44px; border-radius: 50%; cursor: pointer; }
 #lightbox .prev { left: var(--s4); } #lightbox .next { right: var(--s4); }
 #lightbox .close { position: absolute; top: var(--s4); right: var(--s4); }
-.detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--s3); margin: var(--s2) 0; font-size: 13px; }
-.detail dt { color: var(--dim); } .detail dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.detail dl, dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--s3); margin: var(--s2) 0; font-size: 13px; }
+.detail dt, dl.facts dt { color: var(--dim); } .detail dd, dl.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+dl.facts dt.done { color: var(--good); } dl.facts dt.warn { color: var(--warn); } dl.facts dt.failed { color: var(--bad); }
+dl.facts dd .sub { display: block; }
 
 @media (max-width: 860px) {
   body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }

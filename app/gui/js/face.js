@@ -170,15 +170,26 @@ export function renderFace() {
   $("mouth-free").disabled = $("mouth-scale").disabled = !fix;
   showEyeChoice();
 }
-$("face-apply").onclick = async () => {
+// Saves the points and the choices; true when the points went in too.
+async function saveFace() {
   try {
     const points = await savePoints();
     await call("set", { key: "eyes", value: $("eyes").value || null });
     await call("set", { key: "mouth_fix", value: $("mouth-fix").checked ? { free: $("mouth-free").checked, scale: +$("mouth-scale").value } : null });
     await refreshManifest(); await refreshStatus(); app.renderAll();
-    if (points) { say("face-msg", ""); saved("Saved the points and the choices. Rebuild for the face to change."); }
-    else say("face-msg", `Saved the choices, but not the points: ${placed(facePoints)} of ${POINT_COUNT} are placed. Place them all in step 2.`, true);
+    if (points) { say("face-msg", ""); return true; }
+    say("face-msg", `Saved the choices, but not the points: ${placed(facePoints)} of ${POINT_COUNT} are placed. Place them all in step 2.`, true);
   } catch (e) { say("face-msg", e.message, true); }
+  return false;
+}
+$("face-apply").onclick = async () => { if (await saveFace()) saved("Saved the points and the choices. Rebuild for the face to change."); };
+// The face points shape the head, eyes and mouth from the rig step on: a first build runs
+// everything, a later one from "build".
+$("face-build").onclick = async () => {
+  if (!await saveFace()) return;
+  const built = S.status?.steps.some((s) => s.step === "build" && ["done", "stale", "failed"].includes(s.status));
+  app.go("build");
+  job("run", built ? { from: "build" } : {});
 };
 const EYE_CHOICE = {
   "": () => `Picks for you: a moving iris if the eyes are modelled as their own pieces, sliding patches if they're painted on the face${S.manifest?.face ? "" : " (and no eye movement until the points are marked)"}.`,

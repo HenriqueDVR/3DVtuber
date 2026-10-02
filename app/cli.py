@@ -13,6 +13,7 @@ import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from . import engine
 from .engine import REPO, Project, StepFailed, manifest
@@ -23,6 +24,9 @@ def main(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--blender", help="path to blender.exe (default: $BLENDER, PATH, Program Files)")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("setup", help="what the app needs and what it found: Blender, the VRM Add-on, disk, memory")
+    p.add_argument("--use", metavar="BLENDER", help="keep this blender.exe as the one to run (\"\" to go back to finding one)")
 
     p = sub.add_parser("init", help="start a character manifest for a model")
     p.add_argument("model", type=Path)
@@ -35,6 +39,9 @@ def main(argv=None):
                    "its skeleton and weights are used (a rigged FBX model is its own rig without this)")
 
     p = sub.add_parser("status", help="options, plan and what each step produced")
+    p.add_argument("manifest", type=Path)
+
+    p = sub.add_parser("prepare", help="all a new character needs before its face is marked: survey, piece listing, face patch")
     p.add_argument("manifest", type=Path)
 
     p = sub.add_parser("run", help="run the build chain, or part of it")
@@ -108,6 +115,17 @@ def main(argv=None):
     p.add_argument("manifest", type=Path)
     p.add_argument("--note", default="", help="what looks wrong, in the user's words")
 
+    p = sub.add_parser("regress", help="rebuild characters in a scratch folder and compare each with its good build")
+    p.add_argument("manifests", type=Path, nargs="*", help="which characters (default: every one with a finished build)")
+    p.add_argument("--keep", action="store_true", help="keep the scratch builds' .blend and .vrm files")
+
+    p = sub.add_parser("disk", help="how much disk a character's runs take, and what `prune` would free")
+    p.add_argument("manifest", type=Path)
+
+    p = sub.add_parser("prune", help="delete the .blend and .vrm files of runs nothing reads any more (reports and logs stay)")
+    p.add_argument("manifest", type=Path)
+    p.add_argument("--dry-run", action="store_true", help="only say what would go")
+
     args = parser.parse_args(argv)
     try:
         result = COMMANDS[args.command](args)
@@ -116,6 +134,10 @@ def main(argv=None):
         return 1
     print(json.dumps(result, indent=2, default=str))
     return 0
+
+
+def cmd_setup(args):
+    return engine.use_blender(args.use) if args.use is not None else engine.setup(args.blender)
 
 
 def cmd_init(args):
@@ -134,8 +156,10 @@ def cmd_init(args):
         # Tripo's rigged FBX is model and rig in one file; a GLB the texture steps made from it names it
         data["rig"] = data["source"] if rig.resolve() == Path(args.model).resolve() else _relative(rig, path)
     manifest.save(data, path)
-    return {"manifest": str(path), "source": data["source"], "rig": data.get("rig"),
-            "next": f"python -m app run {path} --only survey"}
+    # another tool's skeleton in the model: readable (adopt.py) but not measured, so not taken unasked
+    other = None if data.get("rig") else manifest.rig_kind(args.model)
+    return {"manifest": str(path), "source": data["source"], "rig": data.get("rig"), "other_rig": other,
+            "next": f"python -m app prepare {path}"}
 
 
 def cmd_status(args):
@@ -150,10 +174,103 @@ def cmd_approve(args):
     return _project(args).approve(args.note)
 
 
+def cmd_regress(args):
+    """Rebuild each character from its manifest into out/regress/<name>/ and compare the reports
+    with its baseline: the build marked good, else its last build. Its own files are not touched.
+
+    Every pipeline change so far was A/B'd by hand in scratch folders (out/_regress_0928,
+    out/compare/*); this is that, as one command and one table. One Blender at a time, a few
+    minutes a character. `worse` > 0 means something measured worse than the baseline.
+    """
+    events = lambda event: print(json.dumps(event, default=str), file=sys.stderr, flush=True)  # noqa: E731
+    chosen = [Path(m).resolve() for m in args.manifests] or [m for m in engine.characters() if Project(m).baseline()[0]]
+    rows = []
+    for path in chosen:
+        project = Project(path, blender=getattr(args, "blender", None))
+        what, before = project.baseline()
+        row = {"name": project.name, "manifest": str(path), "baseline": what, "worse": [], "better": [], "error": None}
+        rows.append(row)
+        if what is None:
+            row["error"] = "never built to a rig check: nothing to compare with"
+            continue
+        scratch = _scratch_copy(project)
+        events({"step": project.name, "status": "running", "reason": f"rebuilding in {scratch.out}"})
+        started = datetime.now()
+        try:
+            scratch.run(on_event=events)
+        except StepFailed as error:
+            row["error"] = str(error).splitlines()[0]
+        row["seconds"] = round((datetime.now() - started).total_seconds())
+        row.update(engine.changes(before, scratch.reports()))
+        row["out"] = str(scratch.out)
+        if not args.keep:
+            for model in (p for p in scratch.out.rglob("*") if p.is_file() and p.suffix.lower() in engine.MODELS):
+                model.unlink()
+    return {"characters": rows, "worse": sum(len(r["worse"]) for r in rows), "failed": [r["name"] for r in rows if r["error"]]}
+
+
+def _scratch_copy(project):
+    """The character again under out/regress/<name>/: the same manifest with its paths made
+    absolute and its own output folder, plus the piece listing the movement check names pieces by."""
+    out = REPO / "out" / "regress" / project.name
+    out.mkdir(parents=True, exist_ok=True)
+    data = json.loads(json.dumps(project.data))
+    for key in manifest.PATHS:
+        if key != "out_dir" and data.get(key):
+            data[key] = str(manifest.path_of(project.data, key))
+    data["out_dir"] = str(out)
+    manifest.save(data, out / "character.json")
+    if (project.out / "pieces.json").exists():
+        shutil.copy2(project.out / "pieces.json", out / "pieces.json")
+    return Project(out / "character.json", blender=project._blender)
+
+
+def cmd_disk(args):
+    return _project(args).usage()
+
+
+def cmd_prune(args):
+    return _project(args).prune(dry=args.dry_run)
+
+
 def cmd_run(args):
     project = _project(args)
     events = lambda event: print(json.dumps(event, default=str), file=sys.stderr, flush=True)  # noqa: E731
     return project.run(start=args.start, stop=args.stop, only=args.only, on_event=events)
+
+
+def cmd_prepare(args):
+    events = lambda event: print(json.dumps(event, default=str), file=sys.stderr, flush=True)  # noqa: E731
+    return prepare(args.manifest, on_event=events, blender=getattr(args, "blender", None))
+
+
+def prepare(manifest_path, on_event=None, blender=None):
+    """All a new character needs before its face can be marked, in one go: the survey, the piece
+    listing and the face patch, each only when it isn't there yet. Returns what it did.
+
+    These were three buttons on three pages, and a first build without the face patch had to be
+    redone from the start once it was made (the patched copy becomes the model). The survey runs
+    again after the patch, since it is of the model the build will read.
+    """
+    emit = on_event or (lambda event: None)
+    args = lambda: SimpleNamespace(manifest=Path(manifest_path), blender=blender)  # noqa: E731
+    did = []
+    if _project(args()).survey() is None:
+        _project(args()).run(only="survey", on_event=emit)
+        did.append("survey")
+    if not (_project(args()).out / "pieces.json").exists():
+        emit({"step": "pieces", "status": "running"})
+        cmd_pieces(args())
+        emit({"step": "pieces", "status": "done"})
+        did.append("pieces")
+    if not _project(args()).survey().get("face_patch"):
+        emit({"step": "face patch", "status": "running"})
+        cmd_face_patch(args())
+        emit({"step": "face patch", "status": "done"})
+        _project(args()).run(only="survey", on_event=emit)
+        did.append("face patch")
+    return {"did": did, "status": _project(args()).status(),
+            "next": "mark the face points (Face page, or `face`), then `run`; `run` alone builds without face tracking"}
 
 
 def cmd_set(args):
@@ -456,7 +573,8 @@ def cmd_bundle(args):
 COMMANDS = {"init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_set, "joint": cmd_joint,
             "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "movement": cmd_movement, "springs": cmd_springs,
             "face-patch": cmd_face_patch, "face": cmd_face, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
-            "runs": cmd_runs}
+            "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup,
+            "regress": cmd_regress}
 
 
 def _project(args):

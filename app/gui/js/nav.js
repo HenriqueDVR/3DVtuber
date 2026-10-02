@@ -29,10 +29,14 @@ for (const [i, name] of ORDER.entries()) {
   $(name).append(foot);
 }
 
+// A step that ran and has nothing more to give: done, failed, or with nothing to do on this model
+// (no ahoge on the head). The last read as pending, and "Changes not built yet" never went away.
+const settled = (s) => ["done", "failed"].includes(s.status) || s.status.startsWith("nothing");
+
 // The steps the next run should cover: the first that isn't done, when something was built already.
 export function nextRun(status) {
   if (!status) return null;
-  const pending = status.steps.filter((s) => s.runs && !["done", "failed"].includes(s.status));
+  const pending = status.steps.filter((s) => s.runs && !settled(s));
   const built = status.steps.some((s) => s.step !== "survey" && ["done", "stale", "failed"].includes(s.status));
   return built && pending.length ? { from: pending[0].step, count: pending.length, stale: pending[0].status === "stale" } : null;
 }
@@ -42,11 +46,13 @@ export function renderNav() {
   const m = S.manifest, st = S.status, steps = Object.fromEntries((st?.steps || []).map((s) => [s.step, s]));
   const flagged = S.movement?.pieces?.length;
   const failed = (st?.steps || []).filter((s) => s.runs && s.status === "failed").length;
-  const pending = (st?.steps || []).filter((s) => s.runs && !["done", "failed"].includes(s.status)).length;
+  const pending = (st?.steps || []).filter((s) => s.runs && !settled(s)).length;
   const moved = Object.keys(m?.joints || {}).length;
   const facePlaced = S.facePlaced ?? 0;
-  const badges = !m ? { home: [S.projects.length || "", ""] } : {
-    home: [S.projects.length, ""],
+  // Setup says so only when something stops builds: a missing Blender or VRM Add-on
+  const setup = S.setup && !S.setup.ready ? ["to fix", "bad"] : ["", ""];
+  const badges = !m ? { home: [S.projects.length || "", ""], setup } : {
+    home: [S.projects.length, ""], setup,
     model: steps.survey?.status === "done" ? ["surveyed", "good"] : ["survey", "warn"],
     parts: !S.listing ? ["not listed", "warn"] : [`${m.pieces.length} role${m.pieces.length === 1 ? "" : "s"}`, m.pieces.length ? "info" : ""],
     joints: !S.listing ? ["", ""] : moved ? [`${moved} moved`, "info"] : ["detected", ""],
@@ -69,7 +75,7 @@ export function renderNav() {
   document.querySelectorAll("#steps button[data-go]").forEach((b) => {
     b.querySelector(".n").classList.toggle("done", !!(m && done[b.dataset.go]));
     // a page that can't do anything yet says why, instead of opening empty
-    const why = !m && !["home", "model", "help"].includes(b.dataset.go) ? "open or create a character first"
+    const why = !m && !["home", "model", "help", "setup"].includes(b.dataset.go) ? "open or create a character first"
       : b.dataset.go === "joints" && !S.listing ? "list the pieces first (Parts)"
       : b.dataset.go === "movement" && steps.pieces?.status !== "done" && steps.build?.status !== "done" ? "build first" : "";
     b.classList.toggle("locked", !!why); b.title = why;

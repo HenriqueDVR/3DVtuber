@@ -16,6 +16,12 @@
   button { width: 100%; margin: 3px 0; padding: 6px; background: #3b3f49; color: inherit; border: 1px solid #4a4f5a; border-radius: 4px; cursor: pointer; }
   button[aria-pressed="true"] { background: #56607a; }
   pre { white-space: pre-wrap; word-break: break-word; font-size: 11px; background: #1c1e23; padding: 8px; border-radius: 4px; }
+  select { width: 100%; margin: 3px 0; padding: 5px; background: #3b3f49; color: inherit; border: 1px solid #4a4f5a; border-radius: 4px; }
+  .note { color: #8a8f9c; font-size: 12px; margin: 4px 0; }
+  .ramp { height: 8px; border-radius: 4px; margin: 4px 0 2px; background: linear-gradient(90deg, #8e929c 0, #2a4bff 4%, #19c37d 50%, #f5d90a 75%, #ff3b30); }
+  .ends { display: flex; justify-content: space-between; color: #8a8f9c; font-size: 11px; }
+  #stage.picking canvas { cursor: crosshair; }
+  #cam { width: 100%; border-radius: 4px; transform: scaleX(-1); margin-top: 4px; }
 </style>
 <script type="importmap">
 {
@@ -38,6 +44,28 @@
   <button id="swing" aria-pressed="false">Swing head and body (spring bones)</button>
   <button id="raise-arm" aria-pressed="false">Raise left arm</button>
   <button id="look-around" aria-pressed="false">Look around (eyes)</button>
+  <h2>Pose</h2>
+  <p class="note">The poses the rig check measures, with the springs running.</p>
+  <select id="pose" aria-label="pose"><option value="">rest</option></select>
+  <label class="row"><span>how far</span><input type="range" id="pose-amount" min="-1" max="1" step="0.01" value="1"><span id="pose-readout">100%</span></label>
+  <h2>Rig</h2>
+  <button id="show-bones" aria-pressed="false">Show bones</button>
+  <button id="show-springs" aria-pressed="false">Show springs and colliders</button>
+  <button id="show-weights" aria-pressed="false">Show which bone moves what</button>
+  <div id="weights" hidden>
+    <select id="weight-bone" aria-label="bone"></select>
+    <div class="ramp"></div><div class="ends"><span>not moved</span><span>fully moved by it</span></div>
+    <p class="note">Click the model: the bones holding that spot, and their shares.</p>
+    <pre id="weight-readout">nothing clicked yet</pre>
+  </div>
+  <h2>Face tracking test</h2>
+  <button id="webcam" aria-pressed="false">Try with your webcam</button>
+  <label class="note"><input type="checkbox" id="mirror" checked> like a mirror (your left is its right)</label>
+  <label class="row"><span>strength</span><input type="range" id="gain" min="1" max="2.5" step="0.05" value="1.5"><span id="gain-readout">1.50</span></label>
+  <video id="cam" muted playsinline hidden></video>
+  <p class="note" id="cam-note">Runs Google's MediaPipe face tracker in this page, the tracker Warudo's webcam mode uses: your
+    face drives the avatar's blink, mouth and eye shapes and turns its head. The tracker (about 14 MB) loads from the
+    internet the first time; the video stays in this page. Warudo smooths and scales differently, so it stays the last word.</p>
   <h2>Expressions</h2>
   <div id="expressions"></div>
   <h2>Summary</h2>
@@ -69,13 +97,32 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 0.9, 0);
 controls.update();
 
+// three-vrm draws its own helpers into this group: the humanoid bones, each spring joint with its
+// hit radius, the colliders, the look-at direction. Shown by kind from the Rig buttons.
+const helperRoot = new THREE.Group();
+helperRoot.renderOrder = 10000;
+scene.add(helperRoot);
 const loader = new GLTFLoader();
-loader.register((parser) => new VRMLoaderPlugin(parser));
+loader.register((parser) => new VRMLoaderPlugin(parser, { helperRoot }));
 
 let vrm = null;
 let modelLabel = "";
 const motion = { swing: false, raiseArm: false, look: false };
 const clock = new THREE.Clock();
+
+// The poses scripts/check_avatar.py measures, in three's axes (Y up, +Z forward, +X the
+// character's left: Blender's (x, y, z) is (x, z, -y) here), so a failed check can be watched with
+// the springs running. Arms: where shoulder-to-wrist points, for the left arm, mirrored for the
+// right. The rest: [bone, world axis, radians], turned both ways by the slider.
+const ARM_POSES = { "arms at sides": [0.25, -1, 0], "arms forward": [0.3, -0.3, 1], "arms raised": [0.5, 1, 0] };
+const TURN_POSES = {
+  "head turn": ["head", [0, 1, 0], 0.4], "head nod": ["head", [1, 0, 0], 0.5], "head tilt": ["head", [0, 0, 1], 0.6],
+  "spine twist": ["spine", [0, 1, 0], 0.5], "spine bend": ["spine", [1, 0, 0], 0.4], "spine side bend": ["spine", [0, 0, -1], 0.35],
+  "chest twist": ["chest", [0, 1, 0], 0.4], "leg lift": ["leftUpperLeg", [1, 0, 0], -0.8],
+};
+const pose = { name: "", amount: 1, held: new Set(), restArm: {} };
+const shown = { bones: false, springs: false };
+const weights = { on: false, bone: "", saved: new Map() };
 
 function resize() {
   const { clientWidth: width, clientHeight: height } = stage;
@@ -88,11 +135,13 @@ resize();
 
 async function load(url, label) {
   summaryBox.textContent = `Loading ${label}…`;
+  const before = [...helperRoot.children];
   const gltf = await loader.loadAsync(url);
   if (!gltf.userData.vrm) throw new Error(`${label} is not a VRM file`);
   if (vrm) {
     scene.remove(vrm.scene);
     VRMUtils.deepDispose(vrm.scene);
+    for (const helper of before) helperRoot.remove(helper);  // the model before this one's
   }
   vrm = gltf.userData.vrm;
   window.vrm = vrm; // for inspecting from the browser console
@@ -100,9 +149,218 @@ async function load(url, label) {
   VRMUtils.rotateVRM0(vrm);
   scene.add(vrm.scene);
   document.getElementById("hint").style.display = "none";
+  weights.saved.clear(); pose.held.clear();
+  vrm.scene.updateMatrixWorld(true);
+  for (const side of ["left", "right"]) {
+    const upper = vrm.humanoid.getNormalizedBoneNode(`${side}UpperArm`), hand = vrm.humanoid.getNormalizedBoneNode(`${side}Hand`);
+    pose.restArm[side] = upper && hand ? hand.getWorldPosition(new THREE.Vector3()).sub(upper.getWorldPosition(new THREE.Vector3())).normalize() : null;
+  }
   buildExpressionSliders();
+  buildBoneList();
+  showHelpers();
+  if (weights.on) paintWeights();
   focusBody();
   summaryBox.textContent = JSON.stringify(summarize(), null, 2);
+}
+
+// ---------- rig helpers, by kind
+const helperKind = (h) => h.vrmHumanoid ? "bones" : (h.springBone || h.collider) ? "springs" : "other";
+function showHelpers() {
+  for (const helper of helperRoot.children) helper.visible = !!shown[helperKind(helper)];
+}
+
+// ---------- which bone moves what: the skin weights, painted on the model
+// lit, so the body's shape still reads under the colours (unlit, it was a flat silhouette)
+const weightMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+const RAMP = [[0, [0.3, 0.32, 0.38]], [0.02, [0.16, 0.29, 1]], [0.5, [0.1, 0.76, 0.49]], [0.75, [0.96, 0.85, 0.04]], [1, [1, 0.23, 0.19]]];
+function ramp(w) {
+  for (let i = 1; i < RAMP.length; i++) {
+    if (w <= RAMP[i][0]) {
+      const [a, ca] = RAMP[i - 1], [b, cb] = RAMP[i], t = (w - a) / (b - a);
+      return ca.map((c, k) => c + (cb[k] - c) * t);
+    }
+  }
+  return RAMP.at(-1)[1];
+}
+function skinned() {
+  const meshes = [];
+  vrm?.scene.traverse((object) => { if (object.isSkinnedMesh) meshes.push(object); });
+  return meshes;
+}
+// every bone that holds some of the mesh, in skeleton order
+function buildBoneList() {
+  const used = new Set();
+  for (const mesh of skinned()) {
+    const index = mesh.geometry.attributes.skinIndex, weight = mesh.geometry.attributes.skinWeight;
+    for (let v = 0; v < index.count; v++) for (let k = 0; k < 4; k++) if (weight.getComponent(v, k) > 0) used.add(mesh.skeleton.bones[index.getComponent(v, k)]?.name);
+  }
+  const select = document.getElementById("weight-bone");
+  select.innerHTML = `<option value="">every bone, one colour each</option>` + [...used].filter(Boolean).map((name) => `<option>${name}</option>`).join("");
+  if (!used.has(weights.bone)) weights.bone = "";
+  select.value = weights.bone;
+}
+function paintWeights() {
+  for (const mesh of skinned()) {
+    const geometry = mesh.geometry, index = geometry.attributes.skinIndex, weight = geometry.attributes.skinWeight, bones = mesh.skeleton.bones;
+    if (!weights.saved.has(mesh)) weights.saved.set(mesh, { material: mesh.material, color: geometry.attributes.color });
+    const colours = new Float32Array(index.count * 3), tint = new THREE.Color();
+    for (let v = 0; v < index.count; v++) {
+      let share = 0, lead = 0, leader = 0;
+      for (let k = 0; k < 4; k++) {
+        const w = weight.getComponent(v, k), bone = index.getComponent(v, k);
+        if (bones[bone]?.name === weights.bone) share += w;
+        if (w > lead) { lead = w; leader = bone; }
+      }
+      // one bone: its share as a heat colour; all of them: the leading bone's own hue
+      colours.set(weights.bone ? ramp(share) : tint.setHSL((leader * 0.618034) % 1, 0.65, 0.55).toArray(), v * 3);
+    }
+    geometry.setAttribute("color", new THREE.BufferAttribute(colours, 3));
+    mesh.material = weightMaterial;
+  }
+}
+function clearWeights() {
+  for (const [mesh, was] of weights.saved) {
+    mesh.material = was.material;
+    if (was.color) mesh.geometry.setAttribute("color", was.color); else mesh.geometry.deleteAttribute("color");
+  }
+  weights.saved.clear();
+}
+// the bones holding the clicked spot, heaviest first; the heaviest becomes the bone shown
+const ray = new THREE.Raycaster();
+function pickWeights(event) {
+  const box = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2(((event.clientX - box.left) / box.width) * 2 - 1, -((event.clientY - box.top) / box.height) * 2 + 1), camera);
+  const meshes = skinned();
+  for (const mesh of meshes) mesh.computeBoundingSphere();  // of the posed mesh, which is what is clicked
+  const hit = ray.intersectObjects(meshes, false)[0];
+  if (!hit) return;
+  const index = hit.object.geometry.attributes.skinIndex, weight = hit.object.geometry.attributes.skinWeight, v = hit.face.a;
+  const held = [0, 1, 2, 3].map((k) => [hit.object.skeleton.bones[index.getComponent(v, k)]?.name, weight.getComponent(v, k)])
+    .filter(([name, w]) => name && w > 0.005).sort((a, b) => b[1] - a[1]);
+  document.getElementById("weight-readout").textContent = held.map(([name, w]) => `${name}  ${w.toFixed(2)}`).join("\n") || "no bone holds this spot";
+  if (held.length) { weights.bone = held[0][0]; document.getElementById("weight-bone").value = weights.bone; paintWeights(); }
+}
+let pressed = null;
+renderer.domElement.addEventListener("pointerdown", (event) => { pressed = [event.clientX, event.clientY]; });
+renderer.domElement.addEventListener("pointerup", (event) => {
+  // a click, not the end of an orbit drag
+  if (weights.on && vrm && pressed && Math.hypot(event.clientX - pressed[0], event.clientY - pressed[1]) < 4) pickWeights(event);
+  pressed = null;
+});
+
+// ---------- webcam: a face tracker driving the avatar, to see blink, mouth and eyes before Warudo
+// MediaPipe's Face Landmarker scores the 52 ARKit shapes and gives the head's turn. Each score goes
+// onto the morph target of the same name, which is how Warudo drives a face set to "blendshapes".
+const TRACKER = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+const FACE_MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+// Trackers under-read (a shut eye scores about 0.6), so apps scale the scores up: `gain`.
+const webcam = { on: false, landmarker: null, video: document.getElementById("cam"), frame: -1, mirror: true, gain: 1.5,
+  scores: null, turn: null, driven: new Set(), necks: [] };
+const otherSide = (name) => name.endsWith("Left") ? name.slice(0, -4) + "Right" : name.endsWith("Right") ? name.slice(0, -5) + "Left" : name;
+
+async function startWebcam() {
+  const note = document.getElementById("cam-note");
+  note.textContent = "Loading the face tracker…";
+  try {
+    if (!webcam.landmarker) {
+      const vision = await import(`${TRACKER}/vision_bundle.mjs`);
+      const { FaceLandmarker, FilesetResolver } = vision.FaceLandmarker ? vision : vision.default;
+      const files = await FilesetResolver.forVisionTasks(`${TRACKER}/wasm`);
+      webcam.landmarker = await FaceLandmarker.createFromOptions(files, {
+        baseOptions: { modelAssetPath: FACE_MODEL, delegate: "GPU" }, runningMode: "VIDEO", numFaces: 1,
+        outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true });
+    }
+    webcam.video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+    await webcam.video.play();
+    webcam.video.hidden = false; webcam.on = true;
+    note.textContent = "Tracking. Blink, talk, look around, turn your head. Shapes the avatar lacks are listed under Summary.";
+    listMissingShapes();
+  } catch (error) {
+    stopWebcam();
+    note.textContent = `Couldn't start: ${error.message}`;
+  }
+  press(document.getElementById("webcam"), webcam.on);
+}
+function stopWebcam() {
+  webcam.on = false;
+  webcam.video.srcObject?.getTracks().forEach((track) => track.stop());
+  webcam.video.srcObject = null; webcam.video.hidden = true;
+  track(null, null);
+  press(document.getElementById("webcam"), false);
+}
+// A frame of tracking: {ARKit name: score} and the head's turn (Euler, three's axes), or nulls to let go.
+function track(scores, turn) {
+  webcam.scores = scores; webcam.turn = turn;
+  if (!scores && vrm) {
+    for (const mesh of morphed()) for (const name of webcam.driven) if (name in mesh.morphTargetDictionary) mesh.morphTargetInfluences[mesh.morphTargetDictionary[name]] = 0;
+    for (const node of webcam.necks) node.quaternion.identity();
+    webcam.driven.clear(); webcam.necks = [];
+  }
+}
+function morphed() {
+  const meshes = [];
+  vrm?.scene.traverse((object) => { if (object.morphTargetDictionary) meshes.push(object); });
+  return meshes;
+}
+function readCamera() {
+  if (webcam.video.currentTime === webcam.frame) return;
+  webcam.frame = webcam.video.currentTime;
+  const result = webcam.landmarker.detectForVideo(webcam.video, performance.now());
+  const shapes = result.faceBlendshapes?.[0]?.categories;
+  if (!shapes) return;  // no face in view: hold the last one
+  const matrix = result.facialTransformationMatrixes?.[0]?.data;
+  track(Object.fromEntries(shapes.map((c) => [c.categoryName, c.score])),
+    matrix ? new THREE.Euler().setFromRotationMatrix(new THREE.Matrix4().fromArray(matrix), "YXZ") : null);
+}
+// Before vrm.update: the head's turn, shared between the neck and the head.
+function turnHead() {
+  if (!webcam.turn) return;
+  const side = webcam.mirror ? -1 : 1;
+  webcam.necks = ["neck", "head"].map((bone) => vrm.humanoid.getNormalizedBoneNode(bone)).filter(Boolean);
+  for (const node of webcam.necks) node.rotation.set(webcam.turn.x / webcam.necks.length, side * webcam.turn.y / webcam.necks.length, side * webcam.turn.z / webcam.necks.length, "YXZ");
+}
+// After vrm.update: the expression manager has just zeroed every morph its presets bind.
+function moveFace() {
+  if (!webcam.scores) return;
+  for (const mesh of morphed()) {
+    for (const [name, index] of Object.entries(mesh.morphTargetDictionary)) {
+      const score = webcam.scores[webcam.mirror ? otherSide(name) : name];
+      if (score === undefined) continue;
+      mesh.morphTargetInfluences[index] = Math.min(1, score * webcam.gain);
+      webcam.driven.add(name);
+    }
+  }
+}
+// Which of the tracker's shapes this avatar has no morph target for, so nothing will move for them.
+function listMissingShapes() {
+  if (!webcam.scores || !vrm) { setTimeout(() => webcam.on && listMissingShapes(), 500); return; }
+  const have = new Set(morphed().flatMap((mesh) => Object.keys(mesh.morphTargetDictionary)));
+  const missing = Object.keys(webcam.scores).filter((name) => name !== "_neutral" && !have.has(name));
+  summaryBox.textContent = `Face tracking: the avatar has ${Object.keys(webcam.scores).length - 1 - missing.length} of the tracker's 52 shapes.`
+    + (missing.length ? `\nNot on it (nothing moves for these): ${missing.join(", ")}` : "");
+}
+
+// ---------- poses
+function applyPose() {
+  const humanoid = vrm.humanoid, now = new Set();
+  const set = (bone, quaternion) => {
+    const node = humanoid.getNormalizedBoneNode(bone);
+    if (node) { node.quaternion.copy(quaternion); now.add(node); }
+  };
+  if (pose.name in ARM_POSES) {
+    const [x, y, z] = ARM_POSES[pose.name], t = Math.max(0, pose.amount);
+    for (const [side, mirror] of [["left", 1], ["right", -1]]) {
+      if (!pose.restArm[side]) continue;
+      const turn = new THREE.Quaternion().setFromUnitVectors(pose.restArm[side], new THREE.Vector3(mirror * x, y, z).normalize());
+      set(`${side}UpperArm`, new THREE.Quaternion().slerp(turn, t));
+    }
+  } else if (pose.name in TURN_POSES) {
+    const [bone, axis, angle] = TURN_POSES[pose.name];
+    set(bone, new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(...axis), angle * pose.amount));
+  }
+  // a bone the last pose held and this one doesn't goes back to rest
+  for (const node of pose.held) if (!now.has(node)) node.quaternion.identity();
+  pose.held = now;
 }
 
 function summarize() {
@@ -179,6 +437,39 @@ document.getElementById("swing").addEventListener("click", (event) => toggle(eve
 document.getElementById("raise-arm").addEventListener("click", (event) => toggle(event.currentTarget, "raiseArm"));
 document.getElementById("look-around").addEventListener("click", (event) => toggle(event.currentTarget, "look"));
 
+const poseSelect = document.getElementById("pose"), poseAmount = document.getElementById("pose-amount");
+poseSelect.innerHTML += [...Object.keys(ARM_POSES), ...Object.keys(TURN_POSES)].map((name) => `<option>${name}</option>`).join("");
+function setPose(name, amount = 1) {
+  pose.name = name in ARM_POSES || name in TURN_POSES ? name : "";
+  pose.amount = Math.max(-1, Math.min(1, Number(amount)));
+  poseSelect.value = pose.name; poseAmount.value = pose.amount;
+  document.getElementById("pose-readout").textContent = `${Math.round(pose.amount * 100)}%`;
+}
+poseSelect.addEventListener("change", () => setPose(poseSelect.value, pose.amount));
+poseAmount.addEventListener("input", () => setPose(pose.name, poseAmount.value));
+
+function press(button, on) { button.setAttribute("aria-pressed", String(on)); }
+document.getElementById("show-bones").addEventListener("click", (event) => { shown.bones = !shown.bones; press(event.currentTarget, shown.bones); showHelpers(); });
+document.getElementById("show-springs").addEventListener("click", (event) => { shown.springs = !shown.springs; press(event.currentTarget, shown.springs); showHelpers(); });
+function showWeights(on, bone) {
+  weights.on = on;
+  if (bone !== undefined) weights.bone = bone;
+  press(document.getElementById("show-weights"), on);
+  document.getElementById("weights").hidden = !on;
+  stage.classList.toggle("picking", on);
+  if (!vrm) return;
+  document.getElementById("weight-bone").value = weights.bone;
+  if (on) paintWeights(); else clearWeights();
+}
+document.getElementById("webcam").addEventListener("click", () => webcam.on ? stopWebcam() : startWebcam());
+document.getElementById("mirror").addEventListener("change", (event) => { webcam.mirror = event.target.checked; });
+document.getElementById("gain").addEventListener("input", (event) => {
+  webcam.gain = Number(event.target.value);
+  document.getElementById("gain-readout").textContent = webcam.gain.toFixed(2);
+});
+document.getElementById("show-weights").addEventListener("click", () => showWeights(!weights.on));
+document.getElementById("weight-bone").addEventListener("change", (event) => { weights.bone = event.target.value; if (vrm) paintWeights(); });
+
 function showError(error) {
   console.error(error);
   summaryBox.textContent = `Error: ${error.message}`;
@@ -195,7 +486,11 @@ stage.addEventListener("drop", (event) => {
   if (file) load(URL.createObjectURL(file), file.name).catch(showError);
 });
 
-const model = new URLSearchParams(location.search).get("model");
+// ?model=/out/x.vrm&pose=arms%20raised&amount=1&weights=LeftUpperArm : what the app opens it with
+const query = new URLSearchParams(location.search);
+const model = query.get("model");
+if (query.get("pose")) setPose(query.get("pose"), query.get("amount") ?? 1);
+if (query.has("weights")) showWeights(true, query.get("weights"));
 if (model) load(model, model).catch(showError);
 
 function animate() {
@@ -208,12 +503,16 @@ function animate() {
     vrm.scene.position.x = motion.swing ? Math.sin(time * 4) * 0.15 : 0;
     const upperArm = vrm.humanoid.getNormalizedBoneNode("leftUpperArm");
     if (upperArm) upperArm.rotation.z = motion.raiseArm ? 1.0 : 0;
+    applyPose();  // after the buttons above: a chosen pose holds its bones
+    if (webcam.on) readCamera();
+    turnHead();
     if (vrm.lookAt) {
       // sweeps the whole look-at range (the VRM's range maps reach full at 90 degrees)
       vrm.lookAt.yaw = motion.look ? Math.sin(time * 1.3) * 90 : 0;
       vrm.lookAt.pitch = motion.look ? Math.sin(time * 1.9) * 90 : 0;
     }
     vrm.update(delta);
+    moveFace();
   }
   controls.update();
   renderer.render(scene, camera);
@@ -221,7 +520,8 @@ function animate() {
 animate();
 
 // For inspection from the browser console.
-window.viewer = { get vrm() { return vrm; }, summarize, focusFace, focusBody, motion, camera, controls, frame, THREE };
+window.viewer = { get vrm() { return vrm; }, summarize, focusFace, focusBody, motion, camera, controls, frame, THREE,
+  pose, setPose, weights, showWeights, shown, showHelpers, helperRoot, webcam, track };
 </script>
 </body>
 </html>

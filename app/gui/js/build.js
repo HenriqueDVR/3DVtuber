@@ -9,6 +9,7 @@ let selectedStep = null;
 export function renderSteps() {
   const body = $("step-rows");
   renderTodo(); renderVrm();
+  $("ships").innerHTML = shipsHtml(S.status?.ships);
   if (!S.status) { body.innerHTML = ""; $("check").innerHTML = ""; $("verdict").innerHTML = ""; $("approved").innerHTML = ""; $("step-detail").hidden = true; return; }
   body.innerHTML = S.status.steps.map((s) => `<tr data-step="${s.step}" class="${s.step === selectedStep ? "sel" : ""}">
     <td>${stepName(s.step)}</td><td><span class="chip ${s.runs ? s.status.split(" ")[0] : "off"}">${s.runs ? esc(s.status) : "off"}</span></td>
@@ -36,6 +37,30 @@ export function renderSteps() {
   const failed = S.status.check_failed;
   $("check").innerHTML = (failed == null ? `<p class="msg">not checked yet</p>` : failed.length ? `<ul class="plain">${failed.map((f) => `<li class="failed">${esc(f)}</li>`).join("")}</ul>` : `<p class="done">nothing over the limits</p>`)
     + spotsHtml(S.status.steps.find((s) => s.step === "check")?.report?.spots);
+  // the still close-ups show where; the viewer shows the avatar going into that pose, springs running
+  $("check").querySelectorAll("[data-watch]").forEach((b) => b.onclick = () => {
+    app.go("review"); app.openViewer(null, null, { pose: b.dataset.watch });
+  });
+}
+
+// What the finished .vrm can do, read from the file itself (engine.shipped): the checks say whether
+// it bends well, this says what is in it, in the words a tracking app's user thinks in.
+function shipsHtml(s) {
+  if (!s) return "";
+  const yes = (t) => `<span class="done">${t}</span>`, no = (t) => `<span class="warn">${t}</span>`;
+  const extra = s.shapes.filter((n) => !["aa", "ih", "ou", "ee", "oh"].includes(n)).length;
+  const rows = [
+    ["Body", `${s.bones} bones, ${s.fingers ? "fingers included" : "no finger bones"}`],
+    ["Blink", s.blink ? yes("yes") : no("no")],
+    ["Talking", s.vowels.length === 5 ? yes("all five mouth shapes") : no(`${s.vowels.length} of 5 mouth shapes`)],
+    ["Face tracking", extra ? yes(`${extra} shapes (jaw, mouth, blink, eyes)`) : no("none")],
+    ["Eyes", s.look === "expression" && s.looks_bound ? yes("follow your gaze") : no("stay still")],
+    ["Physics", s.springs ? `${s.springs} swinging chains, ${s.colliders} colliders` : "nothing swings"],
+    ["Look", `${s.toon} of ${s.materials} materials toon-shaded, ${s.textures} texture${s.textures === 1 ? "" : "s"}`],
+    ["File", `${s.megabytes} MB`],
+  ];
+  return `<div class="title" style="margin-top:var(--s3)">What's in the file</div>
+    <dl class="facts">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`;
 }
 
 // One step up close: what it read and made, why it failed, and its log's end.
@@ -74,7 +99,8 @@ async function renderDetail() {
 // the rig check's worst stretch and squash, close up: at rest, then in the pose that did it
 function spotsHtml(spots) {
   if (!spots?.length) return "";
-  return spots.map((s) => `<p class="msg" style="margin:8px 0 2px">Where it ${esc(s.what)} (${esc(s.pose)}), red dots on the edge's ends:</p>
+  return spots.map((s) => `<p class="msg" style="margin:8px 0 2px">Where it ${esc(s.what)} (${esc(s.pose)}), red dots on the edge's ends:
+      <button class="act alt small" data-watch="${esc(s.pose)}" title="open the avatar in the viewer, in this pose">Watch it</button></p>
     <div class="spots">${["face", "side"].flatMap((v) => ["rest", "posed"].map((st) => {
       const caption = `${v === "face" ? (s.at[1] > 0 ? "back" : "front") : "side"}, ${st === "rest" ? "at rest" : s.pose}`;
       return `<figure><img src="${served(s.files[`${v}_${st}`])}" alt="${esc(caption)}"><figcaption>${esc(caption)}</figcaption></figure>`;
@@ -100,11 +126,11 @@ function renderTodo() {
   const add = (text, label, act, kind = "warn", isJob = false) => items.push({ text, label, act, kind, isJob });
   if (steps.survey?.status !== "done") add("Survey the model: reads how it stands and what it's made of.", "Run survey", () => job("run", { only: "survey" }), "warn", true);
   if (!S.listing) add("List the pieces, then give any hair, hat, cape or sleeve its role.", "Go to Parts", () => app.go("parts"));
-  if (!S.manifest.face) add("Mark the eyes and mouth. Without them the avatar has only a basic blink and mouth: no face tracking, and the eyes don't move.", "Go to Face", () => app.go("face"));
+  if (!S.manifest.face) add("Mark the eyes and mouth. Without them the avatar can't blink, has no face tracking and its eyes don't move: only the vowel mouth shapes ship.", "Go to Face", () => app.go("face"));
   const failed = S.status.steps.filter((s) => s.runs && s.status === "failed");
   const built = S.status.steps.some((s) => s.step !== "survey" && ["done", "stale", "failed"].includes(s.status));
   const next = nextRun(S.status);
-  if (!built) add("Build the avatar: 10–20 minutes, one step after another.", "Build everything", () => job("run", {}), "warn", true);
+  if (!built) add("Build the avatar: a few minutes, one step after another.", "Build everything", () => job("run", {}), "warn", true);
   else if (next) add(`${next.count} step${next.count > 1 ? "s" : ""} to (re)build, from “${stepName(next.from)}”${next.stale ? ": something before it changed" : ""}.`,
     `Run from ${stepName(next.from)}`, () => job("run", { from: next.from }), "warn", true);
   for (const f of failed) add(`“${stepName(f.step)}” failed and the avatar was built without it: ${plain(f.step, f.reason)}${f.known ? ` (${f.known.code}: ${f.known.fix})` : ""}`,

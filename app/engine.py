@@ -7,12 +7,16 @@ produced: a later step reads that, never "the newest file" (an intermediate A-po
 than a finished VRM). A step can be rerun alone, or the chain from any step on.
 
 Only one Blender runs at a time (two at once hung the machine on 2026-09-23), and a run that
-logs "Malloc returns null" is stopped: out of memory, Blender spins instead of exiting.
+logs "Malloc returns null" is stopped: out of memory, Blender spins instead of exiting. So is one
+that fills the drive or uses the last of the memory. Every Blender starts on factory settings
+with only the VRM Add-on on (scripts/_startup.py), whatever else the user has installed.
 """
 
+import contextlib
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import platform
 import re
@@ -31,14 +35,33 @@ REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
 WINDOWS_BLENDER = Path(r"C:\Program Files\Blender Foundation")
 LOCK = REPO / "out" / ".blender.lock"
+# Run before a step's file loads, on factory settings: see scripts/_startup.py.
+STARTUP = SCRIPTS / "_startup.py"
 # Longest a single step may run (s); the slowest real steps take about 3 minutes.
 STEP_TIMEOUT = 30 * 60
 OUT_OF_MEMORY = "Malloc returns null"
+# Free space a step needs where it writes (bytes): a .blend and a .vrm, up to ~300 MB together on
+# the models so far. On a full drive Blender's saves fail in ways that read as code bugs: four
+# steps "failed" on 2026-09-29 with E: at 0 GB. Under the floor, a running step is stopped.
+DISK_NEEDED = 1 << 30
+DISK_FLOOR = 50 << 20
+# Memory still to be had (RAM and page file, bytes). Under the floor a Blender that asks for more
+# gets none and spins instead of exiting; under LOW the user is told before the run starts. The
+# page file grows on the system drive, so that drive running out is the same problem (2026-09-23).
+MEMORY_FLOOR = 200 << 20
+MEMORY_LOW = 2 << 30
+SYSTEM_DISK_LOW = 4 << 30
+# A run's model files, which `prune` removes once nothing reads them (.blend1: Blender's backup).
+MODELS = (".blend", ".blend1", ".vrm")
 # Oldest Blender the pipeline runs on (EEVEE Next, extensions, the VRM Add-on's 4.2 builds), and the
 # series the full test suite has passed on (tests/run_matrix.py). Others at or above the minimum run
 # with a warning; keep in step with addon/vtuber_maker/pipeline/compat.py.
 MIN_BLENDER = (4, 2, 0)
 TESTED = {"4.2", "4.5", "5.2"}
+# When each tested LTS series stops getting fixes (blender.org's release cycle), for the Setup page.
+SUPPORT_ENDS = {"4.2": "2026-07", "4.5": "2027-07", "5.2": "2028-07"}
+# What this machine's user chose in the app, e.g. which Blender to run. out/ is never committed.
+SETTINGS = REPO / "out" / "settings.json"
 # Under this many triangles a face has too few vertices to bend without denting.
 COARSE_FACE = 3_000
 
@@ -86,6 +109,8 @@ class Cancelled(Exception):
 # stops before its next step. Only this process's runs; a CLI run elsewhere is untouched.
 CANCEL = threading.Event()
 CANCELLED = -2
+# What _blender returns for a run the engine stopped itself: too long, out of memory, disk full.
+STOPPED = -1
 
 
 # (name, label, what it writes): "vrm" = a .blend and a .vrm, "blend" = a .blend only,
@@ -122,12 +147,14 @@ SOFT = {"face_tracking", "eyes", "mouth"}
 
 
 def find_blender(given=None):
-    """The Blender to run: --blender, $BLENDER, PATH, else the best installed one.
+    """The Blender to run: --blender, $BLENDER, the one chosen on the Setup page, PATH, else the
+    best installed one.
 
     Installed ones are ranked tested series first, then newest: a newer untested Blender beside the
     tested one must not silently take over the user's builds. Below MIN_BLENDER is never picked.
+    The portable copies in tools/blender are never picked by themselves, only when chosen.
     """
-    for candidate in (given, os.environ.get("BLENDER"), shutil.which("blender")):
+    for candidate in (given, os.environ.get("BLENDER"), _read_json(SETTINGS, {}).get("blender"), shutil.which("blender")):
         if candidate and Path(candidate).exists():
             return str(candidate)
     found = [(_folder_version(p), p) for p in installed_blenders()]
@@ -236,8 +263,20 @@ class Project:
         failed = _read_json(check.get("json"), {}).get("failed")
         return {"name": self.name, "manifest": str(self.manifest_path), "out": str(self.out),
                 "latest_blend": str(last) if last else None, "options": self.options(), "steps": steps,
-                "check_failed": failed, "verdict": self.verdict(failed), "approved": self.approved(),
-                "since_approved": self.since_approved()}
+                "check_failed": failed, "verdict": self.verdict(failed), "ships": self.ships(),
+                "approved": self.approved(), "since_approved": self.since_approved()}
+
+    def ships(self):
+        """What the finished .vrm holds (`shipped`), or None until the build has run to its end."""
+        entry = self.state["steps"].get("vrm_check", {})
+        if entry.get("status") != "done":
+            return None
+        kept = (entry.get("report") or {}).get("ships")
+        if kept:
+            return kept
+        # a build from before the facts were kept with the check
+        vrm = self._last_vrm()
+        return shipped(vrm) if vrm else None
 
     def approve(self, note=""):
         """Keep the current build's reports as the ones later builds are compared with."""
@@ -260,6 +299,20 @@ class Project:
     def approved(self):
         return _read_json(self.out / "approved" / "approved.json", None)
 
+    def reports(self):
+        """{report name: its JSON file} for the reports this build has finished (see APPROVED)."""
+        steps = self.state["steps"]
+        return {name: steps[name]["json"] for name in APPROVED
+                if steps.get(name, {}).get("status") == "done" and steps[name].get("json")}
+
+    def baseline(self):
+        """(what it is, {report name: file}) of the build others are compared with: the one marked
+        good, else the last build; (None, {}) for a character never built to a check."""
+        if self.approved() is not None:
+            return "the build marked good", {name: self.out / "approved" / f"{name}.json" for name in APPROVED}
+        found = self.reports()
+        return ("the last build", found) if "check" in found else (None, {})
+
     def since_approved(self):
         """{"worse": [...], "better": [...]} against the approved build, or None without one.
 
@@ -268,30 +321,7 @@ class Project:
         """
         if self.approved() is None:
             return None
-        folder, steps = self.out / "approved", self.state["steps"]
-        worse, better = [], []
-        for name in ("check", "vrm_check"):
-            before, now = _read_json(folder / f"{name}.json", None), _read_json(steps.get(name, {}).get("json"), None)
-            if before and now and steps[name].get("status") == "done":
-                w, b = compare_checks.changes(before, now)
-                label = "rig check" if name == "check" else "exported file"
-                worse += [f"{label}, {line}" for line in w]
-                better += [f"{label}, {line}" for line in b]
-        before, now = _read_json(folder / "movement.json", None), _read_json(steps.get("movement", {}).get("json"), None)
-        if before is not None and now is not None:
-            named = lambda report: {str(r.get("name") or r["label"]) for r in report.get("pieces", [])}
-            worse += [f"movement: {n} newly flagged" for n in sorted(named(now) - named(before))]
-            better += [f"movement: {n} no longer flagged" for n in sorted(named(before) - named(now))]
-        before, now = _read_json(folder / "springs.json", None), _read_json(steps.get("springs", {}).get("json"), None)
-        if before is not None and now is not None:
-            for key, field, what in (("sagging", "sag_cm", "droop at rest"), ("coming_away", "gap_cm", "left behind by a swing")):
-                old = max((r[field] for r in before.get(key, [])), default=0.0)
-                new = max((r[field] for r in now.get(key, [])), default=0.0)
-                if new - old > SPRING_NOISE:
-                    worse.append(f"physics: worst {what} {old} -> {new} cm")
-                elif old - new > SPRING_NOISE:
-                    better.append(f"physics: worst {what} {old} -> {new} cm")
-        return {"worse": worse, "better": better}
+        return changes(self.baseline()[1], self.reports())
 
     def verdict(self, failed=None):
         """{"ready", "issues", "looks"}: what must be fixed (the rig check's failures, features built
@@ -305,6 +335,13 @@ class Project:
             if steps.get(name, {}).get("status") == "failed":
                 issues.append(("build", f"built without {name.replace('_', ' ')}"))
         looks = []
+        ships = self.ships()
+        if ships:
+            done = lambda name: steps.get(name, {}).get("status") == "done"  # noqa: E731
+            in_file, to_see = shipping_problems(ships, {"tpose": done("tpose"), "eyes": done("eyes"),
+                                                        "blink": done("face_tracking") or done("eyes")})
+            issues += [("build", f"exported file: {line}") for line in in_file]
+            looks += [("face", line) for line in to_see]
         # the loose step measures itself and undoes a tidy-up that tore the rig: the avatar is safe,
         # but an armpit it meant to join may open
         loose = steps.get("loose", {})
@@ -325,8 +362,9 @@ class Project:
                 looks.append(("movement", f"the {name} check couldn't run"))
         if not self.data.get("face"):
             # without face points the build still finishes, and nothing said the face was dead
-            looks.insert(0, ("face", "no face points: face and eye tracking were skipped, so only the build's basic "
-                                     "blink and mouth ship (no ARKit shapes, eyes don't move); mark them on the Face page"))
+            # the build keeps the eyes as modelled (--keep-eyes): the blink comes with the face steps
+            looks.insert(0, ("face", "no face points: face and eye tracking were skipped, so the avatar can't blink "
+                                     "and its eyes don't move; only the vowel mouth shapes ship. Mark them on the Face page"))
         changed = self.since_approved()
         for line in (changed or {}).get("worse", []):
             looks.append(("build", f"worse than the approved build: {line}"))
@@ -368,6 +406,50 @@ class Project:
                           "current": folder.resolve() in current})
         return found
 
+    # ----- disk
+
+    def _kept_runs(self):
+        """The run folders whose model files something may still read: the ones the steps' latest
+        files are in, the build marked good, and builds a Warudo note was written about."""
+        named = [e[k] for e in self.state["steps"].values() for k in ("blend", "json", "vrm") if e.get(k)]
+        named.append((self.approved() or {}).get("vrm"))
+        named += [_read_json(note, {}).get("vrm") for note in (self.out / "feedback").glob("*/feedback.json")]
+        return {Path(path).parent.resolve() for path in named if path}
+
+    def usage(self):
+        """How much disk this character takes, and what `prune` would free.
+
+        Every run keeps a .blend and a .vrm per step, about 300 MB a run on the models so far, and
+        nothing removed them: E: filled up mid-build on 2026-09-29. A run's models are only needed
+        while a step may read them (`_kept_runs`); its reports and logs are what comparing uses.
+        """
+        kept, runs = self._kept_runs(), []
+        for folder in sorted((p for p in (self.out / "runs").glob("*") if p.is_dir()), reverse=True):
+            files = [p for p in folder.iterdir() if p.is_file()]
+            runs.append({"run": folder.name, "bytes": sum(p.stat().st_size for p in files),
+                         "models": sum(p.stat().st_size for p in files if p.suffix.lower() in MODELS),
+                         "kept": folder.resolve() in kept})
+        total = sum(p.stat().st_size for p in self.out.rglob("*") if p.is_file()) if self.out.is_dir() else 0
+        return {"name": self.name, "out": str(self.out), "bytes": total, "runs": runs,
+                "prunable": sum(r["models"] for r in runs if not r["kept"]),
+                "prunable_runs": sum(1 for r in runs if not r["kept"] and r["models"])}
+
+    def prune(self, dry=False):
+        """Delete the model files (.blend, .vrm) of runs nothing reads any more; reports, logs and
+        renders stay. Refuses while a Blender run is going: its folder isn't in the state yet."""
+        kept, removed, freed = self._kept_runs(), [], 0
+        with contextlib.nullcontext() if dry else _Lock():
+            for folder in (self.out / "runs").glob("*"):
+                if not folder.is_dir() or folder.resolve() in kept:
+                    continue
+                for path in folder.iterdir():
+                    if path.is_file() and path.suffix.lower() in MODELS:
+                        freed += path.stat().st_size
+                        removed.append(str(path))
+                        if not dry:
+                            path.unlink()
+        return {"name": self.name, "removed": len(removed), "freed": freed, "dry": dry}
+
     def summary(self):
         """How far the build got and the newest render: a card on the app's Characters page."""
         steps = self.state["steps"]
@@ -397,7 +479,7 @@ class Project:
             if version and tuple(map(int, version.split("."))) < MIN_BLENDER:
                 known = errors.describe("VM-BLENDER-OLD")
                 raise StepFailed(f"Blender {version} [VM-BLENDER-OLD] {known['fix']}", known)
-            for warning in made_by["warnings"]:
+            for warning in [*made_by["warnings"], *resource_warnings(self.out)]:
                 emit({"step": NAMES[first], "status": "warning", "reason": warning})
             for index in range(first, last + 1):
                 name = NAMES[index]
@@ -444,6 +526,10 @@ class Project:
         blend_in = None if fresh else self.latest(before="tpose" if name == "movement" else name)
         if not fresh and blend_in is None:
             raise StepFailed(f"{name}: no earlier step has produced a .blend yet")
+        free = free_disk(folder)
+        if free < DISK_NEEDED:
+            known = errors.describe("VM-DISK-FULL")
+            raise StepFailed(f"{name}: only {free / 2**20:.0f} MB free on {folder.anchor} [VM-DISK-FULL] {known['fix']}", known)
         args, extra = self._arguments(name, stem, blend_in)
         log = stem.with_suffix(".log")
         started = time.time()
@@ -461,9 +547,13 @@ class Project:
                 entry["vrm"] = str(stem.with_suffix(".vrm"))
         made = Path(entry.get("blend") or entry["json"]).exists()
         if code != 0 or not made:
-            if name in OPTIONAL:
+            # a step the engine itself stopped (STOPPED) had something to do and didn't get to
+            if name in OPTIONAL and code != STOPPED:
                 return {"status": "nothing to do", "log": str(log), "finished": entry["finished"]}
             known = errors.classify(name, output)
+            if known is None and free_disk(folder) < DISK_FLOOR:
+                # Blender words a save that didn't fit many ways; on a full drive that is the reason
+                known = errors.describe("VM-DISK-FULL")
             said = f" [{known['code']}] {known['what']}; {known['fix']}" if known else ""
             if OUT_OF_MEMORY in output:
                 raise StepFailed(f"{name}: Blender ran out of memory (see {log}){said}", known)
@@ -480,6 +570,9 @@ class Project:
                 entry["report"] = report
         if name in ("check", "vrm_check"):
             entry["report"] = {k: v for k, v in _read_json(entry["json"], {}).items() if k in ("failed", "worst", "unweighted", "spots")}
+        if name == "vrm_check":
+            # the file the check just re-imported: what it holds is judged with the check (verdict)
+            entry["report"]["ships"] = shipped(self._last_vrm())
         if name in CHECKS:
             # the Movement page shows the latest of each
             shutil.copy2(entry["json"], self.out / f"{name}.json")
@@ -582,6 +675,42 @@ class Project:
         _write_json(self.state_path, self.state, backup=True)
 
 
+def changes(before, now):
+    """{"worse": [...], "better": [...]} between two builds' reports ({"check": file, ...}; one
+    either build lacks is left out): the rig check and exported file pose by pose, pieces the
+    movement check newly flags, the worst spring droop and gap past SPRING_NOISE."""
+    worse, better = [], []
+    read = lambda reports, name: _read_json(reports.get(name), None)  # noqa: E731
+    for name, label in (("check", "rig check"), ("vrm_check", "exported file")):
+        old, new = read(before, name), read(now, name)
+        if old and new:
+            w, b = compare_checks.changes(old, new)
+            worse += [f"{label}, {line}" for line in w]
+            better += [f"{label}, {line}" for line in b]
+    old, new = read(before, "movement"), read(now, "movement")
+    if old is not None and new is not None:
+        named = lambda report: {str(r.get("name") or r["label"]) for r in report.get("pieces", [])}  # noqa: E731
+        worse += [f"movement: {n} newly flagged" for n in sorted(named(new) - named(old))]
+        better += [f"movement: {n} no longer flagged" for n in sorted(named(old) - named(new))]
+    old, new = read(before, "springs"), read(now, "springs")
+    if old is not None and new is not None:
+        for key, field, what in (("sagging", "sag_cm", "droop at rest"), ("coming_away", "gap_cm", "left behind by a swing")):
+            was = max((r[field] for r in old.get(key, [])), default=0.0)
+            now_ = max((r[field] for r in new.get(key, [])), default=0.0)
+            if now_ - was > SPRING_NOISE:
+                worse.append(f"physics: worst {what} {was} -> {now_} cm")
+            elif was - now_ > SPRING_NOISE:
+                better.append(f"physics: worst {what} {was} -> {now_} cm")
+    return {"worse": worse, "better": better}
+
+
+def characters():
+    """Every character manifest the app lists: the samples' and one per output folder. Other JSON
+    kept beside them isn't one: Name_face.json (face points) showed as a character named Name_face."""
+    found = sorted({*REPO.glob("samples/manifests/*.json"), *REPO.glob("out/*/character.json")})
+    return [p for p in found if {"source", "options"} <= set(_read_json(p, None) or ())]
+
+
 def run_script(blender, script, args, blend_in=None, log=None, extra=()):
     """Run any scripts/ file in Blender outside the chain (renders, checks); returns (code, output)."""
     log = Path(log) if log else Path(os.environ.get("TEMP", "/tmp")) / f"vtuber_{os.getpid()}.log"
@@ -592,13 +721,20 @@ def run_script(blender, script, args, blend_in=None, log=None, extra=()):
     return code, log.read_text(encoding="utf-8", errors="replace")
 
 
-def _blender(blender, blend_in, args, log, extra):
-    """One Blender run, output to `log`; returns the exit code. Stops a run that hangs."""
+def _command(blender, blend_in, args, extra):
+    """The command line for one script run. Factory settings and the startup script come before
+    the file, so it opens with the VRM Add-on on and nothing else of the user's loaded."""
     script, *script_args = args
-    command = [blender, "-b"]
+    command = [blender, "-b", "--factory-startup", "-P", str(STARTUP)]
     if blend_in:
         command.append(str(blend_in))
-    command += [*extra, "--python-exit-code", "1", "-P", str(SCRIPTS / script), "--", *(str(a) for a in script_args)]
+    return command + [*extra, "--python-exit-code", "1", "-P", str(SCRIPTS / script), "--", *(str(a) for a in script_args)]
+
+
+def _blender(blender, blend_in, args, log, extra):
+    """One Blender run, output to `log`; returns the exit code. Stops a run that hangs, fills the
+    drive or uses the last of the memory (STOPPED), and one the user stops (CANCELLED)."""
+    command = _command(blender, blend_in, args, extra)
     log = Path(log)
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "w", encoding="utf-8", errors="replace") as handle:
@@ -614,13 +750,78 @@ def _blender(blender, blend_in, args, log, extra):
                 with open(log, "a", encoding="utf-8") as tail:
                     tail.write(f"\nCANCELLED by the user after {round(time.time() - started)} s\n")
                 return CANCELLED
-            if time.time() - started > STEP_TIMEOUT or OUT_OF_MEMORY in _log_tail(log):
+            why = _stop_reason(log, started)
+            if why is not None:
                 process.kill()
                 process.wait()
                 with open(log, "a", encoding="utf-8") as tail:
-                    tail.write(f"\nSTOPPED by the engine after {round(time.time() - started)} s\n")
-                return -1
+                    tail.write(f"\nSTOPPED by the engine after {round(time.time() - started)} s{why}\n")
+                return STOPPED
     return process.returncode
+
+
+def _stop_reason(log, started):
+    """Why the running Blender has to be stopped now, as the log line's ending ("" for a plain
+    timeout or Blender's own out-of-memory message), or None to let it run. app/errors.py reads it."""
+    if time.time() - started > STEP_TIMEOUT or OUT_OF_MEMORY in _log_tail(log):
+        return ""
+    if free_disk(log) < DISK_FLOOR:
+        return ": disk full"
+    memory = free_memory()
+    if memory is not None and memory < MEMORY_FLOOR:
+        return ": out of memory"
+    return None
+
+
+def free_disk(path):
+    """Bytes free on the drive `path` is, or will be, on."""
+    path = Path(path).resolve()
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    return shutil.disk_usage(path).free
+
+
+def free_memory():
+    """Bytes of memory still to be had, RAM and page file together, or None where the system
+    doesn't say. On Windows it is what a process may still commit: at zero, allocations fail."""
+    if os.name == "nt":
+        import ctypes
+
+        class Status(ctypes.Structure):
+            _fields_ = [("size", ctypes.c_ulong), ("load", ctypes.c_ulong),
+                        *((name, ctypes.c_ulonglong) for name in ("ram", "free_ram", "commit", "free_commit",
+                                                                    "virtual", "free_virtual", "extended"))]
+        status = Status(size=ctypes.sizeof(Status))
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return None
+        return int(status.free_commit)
+    try:
+        fields = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
+        return (int(fields["MemAvailable"].split()[0]) + int(fields["SwapFree"].split()[0])) * 1024
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def resource_warnings(out):
+    """What is short before a run starts, in the user's words: memory, room for the page file,
+    room for the build. A warning, not a refusal: the run may still fit."""
+    gb = lambda size: f"{size / 2**30:.1f} GB"  # noqa: E731
+    notes = []
+    memory = free_memory()
+    if memory is not None and memory < MEMORY_LOW:
+        notes.append(f"only {gb(memory)} of memory is free: close other programs, or Blender may run out mid-build")
+    drive = Path(out).resolve().anchor
+    free = free_disk(out)
+    if free < 3 * DISK_NEEDED:
+        notes.append(f"{drive} has {gb(free)} free and a full build writes several hundred MB: "
+                     "free up space (Characters page) before it runs out")
+    system = os.environ.get("SystemDrive")
+    if os.name == "nt" and system and Path(system + "\\").resolve().anchor != drive:
+        free = free_disk(system + "\\")
+        if free < SYSTEM_DISK_LOW:
+            notes.append(f"{system} has {gb(free)} free: Windows can't grow its page file there, "
+                         "so Blender may run out of memory; free some space on it")
+    return notes
 
 
 class _Lock:
@@ -711,7 +912,136 @@ def output_problem(entry):
         broken = sorted(b for b, v in bones.items() if not isinstance(v.get("node"), int) or not 0 <= v["node"] < count)
         if broken:
             return f"{path.name} names bones with no node: {', '.join(broken)}"
+        skins = gltf.get("skins", [])
+        joints = {j for skin in skins for j in skin.get("joints", [])}
+        loose = sorted(b for b, v in bones.items() if v["node"] not in joints)
+        if skins and loose:
+            return f"{path.name} maps bones the mesh isn't skinned to: {', '.join(loose)}"
+        # Tripo's rigged GLB came with bind matrices like 1e31 and every bone imported at NaN
+        if any(not math.isfinite(v) or abs(v) > BIND_LIMIT for skin in skins for v in _bind_matrices(path, gltf, skin)):
+            return f"{path.name} has bind matrices that aren't numbers a skeleton can have"
     return None
+
+
+# Larger than any inverse bind matrix entry of a model a few metres tall.
+BIND_LIMIT = 1e4
+VOWELS = ("aa", "ih", "ou", "ee", "oh")
+LOOKS = ("lookUp", "lookDown", "lookLeft", "lookRight")
+FINGERS = ("Thumb", "Index", "Middle", "Ring", "Little")
+# Degrees the exported arms may be off level and still be the T-pose apps start tracking from;
+# the bake leaves them at 0.0 on every model so far.
+T_POSE_SLACK = 10.0
+
+
+def shipped(path):
+    """What an exported .vrm holds, from its JSON alone (no Blender), or None when it isn't a
+    readable VRM 1.0: the facts the Build page lists and `shipping_problems` judges.
+
+    Read from the file because the .blend can look right while the file doesn't: the add-on's
+    automatic pose replaced the baked rest pose in every export until 2026-09-22, and joints left
+    with Blender's bone frames made Warudo twist every finger.
+    """
+    gltf = _glb_json(path)
+    vrm = ((gltf or {}).get("extensions") or {}).get("VRMC_vrm")
+    if not vrm:
+        return None
+    nodes = gltf.get("nodes", [])
+    bones = (vrm.get("humanoid") or {}).get("humanBones") or {}
+    joints = sorted({j for skin in gltf.get("skins", []) for j in skin.get("joints", [])})
+    presets = (vrm.get("expressions") or {}).get("preset") or {}
+    bound = {name for name, e in presets.items() if e.get("morphTargetBinds")}
+    springs = gltf["extensions"].get("VRMC_springBone") or {}
+    materials = gltf.get("materials", [])
+    return {"bones": len(bones), "fingers": sum(1 for b in bones if any(f in b for f in FINGERS)),
+            "turned_joints": [nodes[j].get("name", str(j)) for j in joints if not _unrotated(nodes[j])],
+            "arms_off_level": _arms_off_level(nodes, bones),
+            "blink": "blink" in bound, "vowels": [v for v in VOWELS if v in bound],
+            "look": (vrm.get("lookAt") or {}).get("type"), "looks_bound": all(k in bound for k in LOOKS),
+            "shapes": sorted({n for mesh in gltf.get("meshes", []) for n in (mesh.get("extras") or {}).get("targetNames", [])}),
+            "springs": len(springs.get("springs", [])), "colliders": len(springs.get("colliders", [])),
+            "materials": len(materials),
+            "toon": sum("VRMC_materials_mtoon" in (m.get("extensions") or {}) for m in materials),
+            "textures": len(gltf.get("images", [])), "megabytes": round(Path(path).stat().st_size / 2**20, 1)}
+
+
+def shipping_problems(ships, wanted):
+    """([what must be fixed], [what is worth a look]) in the file that ships.
+
+    `wanted`: what the build finished and so the file should show ({"tpose", "eyes", "blink"}).
+    Only invariants every build so far holds are must-fix; a missing blink or vowel is a look,
+    since a model can lack the face for it.
+    """
+    issues, looks = [], []
+    turned = ships["turned_joints"]
+    if turned:
+        issues.append(f"{len(turned)} joints rest rotated in the exported file ({turned[0]}, ...): Warudo's finger tracking "
+                      "twists such bones. Export through the app, never the VRM Add-on's menu")
+    off = ships["arms_off_level"]
+    if wanted.get("tpose") and off is not None and off > T_POSE_SLACK:
+        issues.append(f"the exported rest pose isn't a T-pose (arms {off:g} degrees off level): tracking apps start from one")
+    if wanted.get("eyes") and (ships["look"] != "expression" or not ships["looks_bound"]):
+        issues.append("eye tracking was built, but in the exported file the eyes aren't bound to the gaze")
+    if wanted.get("blink") and not ships["blink"]:
+        looks.append("the exported file has no blink, though the face was built to have one")
+    missing = [v for v in VOWELS if v not in ships["vowels"]]
+    if missing:
+        looks.append(f"the exported file has no mouth shape for {', '.join(missing)}: the avatar can't say "
+                     f"{'them' if len(missing) > 1 else 'it'}")
+    return issues, looks
+
+
+def _unrotated(node):
+    """A glTF node that only moves its children: no matrix, no turn, no scale."""
+    if "matrix" in node:
+        return False
+    x, y, z, _ = node.get("rotation", (0.0, 0.0, 0.0, 1.0))
+    return max(abs(x), abs(y), abs(z)) < 1e-6 and all(abs(s - 1.0) < 1e-6 for s in node.get("scale", (1.0, 1.0, 1.0)))
+
+
+def _arms_off_level(nodes, bones):
+    """Degrees the worse arm (upper arm to hand, at rest) is off the model's side axis: 0 in a
+    T-pose. None when a node up the chain is turned, so the positions can't be read off the
+    translations, or the file has no arms."""
+    parent = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+    worst = 0.0
+    for side, sign in (("left", 1.0), ("right", -1.0)):
+        arm, hand = (bones.get(f"{side}{part}", {}).get("node") for part in ("UpperArm", "Hand"))
+        if arm is None or hand is None:
+            return None
+        reach, at = [0.0, 0.0, 0.0], hand
+        while at != arm:
+            if at not in parent:
+                return None
+            reach = [a + b for a, b in zip(reach, nodes[at].get("translation", (0.0, 0.0, 0.0)))]
+            at = parent[at]
+            if not _unrotated(nodes[at]):
+                return None
+        while at in parent:
+            at = parent[at]
+            if not _unrotated(nodes[at]):
+                return None
+        length = math.hypot(*reach)
+        if not length:
+            return None
+        # VRM faces +Z with Y up: the character's left is +X
+        worst = max(worst, math.degrees(math.acos(max(-1.0, min(1.0, sign * reach[0] / length)))))
+    return round(worst, 1)
+
+
+def _bind_matrices(path, gltf, skin):
+    """The floats of a skin's inverse bind matrices, read from the file's binary chunk; () when
+    the skin has none or they aren't laid out plainly."""
+    try:
+        accessor = gltf["accessors"][skin["inverseBindMatrices"]]
+        view = gltf["bufferViews"][accessor["bufferView"]]
+        count = accessor["count"] * 16
+        with open(path, "rb") as handle:
+            json_length = struct.unpack("<I", handle.read(20)[12:16])[0]
+            handle.seek(20 + json_length + 8 + view.get("byteOffset", 0) + accessor.get("byteOffset", 0))
+            raw = handle.read(count * 4)
+        return struct.unpack(f"<{count}f", raw) if len(raw) == count * 4 else ()
+    except (KeyError, IndexError, OSError, struct.error):
+        return ()
 
 
 def _glb_json(path):
@@ -735,14 +1065,7 @@ def provenance(blender, manifest_path):
     git or a Blender that won't print its version must not stop a build.
     """
     warnings = []
-    if blender not in _BLENDER_VERSIONS:
-        try:
-            out = subprocess.run([blender, "--version"], capture_output=True, text=True, timeout=60).stdout
-            found = re.search(r"Blender (\d+\.\d+\.\d+)", out)
-            _BLENDER_VERSIONS[blender] = found.group(1) if found else None
-        except Exception:  # noqa: BLE001 -- provenance is a record, never a reason to stop
-            _BLENDER_VERSIONS[blender] = None
-    version = _BLENDER_VERSIONS[blender]
+    version = blender_version(blender)
     if version and ".".join(version.split(".")[:2]) not in TESTED:
         warnings.append(f"Blender {version}: not yet tested with this pipeline (tested: {', '.join(sorted(TESTED))})")
     commit = dirty = None
@@ -759,20 +1082,125 @@ def provenance(blender, manifest_path):
     except OSError:
         digest = None
     return {"started": datetime.now().isoformat(timespec="seconds"), "blender": str(blender),
-            "blender_version": version, "vrm_addon": _vrm_addon_version(version), "commit": commit,
+            "blender_version": version, "vrm_addon": vrm_addon_version(blender, version), "commit": commit,
             "dirty": dirty, "manifest": str(manifest_path), "manifest_sha256": digest,
             "python": platform.python_version(), "warnings": warnings}
 
 
-def _vrm_addon_version(blender_version):
-    # the extension's own manifest, where Blender 4.2 installs it for this user
-    base = Path(os.environ.get("APPDATA", Path.home() / ".config")) / "Blender Foundation" / "Blender"
-    series = ".".join((blender_version or "4.2").split(".")[:2])
-    for toml in sorted((base / series / "extensions").glob("*/vrm/blender_manifest.toml")):
-        found = re.search(r'^version\s*=\s*"([^"]+)"', toml.read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
-        if found:
-            return found.group(1)
+def blender_version(blender):
+    """"4.2.1" as that Blender prints it, or None when it won't say. Asked once per path."""
+    blender = str(blender)
+    if blender not in _BLENDER_VERSIONS:
+        try:
+            out = subprocess.run([blender, "--version"], capture_output=True, text=True, timeout=60).stdout
+            found = re.search(r"Blender (\d+\.\d+\.\d+)", out)
+            _BLENDER_VERSIONS[blender] = found.group(1) if found else None
+        except Exception:  # noqa: BLE001 -- a record and a Setup line, never a reason to stop
+            _BLENDER_VERSIONS[blender] = None
+    return _BLENDER_VERSIONS[blender]
+
+
+def vrm_addon_version(blender, version):
+    """The VRM Add-on installed for this Blender, from the extension's own manifest, or None.
+    A portable Blender keeps its extensions in its own `portable` folder, an installed one in
+    the user's AppData under its series."""
+    series = ".".join((version or "4.2").split(".")[:2])
+    user = Path(os.environ.get("APPDATA", Path.home() / ".config")) / "Blender Foundation" / "Blender" / series
+    for home in (Path(blender).parent / "portable", user):
+        for toml in sorted((home / "extensions").glob("*/vrm/blender_manifest.toml")):
+            found = re.search(r'^version\s*=\s*"([^"]+)"', toml.read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
+            if found:
+                return found.group(1)
     return None
+
+
+def known_blenders():
+    """Every Blender the Setup page can offer: the installed ones and the portable copies in
+    tools/blender, newest first, each with its series and whether it has the VRM Add-on."""
+    found = []
+    for path in [*installed_blenders(), *(REPO / "tools" / "blender").glob("*/blender.exe")]:
+        version = _folder_version(path)
+        if version and version >= MIN_BLENDER:
+            series = ".".join(map(str, version[:2]))
+            # as the folder names it ("4.2", "5.2.2"): asking each Blender itself takes seconds
+            found.append({"path": str(path), "version": re.search(r"\d+\.\d+(?:\.\d+)?", path.parent.name).group(0),
+                          "series": series, "tested": series in TESTED, "portable": (path.parent / "portable").is_dir(),
+                          "vrm_addon": vrm_addon_version(path, series)})
+    return sorted(found, key=lambda b: _folder_version(b["path"]), reverse=True)
+
+
+def setup(given=None):
+    """What the app needs and what it found: {"blender", "blenders", "checks", "ready"}.
+
+    Each check is {"name", "state", "text", "fix"}, state "ok", "warn" (works, worth knowing) or
+    "bad" (a build can't run). Before this a missing add-on or an old Blender showed up as a
+    failed step some minutes into the first build.
+    """
+    checks = []
+    add = lambda name, state, text, fix="": checks.append({"name": name, "state": state, "text": text, "fix": fix})  # noqa: E731
+    blenders = known_blenders()
+    try:
+        blender = find_blender(given)
+    except FileNotFoundError:
+        blender = None
+    version = blender_version(blender) if blender else None
+    series = ".".join(version.split(".")[:2]) if version else None
+    newer = next((b for b in blenders if b["tested"] and b["vrm_addon"] and series and
+                  tuple(map(int, b["series"].split("."))) > tuple(map(int, series.split(".")))), None)
+    if blender is None:
+        add("Blender", "bad", "Blender 4.2 or later wasn't found",
+            "install Blender 5.2 LTS from blender.org/download; the app finds it in its usual place")
+    elif version is None:
+        add("Blender", "bad", f"{blender} doesn't start", "install Blender 5.2 LTS from blender.org/download")
+    elif tuple(map(int, version.split("."))) < MIN_BLENDER:
+        add("Blender", "bad", f"Blender {version} is older than 4.2, which the app needs", "install Blender 5.2 LTS from blender.org/download")
+    elif series not in TESTED:
+        add("Blender", "warn", f"Blender {version}: not yet tested with the app (tested: {', '.join(sorted(TESTED))})",
+            "builds run, with a warning; pick a tested one below if something goes wrong")
+    elif SUPPORT_ENDS.get(series, "9999") < datetime.now().strftime("%Y-%m"):
+        add("Blender", "warn", f"Blender {version} works, but its series stopped getting fixes in {SUPPORT_ENDS[series]}",
+            f"Blender {newer['version']} is here, tested, and gave the same avatars a little faster: use it below"
+            if newer else "Blender 5.2 LTS is tested and supported until 2028-07")
+    else:
+        add("Blender", "ok", f"Blender {version}")
+    if blender and version:
+        addon = vrm_addon_version(blender, version)
+        if addon:
+            add("VRM Add-on", "ok", f"VRM Add-on {addon}")
+        else:
+            add("VRM Add-on", "bad", "the VRM Add-on isn't installed in this Blender",
+                "open Blender, Edit > Preferences > Get Extensions, search for \"VRM format\" and install it")
+    for module, name, state, what, fix in (
+            ("PIL", "Pictures", "bad", "Pillow isn't installed: the face patch can't be made", "pip install pillow"),
+            ("tkinter", "File dialogs", "warn", "tkinter is missing: Browse buttons won't open, type paths instead", ""),
+            ("webview", "Own window", "warn", "pywebview isn't installed: the app opens in your browser instead of its own window",
+             "optional: pip install pywebview")):
+        if not _installed(module):
+            add(name, state, what, fix)
+    for note in resource_warnings(REPO / "out"):
+        add("Space", "warn", note)
+    if not (REPO / "app" / "gui" / "vendor").is_dir():
+        add("Internet", "warn", "the 3D views load three.js from the internet: without a connection they stay empty")
+    return {"blender": blender, "version": version, "chosen": _read_json(SETTINGS, {}).get("blender"), "blenders": blenders,
+            "checks": checks, "ready": not any(c["state"] == "bad" for c in checks)}
+
+
+def _installed(module):
+    """Whether the Python running the app has this package."""
+    return importlib.util.find_spec(module) is not None
+
+
+def use_blender(path):
+    """Keep the user's choice of Blender (Setup page); "" goes back to finding one. Returns setup()."""
+    if path:
+        version = blender_version(path) if Path(path).is_file() else None
+        if version is None or tuple(map(int, version.split("."))) < MIN_BLENDER:
+            raise ValueError(f"{path} isn't a Blender 4.2 or later")
+    settings = _read_json(SETTINGS, {})
+    settings["blender"] = str(path) if path else None
+    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(SETTINGS, settings)
+    return setup()
 
 
 def _write_json(path, data, backup=False):

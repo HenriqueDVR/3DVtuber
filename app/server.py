@@ -82,8 +82,23 @@ def _args(**kwargs):
 def api(route, query, body):
     m = body.get("manifest") or (query.get("manifest") or [None])[0]
     if route == "projects":
-        found = sorted({*REPO.glob("samples/manifests/*.json"), *REPO.glob("out/*/character.json")})
-        return {"projects": [{"manifest": str(p), "name": _name(p), **_summary(p)} for p in found]}
+        return {"projects": [{"manifest": str(p), "name": _name(p), **_summary(p)} for p in _characters()]}
+    if route == "setup":
+        return engine.setup()
+    if route == "use_blender":
+        if JOBS.running:
+            raise StepFailed(f"busy: {JOBS.running} is still running")
+        return engine.use_blender(body.get("path") or "")
+    if route == "disk":
+        return _disk()
+    if route == "prune":
+        if JOBS.running:
+            raise StepFailed(f"busy: {JOBS.running} is still running")
+        if not body.get("all") and not m:
+            raise ValueError("prune: name a character, or all of them")
+        chosen = _characters() if body.get("all") else [Path(m)]
+        done = [Project(path).prune(dry=bool(body.get("dry"))) for path in chosen]
+        return {"characters": done, "removed": sum(d["removed"] for d in done), "freed": sum(d["freed"] for d in done)}
     if route == "status":
         return cli.cmd_status(_args(manifest=Path(m)))
     if route == "manifest":
@@ -117,6 +132,8 @@ def api(route, query, body):
                                    remove=bool(body.get("remove")), region=body.get("region"), rename=body.get("rename")))
     if route == "list_pieces":
         return JOBS.start("listing pieces", lambda emit: cli.cmd_pieces(_args(manifest=Path(m))))
+    if route == "prepare":
+        return JOBS.start("getting it ready", lambda emit: cli.prepare(Path(m), on_event=emit))
     if route == "run":
         def work(emit):
             return Project(m).run(start=body.get("from"), stop=body.get("to"), only=body.get("only"), on_event=emit)
@@ -169,6 +186,26 @@ def api(route, query, body):
     if route == "url":
         return {"url": _url(Path(body["path"]))}
     raise ValueError(f"no such call: {route}")
+
+
+def _characters():
+    return engine.characters()
+
+
+def _disk():
+    """Disk use for the Characters page: the drive, each character, and what pruning would free.
+    `other` is what else lies in out/ (builds from before the app, comparison runs)."""
+    characters = []
+    for path in _characters():
+        try:
+            characters.append(dict(Project(path).usage(), manifest=str(path)))
+        except (OSError, ValueError, KeyError, StepFailed):
+            continue
+    out = REPO / "out"
+    total = sum(p.stat().st_size for p in out.rglob("*") if p.is_file()) if out.is_dir() else 0
+    inside = sum(c["bytes"] for c in characters if out.resolve() in Path(c["out"]).resolve().parents)
+    return {"drive": out.resolve().anchor, "free": engine.free_disk(out), "characters": characters,
+            "prunable": sum(c["prunable"] for c in characters), "other": max(0, total - inside)}
 
 
 def _summary(manifest_path):
