@@ -22,17 +22,20 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import cli, engine
+from . import cli, engine, vendor
 from .engine import REPO, Cancelled, Project, StepFailed
 
 GUI = Path(__file__).resolve().parent / "gui"
-# Only these repository folders are served, and only these kinds of file.
+# Only these repository folders are served, and only these kinds of file (.mjs, .wasm and .task:
+# the face tracker's, when the app keeps its own copy, see vendor.py).
 SERVED = ("out", "samples", "tools/work", "viewer")
-KINDS = {".glb", ".vrm", ".png", ".jpg", ".jpeg", ".json", ".html", ".js", ".css", ".log"}
+KINDS = {".glb", ".vrm", ".png", ".jpg", ".jpeg", ".json", ".html", ".js", ".css", ".log", ".mjs", ".wasm", ".task"}
 
 mimetypes.add_type("model/gltf-binary", ".glb")
 mimetypes.add_type("model/gltf-binary", ".vrm")
 mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("application/wasm", ".wasm")  # a browser only compiles wasm served as this
 
 
 class Jobs:
@@ -85,6 +88,8 @@ def api(route, query, body):
         return {"projects": [{"manifest": str(p), "name": _name(p), **_summary(p)} for p in _characters()]}
     if route == "setup":
         return engine.setup()
+    if route == "vendor":
+        return JOBS.start("keeping a copy for offline use", lambda emit: vendor.fetch(on_event=emit))
     if route == "use_blender":
         if JOBS.running:
             raise StepFailed(f"busy: {JOBS.running} is still running")
@@ -367,6 +372,9 @@ class Handler(BaseHTTPRequestHandler):
         if not path.is_file() or path.suffix.lower() not in KINDS:
             return self.send_error(404)
         raw = path.read_bytes()
+        if path.suffix.lower() == ".html":
+            # the pages name three.js and the tracker by their CDN addresses: with a copy kept here, that copy
+            raw = vendor.local(raw.decode("utf-8")).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
         self.send_header("Content-Length", str(len(raw)))

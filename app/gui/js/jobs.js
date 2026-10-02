@@ -61,6 +61,7 @@ async function poll(since) {
   app.jobDone?.(state);
   if (S.manifestPath) await app.openProject(S.manifestPath);
   if (finished.route === "prepare" && !state.error && !state.cancelled) app.prepared?.();
+  if (finished.route === "vendor") app.vendored?.();
 }
 
 const cap = (t) => t[0].toUpperCase() + t.slice(1);

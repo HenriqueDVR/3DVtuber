@@ -64,8 +64,9 @@
   <label class="row"><span>strength</span><input type="range" id="gain" min="1" max="2.5" step="0.05" value="1.5"><span id="gain-readout">1.50</span></label>
   <video id="cam" muted playsinline hidden></video>
   <p class="note" id="cam-note">Runs Google's MediaPipe face tracker in this page, the tracker Warudo's webcam mode uses: your
-    face drives the avatar's blink, mouth and eye shapes and turns its head. The tracker (about 14 MB) loads from the
-    internet the first time; the video stays in this page. Warudo smooths and scales differently, so it stays the last word.</p>
+    face drives the avatar's blink, mouth and eye shapes and turns its head. The tracker (about 14 MB) comes from the
+    app's own copy when it keeps one (Setup page), else from the internet; the video stays in this page. Warudo smooths
+    and scales differently, so it stays the last word.</p>
   <h2>Expressions</h2>
   <div id="expressions"></div>
   <h2>Summary</h2>
@@ -251,25 +252,30 @@ renderer.domElement.addEventListener("pointerup", (event) => {
 // ---------- webcam: a face tracker driving the avatar, to see blink, mouth and eyes before Warudo
 // MediaPipe's Face Landmarker scores the 52 ARKit shapes and gives the head's turn. Each score goes
 // onto the morph target of the same name, which is how Warudo drives a face set to "blendshapes".
-const TRACKER = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+// (the app serves its own copies of these when it keeps them: app/vendor.py swaps the addresses)
+const TRACKER = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/";
 const FACE_MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 // Trackers under-read (a shut eye scores about 0.6), so apps scale the scores up: `gain`.
 const webcam = { on: false, landmarker: null, video: document.getElementById("cam"), frame: -1, mirror: true, gain: 1.5,
   scores: null, turn: null, driven: new Set(), necks: [] };
 const otherSide = (name) => name.endsWith("Left") ? name.slice(0, -4) + "Right" : name.endsWith("Right") ? name.slice(0, -5) + "Left" : name;
 
+// The face tracker, on the graphics card when the browser lets it, else on the processor.
+async function loadTracker(runningMode) {
+  const vision = await import(`${TRACKER}vision_bundle.mjs`);
+  const { FaceLandmarker, FilesetResolver } = vision.FaceLandmarker ? vision : vision.default;
+  const files = await FilesetResolver.forVisionTasks(`${TRACKER}wasm`);
+  const options = (delegate) => ({ baseOptions: { modelAssetPath: FACE_MODEL, delegate }, runningMode, numFaces: 1,
+    outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true });
+  try { return await FaceLandmarker.createFromOptions(files, options("GPU")); }
+  catch { return await FaceLandmarker.createFromOptions(files, options("CPU")); }
+}
+
 async function startWebcam() {
   const note = document.getElementById("cam-note");
   note.textContent = "Loading the face tracker…";
   try {
-    if (!webcam.landmarker) {
-      const vision = await import(`${TRACKER}/vision_bundle.mjs`);
-      const { FaceLandmarker, FilesetResolver } = vision.FaceLandmarker ? vision : vision.default;
-      const files = await FilesetResolver.forVisionTasks(`${TRACKER}/wasm`);
-      webcam.landmarker = await FaceLandmarker.createFromOptions(files, {
-        baseOptions: { modelAssetPath: FACE_MODEL, delegate: "GPU" }, runningMode: "VIDEO", numFaces: 1,
-        outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true });
-    }
+    webcam.landmarker ||= await loadTracker("VIDEO");
     webcam.video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
     await webcam.video.play();
     webcam.video.hidden = false; webcam.on = true;
@@ -521,7 +527,7 @@ animate();
 
 // For inspection from the browser console.
 window.viewer = { get vrm() { return vrm; }, summarize, focusFace, focusBody, motion, camera, controls, frame, THREE,
-  pose, setPose, weights, showWeights, shown, showHelpers, helperRoot, webcam, track };
+  pose, setPose, weights, showWeights, shown, showHelpers, helperRoot, webcam, track, loadTracker };
 </script>
 </body>
 </html>

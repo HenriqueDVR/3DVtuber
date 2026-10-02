@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import engine
+from . import engine, vendor
 from .engine import REPO, Project, StepFailed, manifest
 
 
@@ -27,6 +27,8 @@ def main(argv=None):
 
     p = sub.add_parser("setup", help="what the app needs and what it found: Blender, the VRM Add-on, disk, memory")
     p.add_argument("--use", metavar="BLENDER", help="keep this blender.exe as the one to run (\"\" to go back to finding one)")
+
+    sub.add_parser("vendor", help="keep a copy of three.js, three-vrm and the face tracker with the app, so it runs offline (17 MB)")
 
     p = sub.add_parser("init", help="start a character manifest for a model")
     p.add_argument("model", type=Path)
@@ -138,6 +140,11 @@ def main(argv=None):
 
 def cmd_setup(args):
     return engine.use_blender(args.use) if args.use is not None else engine.setup(args.blender)
+
+
+def cmd_vendor(args):
+    events = lambda event: print(json.dumps(event, default=str), file=sys.stderr, flush=True)  # noqa: E731
+    return vendor.fetch(on_event=events)
 
 
 def cmd_init(args):
@@ -574,7 +581,7 @@ COMMANDS = {"init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_s
             "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "movement": cmd_movement, "springs": cmd_springs,
             "face-patch": cmd_face_patch, "face": cmd_face, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
             "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup,
-            "regress": cmd_regress}
+            "regress": cmd_regress, "vendor": cmd_vendor}
 
 
 def _project(args):

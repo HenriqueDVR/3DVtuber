@@ -29,7 +29,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import errors
+from . import errors, vendor
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
@@ -1179,8 +1179,15 @@ def setup(given=None):
             add(name, state, what, fix)
     for note in resource_warnings(REPO / "out"):
         add("Space", "warn", note)
-    if not (REPO / "app" / "gui" / "vendor").is_dir():
-        add("Internet", "warn", "the 3D views load three.js from the internet: without a connection they stay empty")
+    kept = vendor.status()
+    if not kept["views"]:
+        add("Internet", "warn", "the 3D views load three.js from the internet: without a connection they stay empty",
+            "keep a copy with the app (17 MB, from jsDelivr and Google): the button below, or python -m app vendor")
+    elif not kept["tracker"]:
+        add("Internet", "warn", "the 3D views work without a connection; the viewer's webcam test still loads its face tracker "
+            "from the internet", "keep a copy with the app (14 MB): the button below, or python -m app vendor")
+    else:
+        add("Internet", "ok", "the 3D views and the webcam test are kept with the app: no connection needed")
     return {"blender": blender, "version": version, "chosen": _read_json(SETTINGS, {}).get("blender"), "blenders": blenders,
             "checks": checks, "ready": not any(c["state"] == "bad" for c in checks)}
 

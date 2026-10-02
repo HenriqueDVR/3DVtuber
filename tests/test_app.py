@@ -9,7 +9,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from app import cli, engine, errors, server  # noqa: E402
+from app import cli, engine, errors, server, vendor  # noqa: E402
 from app.engine import Project, manifest  # noqa: E402
 
 
@@ -822,6 +822,72 @@ class Server(unittest.TestCase):
                 self.assertEqual([p.name for p in server._characters()], ["Real.json"])
             finally:
                 engine.REPO = real
+
+
+class Vendor(unittest.TestCase):
+    """The app's own copies of what its pages load from the internet, in a folder of the test's."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.real = vendor.FOLDER, vendor.PACKAGES
+        vendor.FOLDER = Path(self.folder.name)
+        self.files = {"https://cdn.example/npm/lib@1.0.0/a.js": b"export const a = 1;", "https://cdn.example/npm/lib@1.0.0/sub/b.js": b"export const b = 2;",
+                      "https://models.example/tracker/1/model.task": b"\0model"}
+        import hashlib
+        pin = lambda url: hashlib.sha256(self.files[url]).hexdigest()  # noqa: E731
+        vendor.PACKAGES = [("views", "https://cdn.example/npm/lib@1.0.0/", {"a.js": pin("https://cdn.example/npm/lib@1.0.0/a.js"),
+                                                                            "sub/b.js": pin("https://cdn.example/npm/lib@1.0.0/sub/b.js")}),
+                           ("tracker", "https://models.example/tracker/1/", {"model.task": pin("https://models.example/tracker/1/model.task")})]
+
+    def tearDown(self):
+        vendor.FOLDER, vendor.PACKAGES = self.real
+        self.folder.cleanup()
+
+    def opener(self, served=None):
+        import io
+        served = self.files if served is None else served
+        asked = []
+
+        def open_url(request, timeout=None):
+            asked.append(request.full_url)
+            return io.BytesIO(served[request.full_url])
+        return open_url, asked
+
+    def test_pages_name_the_kept_copy_one_package_at_a_time(self):
+        page = '"lib": "https://cdn.example/npm/lib@1.0.0/a.js", MODEL = "https://models.example/tracker/1/model.task"'
+        self.assertEqual(vendor.local(page), page)  # nothing kept: the internet's
+        open_url, asked = self.opener()
+        self.assertEqual(vendor.status()["views"], False)
+        done = vendor.fetch(open_url=open_url)
+        self.assertEqual((done["views"], done["tracker"], len(done["fetched"]), len(asked)), (True, True, 3, 3))
+        self.assertEqual(vendor.local(page), '"lib": "/gui/vendor/npm/lib@1.0.0/a.js", MODEL = "/gui/vendor/tracker/1/model.task"')
+        self.assertEqual(vendor.fetch(open_url=open_url)["fetched"], [])  # kept: nothing is asked for again
+        (vendor.FOLDER / "tracker" / "1" / "model.task").unlink()
+        # the views alone: the tracker's address must stay the internet's, or the webcam test would find nothing
+        self.assertEqual(vendor.local(page), '"lib": "/gui/vendor/npm/lib@1.0.0/a.js", MODEL = "https://models.example/tracker/1/model.task"')
+
+    def test_a_download_that_isnt_the_pinned_file_is_refused_and_nothing_kept(self):
+        changed = dict(self.files, **{"https://cdn.example/npm/lib@1.0.0/sub/b.js": b"export const b = 'something else';"})
+        open_url, _ = self.opener(changed)
+        with self.assertRaisesRegex(ValueError, "isn't the file this app was tested with"):
+            vendor.fetch(open_url=open_url)
+        kept = sorted(p.name for p in vendor.FOLDER.rglob("*") if p.is_file())
+        self.assertEqual(kept, ["a.js"])  # the good one stays, the other left neither itself nor a .part
+        self.assertEqual(vendor.local('"https://cdn.example/npm/lib@1.0.0/a.js"'), '"https://cdn.example/npm/lib@1.0.0/a.js"')
+
+    def test_every_three_file_the_pages_import_is_pinned(self):
+        # with a copy kept, three/addons/ resolves here: an addon a page imports and this list lacks would be a 404
+        import re
+        vendor.FOLDER, vendor.PACKAGES = self.real
+        pinned = next(files for _, address, files in vendor.PACKAGES if address.endswith("/three@0.180.0/"))
+        pages = [*(REPO / "app" / "gui" / "js").glob("*.js"), *(REPO / "viewer").glob("*.html"), REPO / "app" / "gui" / "index.html"]
+        imported = {match for page in pages for match in re.findall(r"three/addons/([\w/]+\.js)", page.read_text(encoding="utf-8"))}
+        self.assertTrue(imported)
+        self.assertEqual([name for name in sorted(imported) if f"examples/jsm/{name}" not in pinned], [])
+        # and the addresses the pages use are the pinned ones, version for version
+        text = (REPO / "viewer" / "index.html").read_text(encoding="utf-8") + (REPO / "app" / "gui" / "index.html").read_text(encoding="utf-8")
+        for _, address, _ in vendor.PACKAGES:
+            self.assertIn(address, text)
 
 
 if __name__ == "__main__":
