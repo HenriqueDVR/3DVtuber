@@ -3,6 +3,7 @@
 import math
 import unittest
 
+import bmesh
 import bpy
 import numpy as np
 from mathutils import Vector
@@ -89,9 +90,15 @@ class FaceFusedWithBody(PartsFixture):
         # and a long lock of hair to the face, as model A's T-pose FBX has its back hair in its body's surface
         cls.lock = int(np.argmin(np.linalg.norm(cls.verts - np.asarray(cls.truth["hair"]["left_long_tip"]), axis=1)))
         lock_part = np.flatnonzero(cls.found.labels == cls.found.labels[cls.lock])
-        mesh.edges.add(2)
-        mesh.edges[-2].vertices = (int(face[0]), foot)
-        mesh.edges[-1].vertices = (int(face[0]), int(lock_part[np.argmax(cls.verts[lock_part, 2])]))
+        # through bmesh: `mesh.edges.add` crashes Blender 5.2.2 itself (access violation filling the
+        # new edges' attributes), which took the whole suite down there
+        joined = bmesh.new()
+        joined.from_mesh(mesh)
+        joined.verts.ensure_lookup_table()
+        for a, b in ((int(face[0]), foot), (int(face[0]), int(lock_part[np.argmax(cls.verts[lock_part, 2])]))):
+            joined.edges.new((joined.verts[a], joined.verts[b]))
+        joined.to_mesh(mesh)
+        joined.free()
         mesh.update()
         cls.fused = parts.find(cls.mesh, cls.joints)
         cls.foot = foot
