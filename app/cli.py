@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import engine, vendor
+from . import engine, face_guess, sheet, vendor
 from .engine import REPO, Project, StepFailed, manifest
 
 
@@ -88,6 +88,11 @@ def main(argv=None):
     p.add_argument("--run", help="render the last .blend of this run folder (a name from `runs`) instead")
     p.add_argument("--size", type=int, default=800)
 
+    p = sub.add_parser("sheet", help="contact sheets of the finished .vrm as apps draw it: face, body, details (headless Edge or Chrome)")
+    p.add_argument("target", type=Path, help="a character manifest (its last .vrm) or a .vrm file")
+    p.add_argument("--out", type=Path, help="folder for the PNGs (default: the character's renders/, or beside the .vrm)")
+    p.add_argument("--browser", help="msedge.exe or chrome.exe to use")
+
     p = sub.add_parser("movement", help="which pieces stay behind or tear when the arms and head move (runs Blender)")
     p.add_argument("manifest", type=Path)
     p.add_argument("--step", choices=engine.NAMES, help="check this step's output (default: the last before the T-pose)")
@@ -98,6 +103,11 @@ def main(argv=None):
 
     p = sub.add_parser("face-patch", help="give the model a front-mapped face texture to mark points on (runs Blender)")
     p.add_argument("manifest", type=Path)
+
+    p = sub.add_parser("face-guess", help="face points placed by an anime face detector, to check and nudge (needs a Python with anime-face-detector)")
+    p.add_argument("manifest", type=Path)
+    p.add_argument("--save", action="store_true", help="keep them as the character's face points")
+    p.add_argument("--python", help="a Python that has anime-face-detector")
 
     p = sub.add_parser("face", help="save face points (a face.json from viewer/setup.html) into the character")
     p.add_argument("manifest", type=Path)
@@ -401,6 +411,23 @@ def cmd_render(args):
     return {"blend": str(blend), "run": blend.parent.name, "pose": args.pose, "images": sorted(str(p) for p in out.glob("*.png"))}
 
 
+def cmd_sheet(args):
+    """viewer/sheet.html's sheets of an exported file, drawn by three-vrm as apps draw it: the poses,
+    expressions and camera angles where Warudo showed defects Blender's renders never did."""
+    if args.target.suffix.lower() == ".vrm":
+        vrm, out = args.target, args.out or args.target.with_name(args.target.stem + "_sheets")
+    else:
+        project = Project(args.target, blender=getattr(args, "blender", None))
+        vrm = project._last_vrm()
+        if vrm is None:
+            raise StepFailed("nothing exported yet")
+        out = args.out or project.out / "renders" / f"sheets_{vrm.parent.name}"
+    try:
+        return {"vrm": str(vrm), **sheet.render(vrm, out, browser=args.browser)}
+    except (sheet.NoBrowser, TimeoutError, RuntimeError) as error:
+        raise StepFailed(f"sheet: {error}")
+
+
 def cmd_movement(args):
     """Run scripts/check_movement.py on the modelled pose; the result is also kept as movement.json."""
     project = _project(args)
@@ -482,6 +509,29 @@ FACE_BELOW_EYES = 0.02
 
 FACE_KEYS = {"right_eye": ("inner", "outer", "top", "bottom"), "left_eye": ("inner", "outer", "top", "bottom"),
              "mouth": ("left", "right", "top", "bottom")}
+
+
+def guess_face(manifest_path, python=None, blender=None):
+    """Face points for the character's face patch picture, found by the detector (app/face_guess.py)."""
+    project = Project(manifest_path, blender=blender)
+    # the picture the patch was made from, kept beside the patched model (a character may use another's patch)
+    source = manifest.path_of(project.data, "source")
+    folders = [project.out / "face", *([source.parent] if source else [])]
+    picture = next((f / "face_patch_head_000.png" for f in folders if (f / "face_patch_head_000.png").exists()), None)
+    if picture is None:
+        raise StepFailed("no face patch yet: make it first (`face-patch`, or the Face page)")
+    try:
+        points = face_guess.guess(picture, python=python, cache=REPO / "tools" / "work" / "hf")
+    except (face_guess.NoDetector, face_guess.NoFace, RuntimeError) as error:
+        raise StepFailed(f"face-guess: {error}")
+    return {**points, "image": "face_patch.png"}
+
+
+def cmd_face_guess(args):
+    points = guess_face(args.manifest, python=args.python, blender=getattr(args, "blender", None))
+    if args.save:
+        return {"points": points, **save_face(args.manifest, points, blender=getattr(args, "blender", None))}
+    return {"points": points, "next": "check them on the Face page, or keep them with --save"}
 
 
 def cmd_face(args):
@@ -593,8 +643,8 @@ def cmd_bundle(args):
 
 
 COMMANDS = {"init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_set, "joint": cmd_joint,
-            "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "movement": cmd_movement, "springs": cmd_springs,
-            "face-patch": cmd_face_patch, "face": cmd_face, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
+            "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "sheet": cmd_sheet, "movement": cmd_movement, "springs": cmd_springs,
+            "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
             "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup,
             "regress": cmd_regress, "vendor": cmd_vendor, "warudo": cmd_warudo}
 

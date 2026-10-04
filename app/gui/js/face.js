@@ -161,6 +161,22 @@ function showFacePoints() {
 // for the drawn stroke took model A's nose shading or her collar. The 3D preview shows it.
 
 $("patch-make").onclick = () => job("face_patch", {});
+// A first guess from the face detector (app/face_guess.py): the marker takes the points as if
+// they had been clicked, and they save as hand-placed ones do. Never instead of looking: the
+// guess is shown on the picture and on the head, to be dragged where it is off.
+$("points-guess").onclick = async () => {
+  if (!facePatch) { say("guess-msg", "Make the face patch first (step 1).", true); return; }
+  if (placed(facePoints) && !confirm("Replace the points already placed with the detector's guess?")) return;
+  $("points-guess").disabled = true; say("guess-msg", "Looking for the face…");
+  try {
+    const { points } = await call("face_guess", {});
+    const { sure, ...kept } = points;
+    facePoints = kept; sendFaceImage(); showFacePoints(); showPointsState();
+    await savePoints();
+    say("guess-msg", `Placed (the detector is ${Math.round(sure * 100)}% sure of its least certain point). Check each one and drag any that is off.`);
+  } catch (e) { say("guess-msg", e.message, true); }
+  $("points-guess").disabled = false;
+};
 export function renderFace() {
   if (!S.manifest) return;
   const o = S.manifest.options;

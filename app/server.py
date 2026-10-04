@@ -178,6 +178,8 @@ def api(route, query, body):
                 "model": f"/api/model?key=source&manifest={quote(str(project.manifest_path))}" if viewable else None}
     if route == "face_patch":
         return JOBS.start("making the face patch", lambda emit: cli.cmd_face_patch(_args(manifest=Path(m))))
+    if route == "face_guess":
+        return {"points": cli.guess_face(Path(m))}
     if route == "face_save":
         return cli.save_face(Path(m), body["points"])
     if route == "feedback":

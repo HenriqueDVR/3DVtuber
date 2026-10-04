@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VRM contact sheets</title>
+<style>
+  html, body { margin: 0; font: 13px/1.4 system-ui, sans-serif; background: #202329; color: #e6e6e6; }
+  #status { padding: 8px 12px; }
+  canvas.sheet { display: block; max-width: 100%; margin: 0 0 12px; }
+  #stage { position: absolute; left: -9999px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.5.5/lib/three-vrm.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="status">Open with ?model=/out/file.vrm</div>
+<div id="stage"></div>
+<div id="sheets"></div>
+<script type="module">
+// The exported file as apps draw it (three-vrm: MToon, each material's own culling, springs run),
+// in the poses, expressions and camera angles where defects were seen in Warudo and never in
+// Blender's renders: the gap at the back of the neck, a pale piece by the lowered hand, the blink.
+// ?model=/out/x.vrm ; &post=1 sends each sheet as a PNG to /sheet?name=... (python -m app sheet).
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+
+const said = [];
+for (const kind of ["warn", "error"]) {
+  const real = console[kind].bind(console);
+  console[kind] = (...parts) => { said.push(parts.join(" ")); real(...parts); };
+}
+
+const TILE = 480, LABEL = 22;
+const statusBox = document.getElementById("status");
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(TILE, TILE, false);
+document.getElementById("stage").appendChild(renderer.domElement);
+
+// mid grey: the hair's dark inside and a pale stretched patch both stand out against it
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x6a6f7a);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+sun.position.set(1, 2, 3);
+scene.add(sun);
+const camera = new THREE.PerspectiveCamera(20, 1, 0.01, 50);
+
+// The poses scripts/check_avatar.py measures, as viewer/index.html has them (Y up, +Z forward,
+// +X the character's left).
+const ARM_POSES = { "arms at sides": [0.25, -1, 0], "arms forward": [0.3, -0.3, 1], "arms raised": [0.5, 1, 0] };
+const TURN_POSES = { "head turn": ["head", [0, 1, 0], 0.4], "head turn right": ["head", [0, 1, 0], -0.4], "head nod": ["head", [1, 0, 0], 0.5],
+  "head back": ["head", [1, 0, 0], -0.4], "head tilt": ["head", [0, 0, 1], 0.6], "spine bend": ["spine", [1, 0, 0], 0.5] };
+
+// A shot: [label, {pose: [...names], set: {expression: value}, look: [yaw, pitch] degrees,
+//   at: bone the camera looks at, span: metres across the tile, from: [degrees round from the front
+//   toward the character's left, degrees up], lift: metres above the bone}]
+const FACE = { at: "head", span: 0.3, lift: 0.07 };
+const BODY = { at: "hips", span: 1.9, lift: 0.0 };
+const SHEETS = {
+  face: [
+    ["rest", { ...FACE }], ["blink 0.5", { ...FACE, set: { blink: 0.5 } }], ["blink 1", { ...FACE, set: { blink: 1 } }],
+    ["blinkLeft 1", { ...FACE, set: { blinkLeft: 1 } }],
+    ["look left", { ...FACE, look: [40, 0] }], ["look right", { ...FACE, look: [-40, 0] }],
+    ["look up", { ...FACE, look: [0, 30] }], ["look down", { ...FACE, look: [0, -30] }],
+    ["blink 0.5, look down", { ...FACE, set: { blink: 0.5 }, look: [0, -30] }], ["blink 1, from her left", { ...FACE, set: { blink: 1 }, from: [40, 0] }],
+    ["blink 1, from below", { ...FACE, set: { blink: 1 }, from: [0, -25] }], ["rest, from her right", { ...FACE, from: [-40, 0] }],
+    ["aa", { ...FACE, set: { aa: 1 } }], ["ih", { ...FACE, set: { ih: 1 } }], ["ou", { ...FACE, set: { ou: 1 } }],
+    ["ee", { ...FACE, set: { ee: 1 } }], ["oh", { ...FACE, set: { oh: 1 } }],
+    ["aa, from her left", { ...FACE, set: { aa: 1 }, from: [40, 0] }],
+    ["head turn, camera still", { ...FACE, pose: ["head turn"], hold: true }], ["head nod, camera still", { ...FACE, pose: ["head nod"], hold: true }],
+  ],
+  body: [
+    ["rest, front", { ...BODY }], ["rest, back", { ...BODY, from: [180, 0] }],
+    ["rest, her left", { ...BODY, from: [90, 0] }], ["rest, her right", { ...BODY, from: [-90, 0] }],
+    ["arms at sides, front", { ...BODY, pose: ["arms at sides"] }], ["arms at sides, back", { ...BODY, pose: ["arms at sides"], from: [180, 0] }],
+    ["arms raised, front", { ...BODY, pose: ["arms raised"] }], ["arms raised, back", { ...BODY, pose: ["arms raised"], from: [180, 0] }],
+    ["arms forward, her left", { ...BODY, pose: ["arms forward"], from: [90, 0] }], ["arms forward, front above", { ...BODY, pose: ["arms forward"], from: [20, 35] }],
+    ["head turn, back", { at: "head", span: 0.7, lift: -0.1, pose: ["head turn"], from: [180, 0], hold: true }],
+    ["head nod, her left", { at: "head", span: 0.7, lift: -0.1, pose: ["head nod"], from: [90, 0], hold: true }],
+  ],
+  details: [
+    ["neck, her left", { at: "neck", span: 0.3, from: [95, 0] }], ["neck, her right", { at: "neck", span: 0.3, from: [-95, 0] }],
+    ["neck, left behind below, head turned", { at: "neck", span: 0.3, from: [120, -20], pose: ["head turn right"] }],
+    ["neck, right behind below, head turned", { at: "neck", span: 0.3, from: [-120, -20], pose: ["head turn"] }],
+    ["neck, front below, head back", { at: "neck", span: 0.3, from: [30, -35], pose: ["head back"] }],
+    ["leaning forward, her right behind", { at: "neck", span: 0.45, from: [-115, 5], pose: ["spine bend"] }],
+    ["leaning forward, her left behind", { at: "neck", span: 0.45, from: [115, 5], pose: ["spine bend"] }],
+    ["mid-swing, her right behind", { at: "neck", span: 0.45, from: [-110, 0], swing: 1 }],
+    ["mid-swing, her left behind", { at: "neck", span: 0.45, from: [110, 0], swing: -1 }],
+    ["left hand down, front", { at: "leftHand", span: 0.45, from: [15, 0], pose: ["arms at sides"] }],
+    ["left hand down, her left", { at: "leftHand", span: 0.45, from: [90, 0], pose: ["arms at sides"] }],
+    ["right hand down, front", { at: "rightHand", span: 0.45, from: [-15, 0], pose: ["arms at sides"] }],
+    ["right hand down, her right", { at: "rightHand", span: 0.45, from: [-90, 0], pose: ["arms at sides"] }],
+    ["left hand, above", { at: "leftHand", span: 0.3, from: [0, 80] }], ["left hand, palm", { at: "leftHand", span: 0.3, from: [0, -80] }],
+    ["shoulder, arms raised", { at: "leftUpperArm", span: 0.5, from: [20, 10], pose: ["arms raised"] }],
+    ["under the arm, raised", { at: "leftUpperArm", span: 0.5, from: [60, -30], pose: ["arms raised"] }],
+  ],
+};
+
+let vrm = null;
+const restArm = {};
+const missing = new Set();
+
+async function load(url) {
+  const loader = new GLTFLoader();
+  loader.register((parser) => new VRMLoaderPlugin(parser));
+  const gltf = await loader.loadAsync(url);
+  if (!gltf.userData.vrm) throw new Error(`${url} is not a VRM file`);
+  vrm = gltf.userData.vrm;
+  VRMUtils.rotateVRM0(vrm);
+  scene.add(vrm.scene);
+  vrm.scene.updateMatrixWorld(true);
+  for (const side of ["left", "right"]) {
+    const upper = vrm.humanoid.getNormalizedBoneNode(`${side}UpperArm`), hand = vrm.humanoid.getNormalizedBoneNode(`${side}Hand`);
+    restArm[side] = upper && hand ? hand.getWorldPosition(new THREE.Vector3()).sub(upper.getWorldPosition(new THREE.Vector3())).normalize() : null;
+  }
+}
+
+function bonePoint(name) {
+  const node = vrm.humanoid.getRawBoneNode(name) ?? vrm.humanoid.getRawBoneNode("hips");
+  return node.getWorldPosition(new THREE.Vector3());
+}
+
+function aim(shot) {
+  // `hold`: the camera stays where the rest pose put the bone, so the pose is seen moving past it
+  const target = bonePoint(shot.at).add(new THREE.Vector3(0, shot.lift ?? 0, 0));
+  const [round, up] = (shot.from ?? [0, 0]).map(THREE.MathUtils.degToRad);
+  const distance = shot.span / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+  camera.position.copy(target).add(new THREE.Vector3(Math.sin(round) * Math.cos(up), Math.sin(up), Math.cos(round) * Math.cos(up)).multiplyScalar(distance));
+  camera.lookAt(target);
+}
+
+function pose(shot) {
+  const humanoid = vrm.humanoid;
+  for (const name of Object.keys(humanoid.humanBones)) humanoid.getNormalizedBoneNode(name)?.quaternion.identity();
+  for (const name of shot.pose ?? []) {
+    if (name in ARM_POSES) {
+      const [x, y, z] = ARM_POSES[name];
+      for (const [side, mirror] of [["left", 1], ["right", -1]]) {
+        if (restArm[side]) humanoid.getNormalizedBoneNode(`${side}UpperArm`).quaternion.setFromUnitVectors(restArm[side], new THREE.Vector3(mirror * x, y, z).normalize());
+      }
+    } else {
+      const [bone, axis, angle] = TURN_POSES[name];
+      humanoid.getNormalizedBoneNode(bone)?.quaternion.setFromAxisAngle(new THREE.Vector3(...axis), angle);
+    }
+  }
+  const expressions = vrm.expressionManager;
+  for (const expression of expressions?.expressions ?? []) expressions.setValue(expression.expressionName, 0);
+  for (const [name, value] of Object.entries(shot.set ?? {})) {
+    if (expressions?.getExpression(name)) expressions.setValue(name, value); else missing.add(name);
+  }
+  if (vrm.lookAt) [vrm.lookAt.yaw, vrm.lookAt.pitch] = shot.look ?? [0, 0];
+  else if (shot.look) missing.add("lookAt");
+}
+
+function shoot(shot) {
+  vrm.scene.position.x = 0;
+  if (shot.hold) { pose({}); vrm.update(0); aim(shot); }
+  pose(shot);
+  // the springs from rest into the pose and let hang, as an app would have them a second later
+  vrm.springBoneManager?.reset();
+  for (let frame = 0; frame < 90; frame++) vrm.update(1 / 60);
+  // `swing`: the body stepped sideways and the head turned, as the viewer's swing does, and the
+  // shot taken with the hair still on its way: gaps under it open in motion, not at rest
+  if (shot.swing) {
+    const head = vrm.humanoid.getNormalizedBoneNode("head");
+    for (let frame = 0; frame < 24; frame++) {
+      const time = frame / 60;
+      vrm.scene.position.x = shot.swing * Math.sin(time * 4) * 0.15;
+      head?.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), shot.swing * Math.sin(time * 6) * 0.6);
+      vrm.update(1 / 60);
+    }
+  }
+  if (!shot.hold) aim(shot);
+  renderer.render(scene, camera);
+}
+
+async function sheet(name, shots, post) {
+  const columns = 4, rows = Math.ceil(shots.length / columns);
+  const canvas = Object.assign(document.createElement("canvas"), { width: columns * TILE, height: rows * (TILE + LABEL), className: "sheet" });
+  const draw = canvas.getContext("2d");
+  draw.fillStyle = "#202329";
+  draw.fillRect(0, 0, canvas.width, canvas.height);
+  draw.font = "15px system-ui, sans-serif";
+  draw.textBaseline = "middle";
+  shots.forEach(([label, shot], index) => {
+    const x = (index % columns) * TILE, y = Math.floor(index / columns) * (TILE + LABEL);
+    shoot(shot);
+    draw.drawImage(renderer.domElement, x, y + LABEL);
+    draw.fillStyle = "#e6e6e6";
+    draw.fillText(label, x + 6, y + LABEL / 2);
+  });
+  document.getElementById("sheets").append(canvas);
+  if (post) {
+    const blob = await new Promise((done) => canvas.toBlob(done, "image/png"));
+    await fetch(`/sheet?name=${name}`, { method: "POST", body: blob });
+  }
+}
+
+// which graphics path drew the sheets: a software one is slower and has drawn textures in blocks
+function drawnBy() {
+  const gl = renderer.getContext(), info = gl.getExtension("WEBGL_debug_renderer_info");
+  return info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+}
+
+const query = new URLSearchParams(location.search);
+const model = query.get("model"), post = query.has("post");
+if (model) {
+  statusBox.textContent = `Loading ${model}…`;
+  try {
+    await load(model);
+    // three.js only warns and draws the material white: a sheet of a white body must not pass for the file
+    const lost = said.filter((line) => /load texture/i.test(line));
+    if (lost.length) throw new Error(`a texture didn't load (the browser's profile drive may be full): ${lost[0]}`);
+    for (const [name, shots] of Object.entries(SHEETS)) {
+      statusBox.textContent = `Rendering ${name}…`;
+      await new Promise((next) => setTimeout(next, 0));  // not a frame: a hidden or headless page gets none
+      await sheet(name, shots, post);
+    }
+    const report = { model, missing: [...missing].sort(), expressions: (vrm.expressionManager?.expressions ?? []).map((e) => e.expressionName),
+      springJoints: vrm.springBoneManager?.joints.size ?? 0, drawnBy: drawnBy(), warnings: said };
+    statusBox.textContent = missing.size ? `Not on this avatar: ${report.missing.join(", ")}` : "Done";
+    if (post) await fetch("/sheet?name=done", { method: "POST", body: JSON.stringify(report) });
+    window.sheetReport = report;
+  } catch (error) {
+    statusBox.textContent = `${error}`;
+    if (post) await fetch("/sheet?name=failed", { method: "POST", body: JSON.stringify({ error: `${error}` }) });
+  }
+}
+</script>
+</body>
+</html>

@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
@@ -85,6 +86,42 @@ class Engine(unittest.TestCase):
         self.assertEqual([str(a) for a in eyes[-3:]], ["--slide", "4.5", "2"])
         mouth, _ = project._arguments("mouth", self.root / "11_mouth", None)
         self.assertEqual([str(a) for a in mouth[3:]], ["--free", "--scale", "1.3"])
+
+    def test_an_adopted_rig_keeps_its_hands_as_modelled(self):
+        project = self.project({"options": {}, "triangles": 40000})
+        args, _ = project._arguments("tpose", self.root / "09_tpose", None)
+        self.assertIn("--spec-hands", [str(a) for a in args])
+        project.data["rig"] = "rigged.fbx"
+        args, _ = project._arguments("tpose", self.root / "09_tpose", None)
+        self.assertNotIn("--spec-hands", [str(a) for a in args])
+        self.assertIn("--keep-finger-pose", [str(a) for a in args])
+
+    def test_chest_bounce_is_off_until_asked_for(self):
+        project = self.project({"options": {}, "triangles": 40000})
+        self.assertNotIn("chest", self.runs(project))
+        project = self.project({"options": {}, "triangles": 40000}, chest=True)
+        self.assertIn("chest", self.runs(project))
+        args, extra = project._arguments("chest", self.root / "10_chest", None)
+        self.assertEqual([str(a) for a in args[:1] + args[3:]], ["add_chest_jiggle.py", "--height", "1.6", "--amount", "1.0"])
+        self.assertEqual(extra, engine.NO_EXPORT)
+        # on the finished T-pose, before the face steps; a chest it can't find leaves the avatar without it
+        self.assertEqual(engine.NAMES.index("chest"), engine.NAMES.index("tpose") + 1)
+        self.assertIn("chest", engine.SOFT)
+
+    def test_a_refused_automatic_iris_slides_instead(self):
+        project = self.project({"options": {}, "triangles": 40000, "parts": {"eye_inserts": True}})
+        self.assertEqual(project.options()["eyes"], "iris")
+        refused = engine.StepFailed("eyes: iris over the lids", errors.describe("VM-EYES-REFUSED"))
+        self.assertTrue(project._eyes_fall_back("eyes", refused))
+        self.assertEqual(project.options()["eyes"], "slide")
+        args, _ = project._arguments("eyes", self.root / "11_eyes", None)
+        self.assertIn("--slide", [str(a) for a in args])
+        # kept for the next build of the same model
+        self.assertEqual(Project(self.path, blender="blender").options()["eyes"], "slide")
+        # an iris the user chose stays an iris, and other failures aren't retried
+        chosen = self.project({"options": {}, "triangles": 40000}, eyes="iris")
+        self.assertFalse(chosen._eyes_fall_back("eyes", refused))
+        self.assertFalse(project._eyes_fall_back("mouth", refused))
 
     def test_only_the_export_step_writes_a_vrm(self):
         project = self.project({"options": {}, "triangles": 40000}, tpose="none")
@@ -380,6 +417,190 @@ class Engine(unittest.TestCase):
         self.assertIn("commit", made_by)
         project._record("build", {"status": "done", "blend": "new.blend"})
         self.assertNotIn("last_failure", project.state["steps"]["build"])
+
+    def fingerprint(self, **changed):
+        """A build's numbers after the face step, as scripts/_fingerprint.py writes them."""
+        found = {"meshes": {"Body": {"vertices": 27786, "polygons": 52418, "materials": {"skin": 52338, "mouth": 80}}},
+                 "keys": {"Body": {"aa": {"moved": 99, "max_mm": 15.98}, "eyeLookInLeft": {"moved": 289, "max_mm": 2.91}}},
+                 "face": {"Body": {"vertices": 1439, "head": 1.0, "on_springs": 0}},
+                 "fingers": {"LeftThumbProximal": 22.9, "LeftIndexProximal": 2.9}, "bones": 105, "spring_bones": 55}
+        for path, value in changed.items():
+            *parents, last = path.split("__")
+            at = found
+            for name in parents:
+                at = at[name]
+            at[last] = value
+        return found
+
+    def test_a_step_may_only_change_what_is_its_own(self):
+        compare, good = engine.contracts.compare, self.fingerprint()
+        self.assertEqual(compare("tpose", good, self.fingerprint()), ([], []))
+        self.assertEqual(compare("loose", None, good), ([], []))
+        self.assertEqual(compare("loose", good, None), ([], []))  # a step whose numbers weren't written
+        # the loose step welded the mouth patch: half the vertices is what joining twins does, the reach isn't
+        joined = self.fingerprint(keys__Body__aa={"moved": 60, "max_mm": 15.98}, meshes__Body__vertices=20000)
+        self.assertEqual(compare("loose", good, joined)[0], [])
+        welded = self.fingerprint(keys__Body__aa={"moved": 36, "max_mm": 11.37})
+        self.assertIn("aa reaches 11.37 mm, was 15.98", compare("loose", good, welded)[0][0])
+        self.assertEqual(compare("mouth", good, welded)[0], [])  # the mouth step reshapes the mouth
+        # a hand import emptied the look keys: no step may, the eye step included
+        wiped = self.fingerprint(keys__Body__eyeLookInLeft={"moved": 0, "max_mm": 0.0})
+        for step in ("pieces", "eyes"):
+            self.assertIn("eyeLookInLeft no longer moves anything", compare(step, good, wiped)[0][0])
+        # the T-pose step relays the fingers of our own rig, and leaves an adopted rig's as modelled
+        fanned = self.fingerprint(fingers__LeftThumbProximal=45.0)
+        self.assertEqual(compare("tpose", good, fanned)[0], [])
+        self.assertIn("LeftThumbProximal most: 22.9 -> 45.0", compare("tpose", good, fanned, rigged=True)[0][0])
+        self.assertTrue(compare("chest", good, fanned)[0])
+        # nothing but the steps that cut and join touches the mesh
+        cut = self.fingerprint(meshes__Body__polygons=52372)
+        self.assertTrue(compare("tpose", good, cut)[0])
+        self.assertEqual(compare("eyes", good, cut)[0], [])
+        self.assertEqual(compare("chest", good, self.fingerprint(spring_bones=59))[0], [])
+        self.assertIn("51 spring bones, was 55", compare("eyes", good, self.fingerprint(spring_bones=51))[0])
+
+    def test_face_pieces_on_hair_springs_are_said_once(self):
+        compare = engine.contracts.compare
+        swinging = self.fingerprint(face__Body={"vertices": 1970, "head": 0.72, "on_springs": 328})
+        damage, warnings = compare("face_tracking", self.fingerprint(face__Body={"vertices": 0, "head": None, "on_springs": 0}), swinging)
+        self.assertEqual(damage, [])
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("328 of the 1970", warnings[0])
+        # the loose step joins vertices and the counts change: the same finding, not a new one
+        later = self.fingerprint(face__Body={"vertices": 1376, "head": 0.71, "on_springs": 232})
+        self.assertEqual(compare("loose", swinging, later), ([], []))
+
+    def test_a_step_that_damages_another_steps_work_fails(self):
+        project = self.project({"options": {}, "triangles": 40000})
+        before = self.root / "08_before.blend"
+        before.write_bytes(b"BLENDER-v402")
+        engine._fingerprint_of(before).write_text(json.dumps(self.fingerprint()))
+        project._record("loose", {"status": "done", "blend": str(before)})
+        project.data["rig"] = "rigged.fbx"
+        real, seen = engine._blender, {}
+
+        def blender(blender, blend_in, args, log, extra):
+            seen["extra"] = [str(e) for e in extra]
+            Path(log).write_text("")
+            Path(args[1]).write_bytes(b"BLENDER-v402")
+            engine._fingerprint_of(args[1]).write_text(json.dumps(self.fingerprint(fingers__LeftThumbProximal=seen["thumb"])))
+            return 0
+        engine._blender = blender
+        try:
+            seen["thumb"] = 22.9
+            entry = project._run_step("tpose", engine.NAMES.index("tpose"), self.root)
+            self.assertEqual(entry["status"], "done")
+            self.assertEqual(seen["extra"][-1], str(engine.FINGERPRINT))
+            self.assertIn("09_tpose_fingerprint.json", seen["extra"][-3])
+            seen["thumb"] = 45.0
+            with self.assertRaises(engine.StepFailed) as failed:
+                project._run_step("tpose", engine.NAMES.index("tpose"), self.root)
+            self.assertEqual(failed.exception.known["code"], "VM-STEP-DAMAGE")
+            self.assertIn("22.9 -> 45.0", str(failed.exception))
+        finally:
+            engine._blender = real
+
+    def test_contact_sheets_come_back_from_the_browser(self):
+        import threading
+        import urllib.request
+        from app import sheet
+        vrm = self.root / "avatar.vrm"
+        vrm.write_bytes(b"glTF-model")
+        seen = {}
+
+        class Browser:
+            """Stands in for headless Edge: loads the page and the model, sends two sheets back."""
+            def __init__(self, command, **_):
+                seen["command"] = command
+                threading.Thread(target=self.visit, args=(command[-1],), daemon=True).start()
+
+            def visit(self, url):
+                root = url.split("/viewer/")[0]
+                seen["page"] = urllib.request.urlopen(url).read()
+                seen["model"] = urllib.request.urlopen(root + "/model.vrm").read()
+                for name, body in (("face", b"PNG-face"), ("../escape", b"no"), (self.last, json.dumps(self.said).encode())):
+                    urllib.request.urlopen(urllib.request.Request(f"{root}/sheet?name={name}", data=body, method="POST"))
+
+            def kill(self):
+                seen["killed"] = True
+
+            def wait(self):
+                pass
+        real = sheet.subprocess.Popen, sheet.find_browser
+        sheet.subprocess.Popen, sheet.find_browser = Browser, lambda given=None: "edge.exe"
+        try:
+            Browser.last, Browser.said = "done", {"missing": ["blinkLeft"], "warnings": []}
+            result = sheet.render(vrm, self.root / "sheets")
+            self.assertEqual([Path(p).name for p in result["images"]], ["sheet_face.png"])
+            self.assertEqual((self.root / "sheets" / "sheet_face.png").read_bytes(), b"PNG-face")
+            self.assertEqual((seen["model"], result["report"]["missing"]), (b"glTF-model", ["blinkLeft"]))
+            self.assertIn(b"three-vrm", seen["page"])
+            # a profile of its own, by its whole path (Edge shows a dialog for a relative one), gone afterwards
+            profile = Path(next(c for c in seen["command"] if c.startswith("--user-data-dir=")).split("=", 1)[1])
+            self.assertTrue(profile.is_absolute() and not profile.exists() and seen["killed"])
+            # a texture the browser couldn't load is the page's failure, not a sheet of a white body
+            Browser.last, Browser.said = "failed", {"error": "a texture didn't load"}
+            with self.assertRaises(RuntimeError):
+                sheet.render(vrm, self.root / "sheets")
+        finally:
+            sheet.subprocess.Popen, sheet.find_browser = real
+
+    def landmarks(self, mouth_height=0.0):
+        """What the detector found on model A (T-pose)'s face patch picture, the mouth's height set."""
+        at = {11: (697, 835), 12: (791, 804), 13: (901, 853), 15: (810, 932), 17: (1112, 853), 18: (1221, 800),
+              19: (1317, 838), 21: (1216, 936), 24: (958, 1107), 25: (1006, 1104 - mouth_height / 2),
+              26: (1050, 1107), 27: (1006, 1104 + mouth_height / 2)}
+        return {"size": [2048, 2048], "faces": [{"box": [613, 559, 1395, 1325, 1.0],
+                                                  "points": [[*at.get(i, (0, 0)), 0.93] for i in range(28)]}]}
+
+    def test_a_detected_face_becomes_the_twelve_points(self):
+        from app import face_guess
+        points = face_guess.from_landmarks(self.landmarks())
+        # image left is the character's right eye; corners, top and the middle of the lower lid
+        self.assertEqual((points["right_eye"]["outer"], points["right_eye"]["inner"]), ([697, 835], [901, 853]))
+        self.assertEqual((points["left_eye"]["inner"], points["left_eye"]["bottom"]), ([1112, 853], [1216, 936]))
+        # a mouth drawn as a line: the corners stay, top and bottom go above and below its middle
+        mouth = points["mouth"]
+        self.assertEqual((mouth["left"], mouth["right"]), ([958, 1107], [1050, 1107]))
+        self.assertAlmostEqual(mouth["top"][1], 1104 - 0.25 * 92)
+        self.assertAlmostEqual(mouth["bottom"][1], 1104 + 0.3 * 92)
+        self.assertEqual((mouth["top"][0], points["sure"]), (1004.0, 0.93))
+        # an open mouth keeps the detector's own top and bottom
+        self.assertEqual(face_guess.from_landmarks(self.landmarks(mouth_height=40))["mouth"]["top"], [1006, 1084.0])
+        # every point the app's face.json needs is there, so it saves as hand-placed ones do
+        for key, names in cli.FACE_KEYS.items():
+            self.assertEqual(set(points[key]), set(names))
+        unsure = self.landmarks()
+        unsure["faces"][0]["box"][4] = 0.2
+        # a face found, its points not (model B): no guess is better than one two eye widths off
+        vague = self.landmarks()
+        vague["faces"][0]["points"][18][2] = 0.1
+        for found in (unsure, vague, {"size": [2048, 2048], "faces": []}):
+            with self.assertRaises(face_guess.NoFace):
+                face_guess.from_landmarks(found)
+
+    def test_the_guess_runs_in_a_python_that_has_the_detector(self):
+        from app import face_guess
+        ran = {}
+
+        def run(command, **keywords):
+            ran["command"], ran["env"] = command, keywords.get("env")
+            return SimpleNamespace(returncode=0, stderr="", stdout="loading" + chr(10) + "FACE_LANDMARKS " + json.dumps(self.landmarks()) + chr(10))
+        real = face_guess.subprocess.run, face_guess.find_python
+        face_guess.subprocess.run, face_guess.find_python = run, lambda given=None: given or "ai-python"
+        try:
+            points = face_guess.guess(self.root / "head.png", cache=self.root / "hf")
+            self.assertEqual(points["left_eye"]["top"], [1221, 800])
+            self.assertEqual(ran["command"], ["ai-python", str(face_guess.SCRIPT), str(self.root / "head.png")])
+            self.assertEqual(ran["env"]["HF_HOME"], str(self.root / "hf"))
+            face_guess.subprocess.run = lambda command, **keywords: SimpleNamespace(returncode=1, stderr="No module named torch", stdout="")
+            with self.assertRaises(RuntimeError):
+                face_guess.guess(self.root / "head.png")
+        finally:
+            face_guess.subprocess.run, face_guess.find_python = real
+        # without a face patch there is no picture to look at
+        with self.assertRaises(engine.StepFailed):
+            cli.guess_face(self.path)
 
     def test_outputs_are_checked_where_they_are_made(self):
         def glb(bones):

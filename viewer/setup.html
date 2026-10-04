@@ -47,6 +47,8 @@
 // Each feature: four points. Eyes: the corners and the top/bottom of the opening (where the
 // lashes meet the white, not the lash tips). Mouth: the corners and the middle of the lip line
 // above and below the opening. Curves through inner/top/outer and inner/bottom/outer are drawn.
+// Only the mouth's corners set its size (face_points.apply): top and bottom give the height of its
+// middle, so on a mouth drawn as a line they go just above and just below the line.
 const FEATURES = [
   ["right_eye", "Right eye (image left)", ["inner", "outer", "top", "bottom"], "#4ad7ff"],
   ["left_eye", "Left eye (image right)", ["inner", "outer", "top", "bottom"], "#7dff6b"],
@@ -55,6 +57,8 @@ const FEATURES = [
 // the mouth's "left"/"right" keys are image sides (face.json keeps them so); named here by the character's
 const LABELS = { inner: "inner corner (nearer the nose)", outer: "outer corner", top: "top of opening", bottom: "bottom of opening",
                  left: "right corner (image left)", right: "left corner (image right)" };
+const MOUTH_LABELS = { left: "right end of the mouth (image left)", right: "left end of the mouth (image right)",
+                       top: "just above the middle of the mouth", bottom: "just below the middle of the mouth" };
 const STEPS = FEATURES.flatMap(([key, title, names, color]) => names.map((name) => ({ key, title, name, color })));
 
 const canvas = document.getElementById("canvas");
@@ -144,7 +148,7 @@ function refresh() {
   list.innerHTML = "";
   for (const step of STEPS) {
     const li = document.createElement("li");
-    li.textContent = `${step.title}: ${LABELS[step.name]}`;
+    li.textContent = `${step.title}: ${(step.key === "mouth" ? MOUTH_LABELS : LABELS)[step.name]}`;
     if (points[id(step)]) li.className = "done";
     if (step === next) li.className = "current";
     li.title = "Click to place this point again";

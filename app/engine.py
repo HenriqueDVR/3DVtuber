@@ -29,7 +29,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import errors, vendor
+from . import contracts, errors, vendor
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
@@ -37,6 +37,7 @@ WINDOWS_BLENDER = Path(r"C:\Program Files\Blender Foundation")
 LOCK = REPO / "out" / ".blender.lock"
 # Run before a step's file loads, on factory settings: see scripts/_startup.py.
 STARTUP = SCRIPTS / "_startup.py"
+FINGERPRINT = SCRIPTS / "_fingerprint.py"
 # Longest a single step may run (s); the slowest real steps take about 3 minutes.
 STEP_TIMEOUT = 30 * 60
 OUT_OF_MEMORY = "Malloc returns null"
@@ -126,12 +127,13 @@ STEPS = [
     ("pieces", "clothing pieces", "blend"),
     ("finger_guides", "finger guides", "blend"),
     ("tpose", "T-pose", "blend"),
+    ("chest", "chest bounce", "blend"),
     ("eyes", "eye tracking", "blend"),
     ("mouth", "mouth shapes", "blend"),
     ("check", "checking the rig", "json"),
     # the one .vrm of a build, from the last .blend: every step used to export its own, about a
     # minute and 700 MB a build on model A for files nothing read. After the check, so its files keep
-    # their number (12_check_spots).
+    # their number (13_check_spots).
     ("export", "exporting the VRM", "vrm"),
     ("vrm_check", "checking the exported VRM", "json"),
     # what check_avatar can't see: pieces left behind as limbs move (on the modelled pose), and the
@@ -150,7 +152,10 @@ OPTIONAL = {"ahoge", "loose", "fingers"}
 CHECKS = {"movement", "springs"}
 # Face features that, when their own checks refuse, leave the avatar without them rather than
 # without an avatar: model C's eye step refused (iris over the lids) and the chain ended with no .vrm.
-SOFT = {"face_tracking", "eyes", "mouth"}
+# Chest bounce too: a chest it can't find leaves the avatar without the bounce.
+SOFT = {"face_tracking", "chest", "eyes", "mouth"}
+EYES_FALLBACK_REASON = ("the moving iris showed over the lids (the drawn iris is as tall as the eye), "
+                        "so the eyes slide as a painted patch instead")
 
 
 def find_blender(given=None):
@@ -231,6 +236,9 @@ class Project:
         if options["eyes"] is None:
             # with face points, eyes move by default: modelled eyes as irises, painted ones as patches
             options["eyes"] = ("iris" if survey.get("parts", {}).get("eye_inserts") else "slide") if self.data.get("face") else "none"
+            # an iris the eye step refused (taller than the opening: model A's T-pose FBX) slides instead
+            if options["eyes"] == "iris" and self.state.get("eyes_fallback"):
+                options["eyes"] = self.state["eyes_fallback"]
         if options["free_mouth"] is None:
             # a coarse or solid face dents when ARKit shapes bend it, so the mouth moves on its own
             options["free_mouth"] = bool(self.data.get("face") and options["mouth_only"] and survey.get("face_patch"))
@@ -250,6 +258,7 @@ class Project:
             "pieces": not pieces and "no clothing pieces named in the manifest",
             "finger_guides": (o["fingers"] != "guides" and "finger guides off") or (rigged and "the adopted rig has its own fingers"),
             "tpose": o["tpose"] == "none" and "T-pose off",
+            "chest": not o["chest"] and "chest bounce off",
             "eyes": (o["eyes"] == "none" or not face) and "no eye tracking, or no face points",
             "mouth": (not o["mouth_fix"] or not face) and "no mouth fix asked for",
             "vrm_check": o["tpose"] == "none" and "no final VRM",
@@ -527,7 +536,14 @@ class Project:
                     continue
                 emit({"step": name, "status": "running"})
                 try:
-                    entry = self._run_step(name, index, folder)
+                    try:
+                        entry = self._run_step(name, index, folder)
+                    except StepFailed as error:
+                        if not self._eyes_fall_back(name, error):
+                            raise
+                        emit({"step": name, "status": "warning", "reason": EYES_FALLBACK_REASON})
+                        entry = self._run_step(name, index, folder)
+                        entry["report"] = {**(entry.get("report") or {}), "eyes": "slide", "why": EYES_FALLBACK_REASON}
                 except Cancelled:
                     # not recorded: the step keeps what it last finished, which later steps may still read
                     emit({"step": name, "status": "cancelled"})
@@ -563,6 +579,11 @@ class Project:
             known = errors.describe("VM-DISK-FULL")
             raise StepFailed(f"{name}: only {free / 2**20:.0f} MB free on {folder.anchor} [VM-DISK-FULL] {known['fix']}", known)
         args, extra = self._arguments(name, stem, blend_in)
+        prints = _fingerprint_of(stem.with_suffix(".blend"))
+        if kind == "blend":
+            # the numbers the step's file is judged by (contracts), written as the step saves it
+            extra = [*extra, "--python-expr", f"import os; os.environ['VTUBER_MAKER_FINGERPRINT'] = {str(prints)!r}",
+                     "-P", str(FINGERPRINT)]
         log = stem.with_suffix(".log")
         started = time.time()
         code = _blender(self.blender, blend_in, args, log, extra)
@@ -591,6 +612,14 @@ class Project:
         if problem:
             known = errors.describe("VM-BAD-OUTPUT")
             raise StepFailed(f"{name}: {problem} (see {log}) [VM-BAD-OUTPUT] {known['fix']}", known)
+        if kind == "blend":
+            damage, warnings = contracts.compare(name, _read_json(_fingerprint_of(blend_in), None) if blend_in else None,
+                                                 _read_json(prints, None), rigged=bool(self.data.get("rig")))
+            if damage:
+                known = errors.describe("VM-STEP-DAMAGE")
+                raise StepFailed(f"{name}: {'; '.join(damage)} (see {log}) [VM-STEP-DAMAGE] {known['fix']}", known)
+            if warnings:
+                entry["warnings"] = warnings
         for tag in ("VTUBER_MAKER_REPORT", "VTUBER_MAKER_PIECES"):
             report = _tagged(output, tag)
             if report is not None:
@@ -638,7 +667,8 @@ class Project:
             return ["export_vrm.py", vrm], []
         script = {"hair": "fix_hair_weights.py", "ahoge": "add_ahoge_spring.py", "face_tracking": "add_face_tracking.py",
                   "loose": "fix_loose_pieces.py", "fingers": "add_fingers.py", "pieces": "apply_pieces.py",
-                  "finger_guides": "fix_fingers.py", "tpose": "to_tpose.py", "eyes": "add_eye_tracking.py",
+                  "finger_guides": "fix_fingers.py", "tpose": "to_tpose.py", "chest": "add_chest_jiggle.py",
+                  "eyes": "add_eye_tracking.py",
                   "mouth": "fix_mouth.py", "check": "check_avatar.py", "vrm_check": "check_avatar.py"}[name]
         if name == "finger_guides":
             return [script, blend], []
@@ -661,10 +691,19 @@ class Project:
         if name == "pieces":
             args += ["--manifest", self.manifest_path]
         if name == "tpose":
-            if o["tpose"] == "spec":
+            # an adopted rig's hands are left as modelled: the spec hands relay the fingers for bones
+            # this build fitted, and on Tripo's own (flat, straight already) they fanned the fingers
+            # out and bent the palm (model A (T-pose); the raw FBX's hands were clean)
+            # Without either flag the step still straightens: it turned Tripo's thumb from 23 to 45
+            # degrees, which is not the hand the user approved in Warudo (an earlier build, the raw hands)
+            if self.data.get("rig"):
+                args.append("--keep-finger-pose")
+            elif o["tpose"] == "spec":
                 args.append("--spec-hands")
             if o["repair_shoulder_seams"]:
                 args.append("--repair-shoulder-seams")
+        if name == "chest":
+            args += ["--height", o["height"], "--amount", o["chest_amount"]]
         if name == "eyes":
             args += ["--face", face]
             if o["eyes"] == "slide":
@@ -677,6 +716,16 @@ class Project:
                 if fix.get(key) is not None:
                     args += [f"--{key}", fix[key]]
         return args, NO_EXPORT
+
+    def _eyes_fall_back(self, name, error):
+        """Whether an automatic iris the eye step refused should be tried again as a sliding patch
+        (remembered in the state, so later builds of the same model slide straight away)."""
+        refused = name == "eyes" and (error.known or {}).get("code") == "VM-EYES-REFUSED"
+        if not refused or self.data["options"]["eyes"] is not None or self.options()["eyes"] != "iris":
+            return False
+        self.state["eyes_fallback"] = "slide"
+        self._save_state()
+        return True
 
     def _last_vrm(self):
         for name in reversed(NAMES):
@@ -1322,6 +1371,13 @@ def use_warudo(folder):
     SETTINGS.parent.mkdir(parents=True, exist_ok=True)
     _write_json(SETTINGS, settings)
     return {"warudo": str(warudo_folder() or "")}
+
+
+def _fingerprint_of(blend):
+    """Where the numbers of a step's .blend are kept: beside it, and still there once the
+    Characters page has removed the model files of an old run."""
+    blend = Path(blend)
+    return blend.with_name(blend.stem + "_fingerprint.json")
 
 
 def _write_json(path, data, backup=False):

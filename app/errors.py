@@ -55,6 +55,9 @@ KNOWN = [
     ("VM-BAD-OUTPUT", (), None,
      "the step exited cleanly but its output file is missing, truncated or not a valid VRM 1.0",
      "rerun the step; if it repeats, the step's script has a bug: send a bundle", None),
+    ("VM-STEP-DAMAGE", (), None,
+     "the step changed something that isn't its own: another step's shape keys, the mesh, or the finger bones",
+     "the step's script has a bug: send a bundle (the reason names what changed)", None),
 ]
 
 TAG = "VTUBER_MAKER_ERROR"
