@@ -17,7 +17,7 @@ export function renderHome() {
       p.built ? (p.failed?.length ? [`built without ${p.failed.join(", ").replaceAll("_", " ")}`, "warn"] : ["built", "info"])
         : p.surveyed ? ["started", ""] : ["new", ""],
       p.stale?.length ? ["changes not built", "warn"] : null,
-      // built and checked, and nobody has said how it looks: SETUP.md filled with "awaiting verdict"
+      // built and checked, and nobody has said how it looks yet
       p.waiting && !p.stale?.length ? ["waiting for your look", "info"] : null].filter(Boolean);
     const when = p.finished ? new Date(p.finished).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
     const where = p.manifest.replaceAll("\\", "/").split("/").slice(-3, -1).join("/");

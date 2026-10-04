@@ -201,7 +201,7 @@ def summarise(name, model, survey, report, steps, blend, vrm, check):
         for line in failed:
             print(f"    - {line}")
         if failed:
-            print(f"    Open {blend.name} in Blender and fix the weights by hand (docs/WORKFLOW.md step 7).")
+            print(f"    Open {blend.name} in Blender and fix the weights by hand.")
     print()
     print(f"Load {vrm.name} in the viewer:  python -m http.server 8321 --bind 127.0.0.1")
     print(f"  http://localhost:8321/viewer/index.html?model=/out/{vrm.name}")

@@ -1157,7 +1157,7 @@ class Server(unittest.TestCase):
     def test_serves_only_model_and_output_files_inside_the_repository(self):
         inside = REPO / "viewer" / "index.html"
         self.assertEqual(server._served(inside), "viewer/index.html")
-        for path in (REPO / "out" / ".." / "CLAUDE.md", REPO / "scripts" / "make_vrm.py", REPO / ".git" / "config",
+        for path in (REPO / "out" / ".." / "README.md", REPO / "scripts" / "make_vrm.py", REPO / ".git" / "config",
                      REPO.parent / "outside.json", REPO / "viewer" / "missing.html"):
             self.assertIsNone(server._served(path), path)
 
@@ -1176,7 +1176,7 @@ class Server(unittest.TestCase):
         self.assertEqual(probe.errors, [403])
 
     def test_shows_only_files_the_build_made(self):
-        for path in (REPO / "CLAUDE.md", REPO / "out" / ".." / "scripts" / "make_vrm.py", REPO.parent):
+        for path in (REPO / "README.md", REPO / "out" / ".." / "scripts" / "make_vrm.py", REPO.parent):
             with self.assertRaisesRegex(ValueError, "only files the build made"):
                 server._reveal(path)
 
