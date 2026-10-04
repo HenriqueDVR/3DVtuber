@@ -9,8 +9,9 @@ close real eyes.
 from typing import NamedTuple
 
 import numpy as np
+from mathutils.kdtree import KDTree
 
-from . import texture_space
+from . import meshdata, texture_space
 from .face import _dominant_color
 from .meshdata import world_vertices
 
@@ -23,6 +24,11 @@ HAIR_SHARE = 0.5
 HAIR_COLOR_DISTANCE = 0.2
 # Crown: the top of the model, as a fraction of the head's height, where hair color is sampled.
 CROWN = 0.1
+# Hair fused into another piece counts when a hair-coloured stretch of it holds this share of the
+# vertices (model A's T-pose FBX: its smallest real lock 0.38%; the eyebrows and trims beside the face 0.1%).
+FUSED_HAIR = 0.003
+# A stretch of it below the shoulders counts when it lies this close (m) to one that reaches above.
+FUSED_GAP = 0.02
 
 
 class MeshParts(NamedTuple):
@@ -32,6 +38,7 @@ class MeshParts(NamedTuple):
     eyes: dict  # "left"/"right" -> eye insert part; empty when there are no eye inserts
     mouth: int  # mouth insert part, or -1
     hair_color: np.ndarray
+    face_area: np.ndarray  # True for the face part's vertices, only its head end when it is the body too
 
     @property
     def has_eye_inserts(self):
@@ -39,7 +46,7 @@ class MeshParts(NamedTuple):
 
     def fixed(self):
         """Vertices a face shape must not move: everything but the face part and its inserts."""
-        movable = self.labels == self.face
+        movable = self.face_area.copy()
         for part in list(self.eyes.values()) + [self.mouth]:
             movable |= self.labels == part
         return ~movable
@@ -61,6 +68,19 @@ def split(verts, edges):
             break
         labels = updated
     return labels[weld]
+
+
+def _components(count, a, b):
+    """Label each of `count` points with the smallest point joined to it by the edges a-b."""
+    labels = np.arange(count)
+    while True:
+        updated = labels.copy()
+        np.minimum.at(updated, a, labels[b])
+        np.minimum.at(updated, b, labels[a])
+        updated = updated[updated]
+        if np.array_equal(updated, labels):
+            return labels
+        labels = updated
 
 
 def find(mesh_obj, joints):
@@ -102,7 +122,61 @@ def find(mesh_obj, joints):
     )
     excluded = set(inserts) | {face}
     hair_parts = [p for p in ids if share[p] >= HAIR_SHARE and high[p][2] > joints["head"][2] and p not in excluded]
-    return MeshParts(labels, np.isin(labels, hair_parts), face, eyes, mouth, hair_color)
+    hair = np.isin(labels, hair_parts)
+    face_area = labels == face
+    if face >= 0 and low[face][2] < joints["neck"][2] - head_height:
+        # the face is one surface with the whole body (model A's T-pose FBX): only its head end is the
+        # face, or the head-top clean-up repaints the up-facing arms and the jaw's chin is a foot.
+        # Its hair is usually that same surface too, and swings rather than moving with the face
+        hair |= fused_hair(mesh_obj, verts, labels, hair_colored & (labels == face), joints)
+        face_area &= (verts[:, 2] > joints["neck"][2]) & ~hair
+    return MeshParts(labels, hair, face, eyes, mouth, hair_color, face_area)
+
+
+def fused_hair(mesh_obj, verts, labels, candidates, joints):
+    """Hair modelled as one surface with the body: the hair-coloured stretches of `candidates`
+    (hair-coloured vertices of the face part, when it is the whole body too) big enough to be hair
+    and reaching above the shoulders, with their holes closed within their piece
+    (`roles.close_region`).
+
+    Model A's T-pose FBX has its long back hair and the locks over its shoulders in the body's surface:
+    left out, they had no springs, kept the rig's arm weights and floated beside the hands. Only the
+    face part is searched: model B's mantle, collar and model B face are her hat's colour, and her face
+    is a piece of its own.
+    """
+    from . import roles
+    found = np.zeros(len(verts), dtype=bool)
+    if not candidates.any():
+        return found
+    weld, a, b = meshdata.welded_edges(mesh_obj, verts)
+    member = np.zeros(weld.max() + 1, dtype=bool)
+    member[weld[candidates]] = True
+    keep = member[a] & member[b]
+    cluster = _components(len(member), a[keep], b[keep])[weld]
+    shoulders = max(float(joints["left_upper_arm"][2]), float(joints["right_upper_arm"][2]))
+    ids, counts = np.unique(cluster[candidates], return_counts=True)
+    stretches = [candidates & (cluster == ident) for ident, count in zip(ids, counts) if count >= FUSED_HAIR * len(verts)]
+    for members in stretches:
+        if verts[members, 2].max() > shoulders:
+            found |= members
+    # the hair's lower stretches, parted from the rest by strands painted in shadow (model A's T-pose:
+    # 179 and 171 vertices behind the hips, 25 cm from the swinging hair when they stayed)
+    rest = [m for m in stretches if not (m & found).any()]
+    while found.any() and rest:
+        tree = KDTree(int(found.sum()))
+        for i, point in enumerate(verts[found]):
+            tree.insert(point, i)
+        tree.balance()
+        near = [m for m in rest if min(tree.find(p)[2] for p in verts[m]) < FUSED_GAP]
+        if not near:
+            break
+        for members in near:
+            found |= members
+        rest = [m for m in rest if not (m & found).any()]
+    if found.any():
+        piece = np.isin(labels, np.unique(labels[found]))
+        found = roles.close_region(mesh_obj, piece, found)
+    return found
 
 
 def face_features(mesh_obj, found):
@@ -129,7 +203,7 @@ def face_features(mesh_obj, found):
     colors = texture_space.vertex_colors(mesh_obj, texture_space.base_color_image(mesh_obj))
     middle = (left + right) / 2
     cheeks = (
-        (found.labels == found.face)
+        found.face_area
         & (np.abs(verts[:, 0] - middle[0]) < spread)
         & (verts[:, 2] < middle[2])
         & (verts[:, 2] > features["mouth"][2])

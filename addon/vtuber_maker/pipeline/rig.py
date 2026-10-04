@@ -283,7 +283,7 @@ def skin(mesh_obj, armature_obj, parts=None, solver="heat"):
     # the blur spreads thigh weight back up past the hips
     _keep_legs_below_hips(mesh_obj, armature_obj)
     # vertices added by the split belong to the same parts as the ones they were split from
-    return parts._replace(labels=parts.labels[origin], hair=parts.hair[origin])
+    return parts._replace(labels=parts.labels[origin], hair=parts.hair[origin], face_area=parts.face_area[origin])
 
 
 def _whole_arm_pieces(mesh_obj, skip):
@@ -1295,12 +1295,14 @@ def make_head_rigid(mesh_obj, armature_obj):
     return rigid
 
 
-def weight_head(mesh_obj, armature_obj, face_mask, labels=None, chin_z=None):
+def weight_head(mesh_obj, armature_obj, face_mask, labels=None, chin_z=None, behind=None):
     """Face vertices above the head joint follow the head fully, blending into the neck below.
 
     With `labels` (part per vertex), separate parts lying wholly above the joint (eye
     highlights, clips, bangs) move whatever body weight they have onto the head; weights for
-    hair spring bones are kept.
+    hair spring bones are kept. With `behind` (m), only the face in front of the head joint
+    follows it fully, fading to the weights it has over that distance behind the joint: for a
+    face that is one surface with the back of the head and the neck.
     """
     groups = mesh_obj.vertex_groups
     head = groups.get(BONE_NAMES["head"]) or groups.new(name=BONE_NAMES["head"])
@@ -1309,12 +1311,18 @@ def weight_head(mesh_obj, armature_obj, face_mask, labels=None, chin_z=None):
         head_z = min(head_z, chin_z)  # the face below the pivot, down to the chin, still follows the head
     verts = world_vertices(mesh_obj)
     share = np.clip((verts[:, 2] - head_z) / HEAD_BLEND, 0.0, 1.0)
+    if behind is not None:
+        head_y = (armature_obj.matrix_world @ armature_obj.data.bones[BONE_NAMES["head"]].head_local).y
+        share *= np.clip(1.0 - (verts[:, 1] - head_y) / behind, 0.0, 1.0)
     for index in np.nonzero(face_mask & (share > 0))[0]:
         i = int(index)
         vertex = mesh_obj.data.vertices[i]
         others = {g.group: g.weight for g in vertex.groups if g.group != head.index}
         total = sum(others.values())
         target = share[i]
+        if behind is not None:  # what the head holds already stays: only the rest is handed over
+            held = sum(g.weight for g in vertex.groups if g.group == head.index)
+            target = held + (1.0 - held) * target
         for g, w in others.items():
             groups[g].add([i], (w / total) * (1 - target) if total > 1e-6 else 0.0, "REPLACE")
         head.add([i], target if total > 1e-6 else 1.0, "REPLACE")

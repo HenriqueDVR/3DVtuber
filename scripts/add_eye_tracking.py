@@ -1,6 +1,6 @@
 """Make the eyes follow face tracking, then export VRM.
 
-    blender -b in.blend -P scripts/add_eye_tracking.py -- out.blend out.vrm --face face.json [--slide [H V]] [--renders dir]
+    blender -b in.blend -P scripts/add_eye_tracking.py -- out.blend out.vrm --face face.json [--slide [H V]] [--still-iris] [--lid-travel F] [--renders dir]
 
 By default (eyes with room around the iris, like model A) each painted iris moves onto its own disc,
 the face under it has the iris painted out, and a copy of the lids in front keeps it under them.
@@ -38,6 +38,10 @@ def main():
     ap.add_argument("--face", type=Path, required=True, help="face.json from viewer/setup.html")
     ap.add_argument("--slide", type=float, nargs="*", metavar=("H", "V"),
                     help="slide the whole eye instead of moving an iris (a mascot); optional shares of its width and height")
+    ap.add_argument("--still-iris", action="store_true",
+                    help="moving iris: in a blink the lids slide down over a still iris (default: the iris squeezes with the eye)")
+    ap.add_argument("--lid-travel", type=float, default=1.0,
+                    help="moving iris: how far the lids come down in a blink, times what the build's blink does (with --still-iris: up to about 1.6)")
     ap.add_argument("--renders", type=Path, help="write eye close-ups here, before and after, looking each way")
     args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:])
     if args.slide is not None and len(args.slide) not in (0, 2):
@@ -62,7 +66,9 @@ def main():
         numbers, failures = eyes.check_sliding(obj, built)
         report_sliding(built, numbers)
     else:
-        built = eyes.add_moving_irises(obj, points)
+        built = eyes.add_moving_irises(obj, points, still_iris=args.still_iris)
+        if args.lid_travel != 1.0:
+            eyes.scale_blinks(obj, args.lid_travel)
         parts = built["eyes"]
         numbers, failures = eyes.check_irises(obj, built)
         report_irises(built, numbers)

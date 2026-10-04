@@ -175,7 +175,10 @@ class FaceShapes:
         below = 1 - face_rig._fade(self.mouth[2] - self.basis[:, 2], -0.1 * w, 0.4 * w)
         sideways = face_rig._fade(np.abs(self.basis[:, 0] - self.mouth[0]), *JAW_WIDTH)
         jaw = (turned - r) * (below * sideways)[:, None]
-        lowest = np.argmin(np.where(self.movable > 0, self.basis[:, 2], np.inf))
+        # the chin: the lowest point before the hinge, on the middle. The neck can reach lower behind
+        # the hinge, and rises a little as the jaw turns (model A's T-pose FBX: 2 cm behind it)
+        chin_side = (self.movable > 0) & (self.basis[:, 1] < pivot[1]) & (np.abs(self.basis[:, 0] - self.mouth[0]) < JAW_WIDTH[0])
+        lowest = np.argmin(np.where(chin_side, self.basis[:, 2], np.inf))
         if jaw[lowest, 2] >= 0:
             raise SystemExit("jaw turns the wrong way")
         self.add("jawOpen", jaw + self.vowel("aa", JAW_VOWEL))

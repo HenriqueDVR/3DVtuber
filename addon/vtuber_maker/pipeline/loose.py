@@ -145,9 +145,37 @@ def join_touching_surfaces(mesh_obj, armature_obj, distance=0.0002, verts=None):
     character is modelled in, things touch that have no business being joined -- a hand resting
     against a thigh -- and welding those glues the glove to the skirt: the first time the arm
     moves, a 3 mm edge draws out into a 40 cm ribbon.
+
+    Nor are vertices of one piece that a shape key moves apart: the mouth patch and the lid covers
+    lie folded on a line until their keys open them. Joined, model A (T-pose)'s mouth patch went from 99
+    vertices to 36 and opened as a jagged block with skin showing through. Two pieces touching
+    still join where a key moves one of them (the face against the shells round it).
     """
     verts = world_vertices(mesh_obj) if verts is None else verts
     representative = _together(mesh_obj, armature_obj, verts, distance)
+    keys = mesh_obj.data.shape_keys
+    edges = np.empty(len(mesh_obj.data.edges) * 2, dtype=np.int64)
+    mesh_obj.data.edges.foreach_get("vertices", edges)
+    piece = np.arange(len(verts))
+    while keys:
+        grown = piece.copy()
+        np.minimum.at(grown, edges[0::2], piece[edges[1::2]])
+        np.minimum.at(grown, edges[1::2], piece[edges[0::2]])
+        grown = grown[grown]
+        if np.array_equal(grown, piece):
+            break
+        piece = grown
+    for key in keys.key_blocks if keys else ():
+        if key == keys.reference_key:
+            continue
+        moved = np.empty(len(verts) * 3)
+        key.data.foreach_get("co", moved)
+        moved = moved.reshape(-1, 3)
+        rest = np.empty(len(verts) * 3)
+        keys.reference_key.data.foreach_get("co", rest)
+        moved -= rest.reshape(-1, 3)
+        apart = (np.abs(moved - moved[representative]).max(axis=1) > distance) & (piece == piece[representative])
+        representative = np.where(apart, np.arange(len(verts)), representative)
 
     mesh = bmesh.new()
     mesh.from_mesh(mesh_obj.data)

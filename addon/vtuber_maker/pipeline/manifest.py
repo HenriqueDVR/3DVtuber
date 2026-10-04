@@ -63,8 +63,11 @@ OPTIONS = {
     "eyes": None,             # eye tracking: "iris" (moving iris), "slide" (painted patch), "none"; None: from the survey
     "slide": [],              # with "slide": [horizontal, vertical] travel in mm
     "mouth_fix": None,        # {"scale": 1.3, "free": true} runs scripts/fix_mouth.py
+    "chest": False,           # chest bounce: two spring bones on the chest (pipeline/chest.py)
+    "chest_amount": 1.0,      # how much it bounces, 0.25 (barely) to 2 (a lot)
 }
 EYES = (None, "none", "iris", "slide")
+CHEST_AMOUNT = (0.25, 2.0)  # chest.AMOUNT_RANGE (this module stays plain Python)
 FINGERS = ("guides", "auto", "none")
 TPOSE = ("spec", "plain", "none")
 SKINNING = ("heat", "template", "voxel")
@@ -218,6 +221,11 @@ def validate(data):
     for key, allowed in (("eyes", EYES), ("fingers", FINGERS), ("tpose", TPOSE), ("skinning", SKINNING)):
         if options.get(key, OPTIONS[key]) not in allowed:
             problems.append(f"option {key} must be one of {', '.join('null (automatic)' if a is None else a for a in allowed)}")
+    if not isinstance(options.get("chest", OPTIONS["chest"]), bool):
+        problems.append("option chest must be true or false")
+    amount = options.get("chest_amount", OPTIONS["chest_amount"])
+    if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not CHEST_AMOUNT[0] <= amount <= CHEST_AMOUNT[1]:
+        problems.append(f"option chest_amount must be a number from {CHEST_AMOUNT[0]} to {CHEST_AMOUNT[1]}")
     if options.get("eyes") != "slide" and options.get("slide"):
         problems.append("option slide only applies with eyes: slide")
     fix = options.get("mouth_fix")

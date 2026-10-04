@@ -21,7 +21,7 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "addon"))
 
-from vtuber_maker.pipeline import cloth, landmarks, manifest, meshdata, normalize, parts  # noqa: E402
+from vtuber_maker.pipeline import cloth, landmarks, manifest, meshdata, normalize, parts, texture_space  # noqa: E402
 
 # Pieces smaller than this share of the vertices are listed only when named in the manifest,
 # or when they are hair or a face insert: a model can have hundreds of specks.
@@ -30,6 +30,9 @@ SPECK = 0.001
 # shares of the height; model C's wings and tails sit 0.1-0.25 behind her, her twin-tails 0.03.
 BEHIND = 0.06
 BIG = 0.12
+# A head piece whose colour is this many times parts.HAIR_COLOR_DISTANCE from the hair's, for half
+# its vertices, is suggested as hair: model A's T-pose chest locks are 44% within 1x, 61-64% within 1.5x.
+SHADED = 1.5
 
 
 def main():
@@ -73,6 +76,8 @@ def main():
     body_y = float(np.median(verts[labels == body, 1]))
     centre_x = float(joints["hips"][0])
 
+    colours = texture_space.vertex_colors(mesh, texture_space.base_color_image(mesh))
+    shaded = np.linalg.norm(colours - found.hair_color, axis=1) < SHADED * parts.HAIR_COLOR_DISTANCE
     listed = []
     for label in np.unique(labels):
         members = labels == label
@@ -93,6 +98,11 @@ def main():
             role, why = "hair", "reads as hair"
         elif int(label) in face_labels:
             role, why = "body", "the face"
+        elif (shaded[members].mean() >= parts.HAIR_SHARE and points[:, 2].min() < neck_z < points[:, 2].max()
+              and not rigid_head):
+            # model A's T-pose locks over the chest: the hair's colour in shadow, under half of it
+            # close enough to count as hair, and listed as a hat
+            role, why = "hair", "the hair's colour in shade, hanging from the head: a lock of hair?"
         elif points[:, 2].mean() > neck_z:
             role, why = "hat", "on the head and not hair or face"
         elif int(label) == body:

@@ -67,6 +67,16 @@ class Manifest(unittest.TestCase):
             self.assertEqual(loaded["options"]["eyes"], "slide")
             self.assertEqual(loaded["options"]["fingers"], manifest.OPTIONS["fingers"])
 
+    def test_chest_amount_is_a_number_in_range(self):
+        data = self.good()
+        for value in (0.25, 1, 2.0):
+            data["options"] = {"chest_amount": value}
+            manifest.validate(data)
+        for value in (0.1, 3, "1", True, None):
+            data["options"] = {"chest_amount": value}
+            with self.assertRaisesRegex(ValueError, "chest_amount"):
+                manifest.validate(data)
+
     def test_stages_split_the_roles(self):
         data = self.good()
         self.assertEqual([p["name"] for p in manifest.pieces_for(data, "build")], ["cuff", "tail"])
@@ -247,8 +257,9 @@ class BuildWithPieces(unittest.TestCase):
         verts = meshdata.world_vertices(mesh)
         found = parts.find(mesh, landmarks.detect_body(verts, meshdata.triangles(mesh.data)))
         labels = meshdata.pieces(mesh, verts)
-        hair_ids = np.unique(labels[found.hair])
-        # the biggest hair piece becomes the hat
+        # the biggest hair piece becomes the hat (the fixture's face is one surface with its body and
+        # its hair cap, which parts.fused_hair also counts as hair: only pieces mostly of hair)
+        hair_ids = [i for i in np.unique(labels[found.hair]) if found.hair[labels == i].mean() > 0.5]
         hat_id = max(hair_ids, key=lambda i: np.count_nonzero(labels == i))
         cls.hat_points = verts[labels == hat_id]
         top = int(np.argmax(np.where(labels == hat_id, verts[:, 2], -np.inf)))

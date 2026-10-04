@@ -76,6 +76,55 @@ class FindParts(PartsFixture):
         self.assertAlmostEqual(features["mouth_width"], self.truth["parts"]["mouth_width"], delta=0.006)
 
 
+class FaceFusedWithBody(PartsFixture):
+    """A face that is one surface with the whole body (model A's T-pose FBX): only its head end is the face."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.load()
+        # the fixture's face is already one surface with the torso; tie it to a foot as well
+        face = np.flatnonzero(cls.found.labels == cls.found.face)
+        foot = int(np.argmin(cls.verts[:, 2]))
+        mesh = cls.mesh.data
+        # and a long lock of hair to the face, as model A's T-pose FBX has its back hair in its body's surface
+        cls.lock = int(np.argmin(np.linalg.norm(cls.verts - np.asarray(cls.truth["hair"]["left_long_tip"]), axis=1)))
+        lock_part = np.flatnonzero(cls.found.labels == cls.found.labels[cls.lock])
+        mesh.edges.add(2)
+        mesh.edges[-2].vertices = (int(face[0]), foot)
+        mesh.edges[-1].vertices = (int(face[0]), int(lock_part[np.argmax(cls.verts[lock_part, 2])]))
+        mesh.update()
+        cls.fused = parts.find(cls.mesh, cls.joints)
+        cls.foot = foot
+
+    def test_the_face_part_reaches_the_feet(self):
+        self.assertTrue((self.fused.labels == self.fused.face)[self.foot])
+
+    def test_face_area_stops_at_the_neck(self):
+        self.assertGreater(self.verts[self.fused.face_area, 2].min(), self.joints["neck"][2])
+
+    def test_face_area_keeps_the_face_round_the_eyes(self):
+        for side in ("left", "right"):
+            with self.subTest(side=side):
+                # the fringe by the eyes is hair, tied into the face's surface with the lock
+                around = self.near(self.truth["parts"][f"{side}_eye"], 0.04) & (self.fused.labels == self.fused.face) & ~self.fused.hair
+                self.assertTrue(around.any())
+                self.assertTrue(self.fused.face_area[around].all())
+
+    def test_face_shapes_leave_the_body_fixed(self):
+        self.assertTrue(self.fused.fixed()[self.foot])
+
+    def test_hair_in_the_fused_surface_is_still_hair(self):
+        self.assertTrue((self.fused.labels == self.fused.face)[self.lock])
+        self.assertTrue(self.fused.hair[self.lock])
+        np.testing.assert_array_equal(self.fused.hair, self.found.hair)
+        self.assertFalse(self.fused.face_area[self.fused.hair].any())
+
+    def test_the_body_and_the_face_are_not_hair(self):
+        self.assertFalse(self.fused.hair[self.foot])
+        for side in ("left", "right"):
+            self.assertFalse(self.fused.hair[self.near(self.truth["parts"][f"{side}_eye"], 0.02)].any())
+
+
 class SkinParts(PartsFixture):
     @classmethod
     def setUpClass(cls):

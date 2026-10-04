@@ -248,6 +248,7 @@ class MovingIrises(unittest.TestCase):
                 self.assertLess(np.abs(delta[others]).max(), 1e-7, name)
 
     def test_the_iris_and_white_stay_put_while_the_lids_blink(self):
+        # (a painted face without eye inserts: with inserts they squeeze with them, see BlinkWithAModelledEye)
         mesh = self.obj.data
         keys = mesh.shape_keys.key_blocks
         basis = eyes._key_co(keys[0])
@@ -264,6 +265,32 @@ class MovingIrises(unittest.TestCase):
         for name, before in self.keys_before.items():
             after = eyes._key_co(mesh.shape_keys.key_blocks[name])[:self.count]
             np.testing.assert_allclose(after, before, atol=1e-7, err_msg=name)
+
+
+class BlinkWithAModelledEye(unittest.TestCase):
+    """An eye modelled as its own piece is squeezed by the blink: the iris and white on it squeeze too."""
+
+    def test_the_iris_and_white_take_the_move_of_the_insert_under_them(self):
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        # an insert of 3 x 3 vertices 2 cm square, then one "iris" and one "white" vertex in front of its middle row and top row
+        points = [(x, 0.0, z) for z in (0.0, 0.01, 0.02) for x in (0.0, 0.01, 0.02)] + [(0.01, -0.001, 0.01), (0.01, -0.0005, 0.02)]
+        data = bpy.data.meshes.new("eye")
+        data.from_pydata(points, [], [(0, 1, 4, 3), (1, 2, 5, 4), (3, 4, 7, 6), (4, 5, 8, 7)])
+        obj = bpy.data.objects.new("eye", data)
+        bpy.context.scene.collection.objects.link(obj)
+        eyes._set_int(data, face_rig.EYE_INSERT_ATTRIBUTE, [eyes.SIDE_IDS["left"]] * 9 + [0, 0])
+        obj.shape_key_add(name="Basis")
+        blink, look = obj.shape_key_add(name="eyeBlinkLeft"), obj.shape_key_add(name="eyeLookUpLeft")
+        for key in (blink, look):
+            key.value = 0.0
+            for i in range(9):  # squeezed toward the bottom row: the higher, the further down
+                key.data[i].co.z -= 0.5 * points[i][2]
+        eyes._blink_with_inserts(obj, {"left": {"vertices": np.array([9]), "white_vertices": np.array([10])}})
+        self.assertAlmostEqual(blink.data[9].co.z, 0.005, places=5)
+        self.assertAlmostEqual(blink.data[10].co.z, 0.01, places=5)
+        self.assertAlmostEqual(blink.data[9].co.y, -0.001, places=6)
+        # keys that aren't blinks leave the layers alone
+        self.assertAlmostEqual(look.data[9].co.z, 0.01, places=6)
 
 
 class SlidingEyes(unittest.TestCase):

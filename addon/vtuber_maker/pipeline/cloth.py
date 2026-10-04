@@ -317,24 +317,34 @@ def build_appendage_chain(mesh_obj, armature, joints, members, index, bone=None)
     return [c.names for c in chains]
 
 
-def attach_riders(mesh_obj, carriers, skip):
+def attach_riders(mesh_obj, carriers, skip, anchors=None):
     """Small pieces stuck onto `carriers` (anything on a spring) take the weights of the carrier under them.
 
     Model C's tails carry some twenty painted patches as separate pieces; left on the body bones
     they would stay while the tail swings. A piece rides when it is smaller than RIDER_SIZE and
     its median vertex lies within RIDER_GAP of a carrier. `skip` masks pieces the user
-    named (they keep what they were given). Returns the number of vertices moved.
+    named (they keep what they were given). `anchors` masks a surface that doesn't swing (the
+    face): a piece lying nearer to it than to any carrier stays where it is. Model A's T-pose FBX has
+    her eyes and eyebrows as pieces under her fringe; on the fringe's chains they swung out of her
+    face. Returns the number of vertices moved.
     """
     from mathutils.kdtree import KDTree
+
+    def tree_of(indices):
+        tree = KDTree(len(indices))
+        for i, v in enumerate(indices):
+            tree.insert(verts[v], i)
+        tree.balance()
+        return tree
+
     verts = world_vertices(mesh_obj)
     height = float(np.ptp(verts[:, 2]))
     carriers = np.flatnonzero(np.asarray(carriers, dtype=bool))
     if not len(carriers):
         return 0
-    tree = KDTree(len(carriers))
-    for i, v in enumerate(carriers):
-        tree.insert(verts[v], i)
-    tree.balance()
+    tree = tree_of(carriers)
+    anchors = np.flatnonzero(np.asarray(anchors, dtype=bool)) if anchors is not None else ()
+    anchored = tree_of(anchors) if len(anchors) else None
     labels = pieces(mesh_obj, verts)
     carried = set(np.unique(labels[carriers]).tolist())
     skip = np.asarray(skip, dtype=bool)
@@ -345,7 +355,10 @@ def attach_riders(mesh_obj, carriers, skip):
         if label in carried or skip[members].any() or np.ptp(verts[members], axis=0).max() > RIDER_SIZE * height:
             continue
         found = [tree.find(verts[v]) for v in members]
-        if np.median([f[2] for f in found]) > RIDER_GAP * height / 1.6:
+        gap = np.median([f[2] for f in found])
+        if gap > RIDER_GAP * height / 1.6:
+            continue
+        if anchored is not None and np.median([anchored.find(verts[v])[2] for v in members]) < gap:
             continue
         for vertex, (_, i, _) in zip(members, found):
             source = mesh_obj.data.vertices[int(carriers[i])]

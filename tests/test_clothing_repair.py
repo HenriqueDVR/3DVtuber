@@ -99,6 +99,22 @@ class ClothingRepair(unittest.TestCase):
         growth = np.linalg.norm(after[edges[:, 0]] - after[edges[:, 1]], axis=1) - np.linalg.norm(before[edges[:, 0]] - before[edges[:, 1]], axis=1)
         self.assertLess(growth[(edges < 18).all(axis=1)].max(), .01)  # skirt and glove, not the armpit
 
+    def test_a_patch_folded_on_a_line_until_a_shape_key_opens_it_is_not_welded(self):
+        # the mouth patch: every row on the mouth's line at rest, spread into an opening by its keys
+        chest, sleeve = self.grid(.10, 1.12, 3, 3), self.grid(.12, 1.12, 3, 3)
+        folded = [(x, -.03, 1.3) for _row in range(3) for x in (0.0, .01, .02)]
+        obj = self.mesh(chest + sleeve + folded, [{"Chest": 1}] * 9 + [{"LeftUpperArm": .6, "Chest": .4}] * 9 + [{"Head": 1}] * 9,
+                        [f for first in (0, 9, 18) for f in self.quads(first, 3, 3)])
+        opened = obj.shape_key_add(name="aa")
+        for row in range(3):
+            for column in range(3):
+                opened.data[18 + row * 3 + column].co.z = 1.3 - .005 * row
+        opened.value = 0.0
+        loose.join_touching_surfaces(obj, self.arm)
+        self.assertEqual(len(obj.data.vertices), 27 - 3)  # the armpit seam joined, the patch whole
+        heights = sorted({round(d.co.z, 4) for d in obj.data.shape_keys.key_blocks["aa"].data[-9:]})
+        self.assertEqual(heights, [1.29, 1.295, 1.3])
+
     def test_far_side_of_a_cut_is_not_a_stray_patch_on_the_arm(self):
         # A thigh strip meeting the glove only along a cut: walking the surface across the cut
         # read it as a patch on the arm and handed it the forearm's weights (17 vertices on model A).

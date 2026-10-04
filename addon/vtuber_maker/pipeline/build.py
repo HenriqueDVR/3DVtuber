@@ -82,10 +82,10 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
         # a solid head (a mascot) has no detail of its own round the face: the patch covers all of
         # its front, and the rest continues the face smoothly
         if rigid_head:
-            face_texture.extend_patch(mesh, found.labels == found.face)
-        face_texture.blend_patch_seam(mesh, found.labels == found.face, smooth=rigid_head)
+            face_texture.extend_patch(mesh, found.face_area)
+        face_texture.blend_patch_seam(mesh, found.face_area, smooth=rigid_head)
         if not rigid_head:
-            face_texture.clean_head_top(mesh, found.labels == found.face)
+            face_texture.clean_head_top(mesh, found.face_area)
     if mouth_color is not None:
         features = dict(features, mouth_color=features["skin_color"] if mouth_color == "skin" else mouth_color)
     if not modelled_face:
@@ -94,25 +94,34 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
             face_rig.cut_eyelids(mesh, features)
     if modelled_face and adopted is None:
         verts = meshdata.world_vertices(mesh)
-        chin = rig.chin_height(verts, found.labels == found.face, float(features["mouth"][0]),
+        chin = rig.chin_height(verts, found.face_area, float(features["mouth"][0]),
                                float(joints["neck"][2]), float(features["mouth"][2]))
         if chin is not None and chin > joints["neck"][2] + 0.01:
             joints["head"] = np.array([joints["head"][0], joints["head"][1], chin + rig.HEAD_ABOVE_CHIN])
     if adopted is not None:
         armature = adopt.build_armature(adopted[0])
         adopt.transfer_weights(mesh, armature, adopted[1], adopted[2])
+        adopt.keep_arms_off_head(mesh, armature)
+        if modelled_face:
+            # the face follows the head alone, as on our own rig: Tripo's blends it with the neck
+            # and chest (model A's T-pose FBX: Head held 72% at the mouth), and the eye and mouth
+            # patches, which follow the head alone, slid over the painted face when it turned
+            verts = meshdata.world_vertices(mesh)
+            chin = rig.chin_height(verts, found.face_area, float(features["mouth"][0]),
+                                   float(joints["neck"][2]), float(features["mouth"][2]))
+            rig.weight_head(mesh, armature, found.face_area, found.labels, chin_z=chin, behind=adopt.FACE_BEHIND)
     else:
         armature = rig.build_armature(joints)
     if adopted is None and skinning == "template":
         report_skin = template_skin.transfer(mesh, armature, template_skin.load_template())
         print(f"template skinning: {report_skin}")
         if modelled_face:
-            rig.weight_head(mesh, armature, found.labels == found.face, found.labels, chin_z=chin)
+            rig.weight_head(mesh, armature, found.face_area, found.labels, chin_z=chin)
     elif adopted is None and modelled_face:
         before = found.labels
         found = rig.skin(mesh, armature, found, solver=skinning)
         named = roles.carry(named, before, found.labels, meshdata.world_vertices(mesh))
-        rig.weight_head(mesh, armature, found.labels == found.face, found.labels, chin_z=chin)
+        rig.weight_head(mesh, armature, found.face_area, found.labels, chin_z=chin)
     elif adopted is None:
         rig.skin(mesh, armature, solver=skinning)
     if modelled_face:
@@ -131,7 +140,7 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
             if piece.get("tip"):
                 tipped |= roles.pad(named[piece["name"]], count)
         if tipped.any():
-            face_mask = roles.pad(found.labels == found.face, count) if modelled_face else None
+            face_mask = roles.pad(found.face_area, count) if modelled_face else None
             tip_chains = cloth.build_tip_chain(mesh, armature, joints, tipped, face_mask)
     if rigid_head:
         chains = []
@@ -140,7 +149,7 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
             face_mask = None
             if modelled_face:  # face steps add vertices (the mouth interior) after the parts were found
                 face_mask = np.zeros(len(mesh.data.vertices), dtype=bool)
-                face_mask[:len(found.labels)] = found.labels == found.face
+                face_mask[:len(found.labels)] = found.face_area
             tip_chains = cloth.build_tip_chain(mesh, armature, joints, head_mask, face_mask)
     else:
         named_hair = roles.of_role(pieces, named, "hair", count)
@@ -173,7 +182,9 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
         for piece in pieces:
             listed |= roles.pad(named[piece["name"]], count)
         carriers = roles.pad(_share_on(mesh, spring_bones) > 0.5, count)
-        cloth.attach_riders(mesh, carriers, listed & ~carriers)
+        # eyes, mouth and eyebrows modelled as pieces lie on the face, under a fringe that swings
+        face_mask = roles.pad(found.face_area, count) & ~carriers if modelled_face else None
+        cloth.attach_riders(mesh, carriers, listed & ~carriers, anchors=face_mask)
     rig.fill_unweighted(mesh)
 
     vrm_export.configure(armature, name=name, author=author)

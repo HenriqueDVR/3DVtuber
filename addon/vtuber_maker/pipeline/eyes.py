@@ -76,6 +76,9 @@ SAMPLE_STEP = 0.001
 SIDE_TRAVEL = 0.55
 UP_DOWN_TRAVEL = 0.1
 IRIS_GRID = 16
+# The iris layer reaches this share of the iris's height past the window, above and below: what
+# it slides up or down and a fifth more (twice that still showed over the closing lid).
+IRIS_SPARE = 1.2 * UP_DOWN_TRAVEL
 WHITE_GRID = 24
 # The eye's white reaches this far (m) past its opening, under the lids.
 WHITE_MARGIN = 0.002
@@ -428,6 +431,14 @@ def iris_layer(rgb, see_through, iris, ellipse):
     white = (saturation < IRIS_SATURATION) & (value > WHITE_BRIGHT * np.median(value[rest])) if rest.any() else False
     outline = see_through & ~white
     disc |= _reach(_dilate(disc) & outline, outline & _dilate(disc, OUTLINE_REACH))
+    # no further above or below the window than the iris can ever come into it: a tall iris cut
+    # short by the lids (model A's bald-head eyes: 49 mm of iris in a 29 mm opening) reached up past the
+    # lid overlay and showed on the forehead when the lids closed
+    rows = np.nonzero(see_through.any(axis=1))[0]
+    if len(rows):
+        spare = int(IRIS_SPARE * 2 * ellipse[3]) + 1
+        disc[:max(rows[0] - spare, 0)] = False
+        disc[rows[-1] + spare + 1:] = False
     visible = disc & see_through
     hidden = disc & ~visible
     layer = np.zeros(see_through.shape + (4,), np.float32)
@@ -822,7 +833,7 @@ def track_surface(face, pixels):
     return (lambda points: terms(points) @ coeffs + shift), float(np.std(residual[use]))
 
 
-def add_moving_irises(mesh_obj, points):
+def add_moving_irises(mesh_obj, points, still_iris=False):
     """Give each marked eye an iris that slides on eyeLook keys, the face under it painted out, lids in front.
 
     Assumes a finished, skinned mesh with a face patch, the character facing -Y, and face points
@@ -832,6 +843,10 @@ def add_moving_irises(mesh_obj, points):
     face. Existing vertices, weights and shape keys are left as they were; the face patch image
     changes only under the irises. Returns per side the eye's sizes (m) and iris vertices, the
     overlay's vertices and the see-through window as an image mask.
+
+    In a blink the iris and white squeeze with the eye insert they were painted on
+    (_blink_with_inserts); with `still_iris` they stay and the lids slide down over them, which
+    is cleaner where the lids are finely meshed (the first model A: its squeezed iris looked crushed).
     """
     face = FacePatch(mesh_obj)
     rows = image_rows(face.image)
@@ -882,9 +897,58 @@ def add_moving_irises(mesh_obj, points):
             mesh_obj, corners, info["track"], face.uv, IRIS_GRID, IRIS_GRID,
             iris_slot, BONE_NAMES["head"], {IRIS_ATTRIBUTE: SIDE_IDS[side], face_rig.FIXED_ATTRIBUTE: 1})
     _slide_keys(mesh_obj, found, lambda side, xz: found[side]["track"](xz))
+    if not still_iris:
+        _blink_with_inserts(mesh_obj, found)
     crops = {name: crop_to_use(mesh, name) for name in (LIDS_MATERIAL, IRIS_MATERIAL)}
     return {"eyes": found, "overlay_vertices": overlay, "window": windows, "see_through_polygons": opened,
             "crops": crops}
+
+
+def scale_blinks(mesh_obj, factor):
+    """Move everything the blink keys move `factor` times as far: the lids come further down.
+
+    The build's painted blink stops PAINTED_BLINK of the way (a flattened painted eye looks odd);
+    over a still iris the lids can go further. The first model A: clean up to 1.6 (renders read).
+    """
+    keys = _keys(mesh_obj.data)
+    basis = _key_co(keys[0])
+    for key in keys[1:]:
+        if "blink" in key.name.lower():
+            key.data.foreach_set("co", (basis + factor * (_key_co(key) - basis)).ravel())
+
+
+def _blink_with_inserts(mesh_obj, found, nearest=3):
+    """In the blink keys, squeeze each iris and eye white as the eye insert they were painted on is squeezed.
+
+    The build's blink squeezes the painted eye toward its lash line (face_rig), and the lid overlay
+    blinks with the face it was copied from. An iris and white left still under lids that squeeze
+    showed through the window out of place: on model A's T-pose FBX a strip of white lay across the
+    iris. Each of their vertices takes the move of the `nearest` insert vertices, by distance seen
+    from the front, so all three layers close as the one painting did. Without eye inserts
+    (face_rig.EYE_INSERT_ATTRIBUTE) nothing changes.
+    """
+    mesh = mesh_obj.data
+    if face_rig.EYE_INSERT_ATTRIBUTE not in mesh.attributes:
+        return
+    inserts = get_int(mesh, face_rig.EYE_INSERT_ATTRIBUTE)
+    copies = get_int(mesh, OVERLAY_ATTRIBUTE) > 0
+    basis = _key_co(_keys(mesh)[0])
+    blinks = [key for key in _keys(mesh)[1:] if "blink" in key.name.lower()]
+    moved = {key.name: _key_co(key) for key in blinks}
+    for side, info in found.items():
+        source = np.flatnonzero((inserts == SIDE_IDS[side]) & ~copies)
+        layers = np.concatenate([info["vertices"], info["white_vertices"]])
+        if not len(source):
+            continue
+        gap = np.linalg.norm(basis[layers][:, None, [0, 2]] - basis[source][None, :, [0, 2]], axis=2)
+        order = np.argsort(gap, axis=1)[:, :nearest]
+        share = 1.0 / np.maximum(np.take_along_axis(gap, order, axis=1), 1e-6)
+        share /= share.sum(axis=1, keepdims=True)
+        for co in moved.values():
+            move = co[source] - basis[source]
+            co[layers] = basis[layers] + (share[..., None] * move[order]).sum(axis=1)
+    for key in blinks:
+        key.data.foreach_set("co", moved[key.name].ravel())
 
 
 def _measure_eye(face, eye, opening, see, ellipse, layer):
@@ -893,10 +957,13 @@ def _measure_eye(face, eye, opening, see, ellipse, layer):
     size = face.metres_per_pixel
     cx, cy, rx, ry = ellipse
     opening_px = eye.pixels(opening)
-    see_rows = np.nonzero(see.any(axis=1))[0]
-    columns = np.nonzero(see[int(np.clip(cy, see_rows[0], see_rows[-1]))])[0]
-    white_left = max(cx - rx - columns[0], 0.0) * size if len(columns) else 0.0
-    white_right = max(columns[-1] + 1 - (cx + rx), 0.0) * size if len(columns) else 0.0
+    # the white beside the iris, on the window's widest row: the ellipse's own middle can lie up
+    # under the lid, where the window is a sliver (the bald-head eyes measured no white at all)
+    widest = int(np.argmax(see.sum(axis=1)))
+    columns = np.nonzero(see[widest])[0]
+    half = rx * np.sqrt(max(1.0 - ((widest + 0.5 - cy) / ry) ** 2, 0.0))
+    white_left = max(cx - half - columns[0], 0.0) * size if len(columns) else 0.0
+    white_right = max(columns[-1] + 1 - (cx + half), 0.0) * size if len(columns) else 0.0
     # the image's x runs toward the character's left (+X): the left eye's outer corner is on the right
     outer, inner = (white_right, white_left) if eye.side == "left" else (white_left, white_right)
     return {
@@ -1137,6 +1204,8 @@ def check_irises(mesh_obj, built):
                               for j in range(n - 1) for i in range(n - 1)])
             sample_uv = np.concatenate([grid_uv, grid_uv[quads].mean(axis=1)])
             shown = alpha_at(iris_alpha, sample_uv) > 0.5
+            # with this eye's lids where they rest, the window is where it was found
+            lids_rest = blink is None or np.abs(_key_co(keys[blink])[ids] - basis[ids]).max() < 1e-7
             for look in looks:
                 co = basis[ids].copy()
                 for direction in look:
@@ -1167,7 +1236,12 @@ def check_irises(mesh_obj, built):
                             break
                         start = hit + Vector((0.0, 1e-5, 0.0))
                     if not hidden and not seen_lids:
-                        over_lids += 1
+                        # no lid in front at all: a gap between the lids' polygons (an eye insert and
+                        # its socket are separate pieces). Inside the window it shows what the
+                        # window shows anyway (model A's T-pose FBX: 5 points of 390)
+                        pixel = np.clip(face.pixel(point[None, [0, 2]]).astype(int), 0, limit)[0]
+                        if not (lids_rest and window_mask[pixel[1], pixel[0]]):
+                            over_lids += 1
                 shown_count += len(samples)
                 worst["over_lids"] = max(worst["over_lids"], over_lids)
                 worst["sunk"] = max(worst["sunk"], sunk)

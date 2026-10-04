@@ -296,7 +296,7 @@ def _add_mouth_cover(obj, features, rest, parts):
     width = features["mouth_width"] / _scale(obj)
     # In front of the lips and of the mouth insert, which some models push out past the lips.
     lips = (
-        ((parts.labels == parts.face) | (parts.labels == parts.mouth))
+        (parts.face_area | (parts.labels == parts.mouth))
         & (np.abs(rest[:, 0] - mouth.x) < 0.6 * width)
         & (np.abs(rest[:, 2] - mouth.z) < 0.3 * width)
     )

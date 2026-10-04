@@ -113,5 +113,56 @@ class ReadMixamoRig(unittest.TestCase):
         np.testing.assert_allclose(self.table.sum(axis=1)[total > 0], 1.0, atol=1e-6)
 
 
+class ArmsOffTheHead(unittest.TestCase):
+    """An adopted rig's arm weights on the scalp: Tripo's leak (up to 14% on model A's T-pose) goes,
+    a piece really riding the arm across the head's height (model C's twin-tail, 46%) stays."""
+
+    @classmethod
+    def setUpClass(cls):
+        mesh, _ = load_fixture()
+        joints = landmarks.detect_body(meshdata.world_vertices(mesh), meshdata.triangles(mesh.data))
+        cls.armature = rig.build_armature(joints)
+        rig.skin(mesh, cls.armature)
+        cls.verts = meshdata.world_vertices(mesh)
+        cls.head_z = (cls.armature.matrix_world @ cls.armature.data.bones["Head"].head_local).z
+        above = np.flatnonzero(cls.verts[:, 2] > cls.head_z - 0.05)
+        cls.riding = cls.verts[:, 0] < 0
+        # the right side of the head rides the arm by half, the rest leaks a tenth to it
+        arm = mesh.vertex_groups.get("LeftUpperArm") or mesh.vertex_groups.new(name="LeftUpperArm")
+        for i in above:
+            share = 0.5 if cls.riding[i] else 0.1
+            for g in mesh.data.vertices[int(i)].groups:
+                mesh.vertex_groups[g.group].add([int(i)], g.weight * (1 - share), "REPLACE")
+            arm.add([int(i)], share, "REPLACE")
+        cls.before = ReadMixamoRig.weights(mesh)
+        cls.changed = adopt.keep_arms_off_head(mesh, cls.armature)
+        cls.after = ReadMixamoRig.weights(mesh)
+        cls.arm_after = sum(w for n, w in cls.after.items() if n.removeprefix("Left").removeprefix("Right").startswith(adopt._ARM_WORDS))
+        cls.arm_before = sum(w for n, w in cls.before.items() if n.removeprefix("Left").removeprefix("Right").startswith(adopt._ARM_WORDS))
+
+    def test_a_leak_on_the_head_goes(self):
+        # the fixture's own skinning gives a few of them more of the arm: those count as riding it
+        clear = (self.verts[:, 2] > self.head_z + adopt.HEAD_FADE) & ~self.riding & (self.arm_before <= adopt.HEAD_LEAK + 1e-6)
+        self.assertGreater(int(clear.sum()), 100)
+        self.assertLess(float(self.arm_after[clear].max()), 1e-6)
+
+    def test_a_piece_riding_the_arm_keeps_it(self):
+        riding = (self.verts[:, 2] > self.head_z) & self.riding
+        np.testing.assert_allclose(self.arm_after[riding], self.arm_before[riding], atol=1e-6)
+
+    def test_it_fades_in_above_the_head_joint(self):
+        below = self.verts[:, 2] <= self.head_z
+        np.testing.assert_allclose(self.arm_after[below], self.arm_before[below], atol=1e-6)
+        band = (self.verts[:, 2] > self.head_z) & (self.verts[:, 2] < self.head_z + adopt.HEAD_FADE / 2) & ~self.riding
+        if band.any():
+            self.assertTrue((self.arm_after[band] > 1e-6).all())
+
+    def test_weights_still_sum_to_one(self):
+        total = sum(self.after.values())
+        changed = np.abs(self.arm_after - self.arm_before) > 1e-6
+        self.assertTrue(changed.any())
+        np.testing.assert_allclose(total[changed], 1.0, atol=1e-5)
+
+
 if __name__ == "__main__":
     unittest.main()

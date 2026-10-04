@@ -64,6 +64,8 @@ DRAPE_SHARE = 0.02
 MIN_TRAVEL = 0.03
 # Pieces with these roles are meant to lag behind: their springs swing them.
 SWINGS = ("hair", "swing_cloth", "appendage")
+# A piece whose median vertex is at least this much on spring bones swings, as those roles do.
+SWINGING = 0.5
 # A piece is torn when one of its own edges grows by more than this (m): check_avatar.py's limit.
 TORN = 0.06
 
@@ -167,6 +169,11 @@ def main():
             poses[label] = posed()
     reset()
 
+    # pieces on spring bones swing on their own when a limb moves under them, role or not (model A's
+    # T-pose locks over the shoulders, found as hair by the build)
+    springs = {joint.node.bone_name for spring in arm.data.vrm_addon_extension.spring_bone1.springs for joint in spring.joints}
+    spring_groups = {g.index for g in mesh.vertex_groups if g.name in springs}
+    on_springs = np.array([sum(g.weight for g in v.groups if g.group in spring_groups) for v in mesh.data.vertices])
     named = {}
     for piece in (data["pieces"] if data else []):
         _, i, _ = tree.find(piece["point"])
@@ -217,7 +224,7 @@ def main():
                     if np.median(follow) < DRAPE_FOLLOWS and not behind:
                         behind, left = True, np.zeros(len(contact), dtype=bool)
                         drape_bone = f"{side}UpperArm"
-            if behind and row.get("role") not in SWINGS:
+            if behind and row.get("role") not in SWINGS and np.median(on_springs[members]) < SWINGING:
                 taken = None
                 if left.any():
                     bones, votes = np.unique(nearest[other[left]], return_counts=True)
@@ -269,6 +276,10 @@ def _suggest(row, points, shoulder_x, hips_z, looks=None, named=None):
         if looks == "hair":
             return "hair", "hair that stays when the head turns: its strands need their own springs"
         return "hat", "on the head but stays when it turns: a hat or headwear, rigid on the head"
+    if behind and looks == "hair":
+        # model A's T-pose locks over the shoulders: the arm moves under them, and following the arm
+        # would carry hair hanging from the head away with it
+        return "hair", "hair the arm moves under: its strands need their own springs"
     if behind:
         bone = behind[0]["bone"]
         side = "Left" if bone.startswith("Left") else "Right"

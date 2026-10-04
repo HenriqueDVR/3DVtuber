@@ -62,5 +62,50 @@ class AppendageOnSyntheticCharacter(unittest.TestCase):
         self.assertLess(moved.max(), 1e-4)
 
 
+class RidersBesideTheFace(unittest.TestCase):
+    """A fringe on a spring hangs in front of the face; an eye modelled as its own piece lies on the face."""
+
+    def build(self):
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+
+        def grid(xs, zs, y):
+            start = len(verts)
+            verts.extend((x, y, z) for z in zs for x in xs)
+            faces.extend((start + j * len(xs) + i, start + j * len(xs) + i + 1, start + (j + 1) * len(xs) + i + 1,
+                          start + (j + 1) * len(xs) + i) for j in range(len(zs) - 1) for i in range(len(xs) - 1))
+            return range(start, len(verts))
+
+        verts, faces = [], []
+        fringe = grid(np.arange(-0.2, 0.201, 0.02), np.arange(0.0, 1.601, 0.02), -0.03)
+        face = grid(np.arange(-0.15, 0.151, 0.02), np.arange(1.2, 1.501, 0.02), 0.0)
+        eye = grid([0.04, 0.06], [1.34, 1.36], -0.003)
+        ribbon = grid([-0.06, -0.04], [1.34, 1.36], -0.04)
+        data = bpy.data.meshes.new("riders")
+        data.from_pydata(verts, [], faces)
+        obj = bpy.data.objects.new("riders", data)
+        bpy.context.scene.collection.objects.link(obj)
+        obj.vertex_groups.new(name="Hair0_0").add(list(fringe), 1.0, "REPLACE")
+        obj.vertex_groups.new(name="Head").add(list(face) + list(eye) + list(ribbon), 1.0, "REPLACE")
+        mask = lambda members: np.isin(np.arange(len(verts)), list(members))  # noqa: E731
+        return obj, mask(fringe), mask(face), eye, ribbon
+
+    def bones(self, obj, members):
+        names = {g.index: g.name for g in obj.vertex_groups}
+        return {names[g.group] for i in members for g in obj.data.vertices[i].groups if g.weight > 0}
+
+    def test_a_piece_on_the_face_stays_and_one_on_the_fringe_rides(self):
+        obj, fringe, face, eye, ribbon = self.build()
+        moved = cloth.attach_riders(obj, fringe, np.zeros(len(fringe), bool), anchors=face)
+        self.assertEqual(moved, len(ribbon))
+        self.assertEqual(self.bones(obj, eye), {"Head"})
+        self.assertEqual(self.bones(obj, ribbon), {"Hair0_0"})
+
+    def test_without_the_face_named_the_eye_rides_the_fringe(self):
+        # what model A's T-pose FBX did: her eyes swung out of her face on the fringe's chains
+        obj, fringe, _face, eye, _ribbon = self.build()
+        cloth.attach_riders(obj, fringe, np.zeros(len(fringe), bool))
+        self.assertEqual(self.bones(obj, eye), {"Hair0_0"})
+
+
 if __name__ == "__main__":
     unittest.main()

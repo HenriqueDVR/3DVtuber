@@ -27,6 +27,17 @@ _TORSO = {"C_Hips": "hips", "C_Spine": "spine", "C_Chest": "chest", "C_UpperChes
           "C_Head": "head"}
 _LIMBS = {"Shoulder": "shoulder", "UpperArm": "upper_arm", "LowerArm": "lower_arm", "Hand": "hand",
           "UpperLeg": "upper_leg", "LowerLeg": "lower_leg", "Foot": "foot"}
+# Bones of the arm and hand, after a VRM humanoid side prefix (LeftUpperArm, RightIndexProximal...).
+_ARM_WORDS = ("Shoulder", "UpperArm", "LowerArm", "Hand", "Thumb", "Index", "Middle", "Ring", "Little")
+# keep_arms_off_head: arm weight on the head up to this share is a leak and goes, by this share it
+# stays (a piece really riding the arm), and it goes fully this far (m) above the Head joint.
+HEAD_LEAK = 0.15
+HEAD_KEEP = 0.3
+HEAD_FADE = 0.03
+# ... and none of it within this distance (m) of a shoulder joint, all of it this much further out:
+# model A's scalp squash sat 22 cm from the shoulder, model C's twin-tail on the shoulder 14 cm.
+SHOULDER_CLEAR = 0.12
+SHOULDER_FADE = 0.06
 _FINGER_NAMES = {"Thumb": "thumb", "Index": "index", "Middle": "middle", "Ring": "ring", "Little": "little"}
 # Mixamo: mixamorig:Hips, mixamorig:LeftArm, mixamorig:LeftHandIndex1 (some exports drop the prefix).
 _MIXAMO = ({"Hips": "hips", "Spine": "spine", "Spine1": "chest", "Spine2": "upper_chest", "Neck": "neck", "Head": "head"},
@@ -41,6 +52,9 @@ _CREATOR = ({"Hip": "hips", "Waist": "spine", "Spine01": "chest", "Spine02": "up
 KNOWN = "VRoid/Tripo (J_Bip_*), Mixamo, Character Creator/AccuRig (CC_Base_*), VRM humanoid names"
 # The source and the rig's mesh must agree this closely (95th percentile, m) once both are normalized.
 MATCH = 0.01
+# The face follows the head alone in front of the Head joint, fading to the rig's own weights over
+# this distance (m) behind it (build.py, rig.weight_head): the nape keeps the rig's bend.
+FACE_BEHIND = 0.03
 # A vertex counts as on a bone (see reaching_across) holding at least this share of it.
 FAR_SHARE = 0.02
 
@@ -250,6 +264,60 @@ def transfer_weights(mesh_obj, armature_obj, surface, weights):
     modifier = mesh_obj.modifiers.new("Armature", "ARMATURE")
     modifier.object = armature_obj
     return float(np.percentile(gaps, 95)), ~ok
+
+
+def keep_arms_off_head(mesh_obj, armature_obj):
+    """Take the shoulder, arm, hand and finger weights that leaked onto the head off it, handing
+    their share to the vertex's other bones (Head when it has none). Returns how many changed.
+
+    Assumes the rest pose has the hands below the head (a T- or A-pose). Tripo's rigs weight the
+    scalp and hair to the arms: model A's T-pose FBX 5216 vertices above the head, up to 14%, which
+    squashed the back of the head to 27% with the arms raised. Only a leak goes: up to HEAD_LEAK
+    of arm weight, fading out by HEAD_KEEP, from the Head joint up over HEAD_FADE, and from
+    SHOULDER_CLEAR of a shoulder joint out over SHOULDER_FADE, so no seam opens. Model C's twin-tail
+    lies on her shoulder across the head joint's height, 33-46% on the arm beside 9%: cut at the
+    head's height it tore 5.8 cm with the arms down, faded by amount and height still 4.7.
+    """
+    groups = {g.index: g.name for g in mesh_obj.vertex_groups}
+    limb = {i for i, name in groups.items() if name.removeprefix("Left").removeprefix("Right").startswith(_ARM_WORDS)
+            and name.startswith(("Left", "Right"))}
+    if not limb:
+        return 0
+    head_name = BONE_NAMES["head"]
+    head_z = (armature_obj.matrix_world @ armature_obj.data.bones[head_name].head_local).z
+    head = mesh_obj.vertex_groups.get(head_name) or mesh_obj.vertex_groups.new(name=head_name)
+    verts = meshdata.world_vertices(mesh_obj)
+    rise = np.clip((verts[:, 2] - head_z) / HEAD_FADE, 0.0, 1.0)
+    shoulders = [np.array(armature_obj.matrix_world @ armature_obj.data.bones[BONE_NAMES[f"{side}_upper_arm"]].head_local)
+                 for side in ("left", "right")]
+    clear = np.min([np.linalg.norm(verts - s, axis=1) for s in shoulders], axis=0)
+    rise *= np.clip((clear - SHOULDER_CLEAR) / SHOULDER_FADE, 0.0, 1.0)
+    changed = 0
+    for index in np.flatnonzero(rise > 0):
+        i = int(index)
+        weights = {g.group: g.weight for g in mesh_obj.data.vertices[i].groups if g.weight > 0}
+        arm = sum(w for g, w in weights.items() if g in limb)
+        total = sum(weights.values())
+        if arm <= 0 or total <= 0:
+            continue
+        share = arm / total
+        cut = float(rise[i]) * float(np.clip((HEAD_KEEP - share) / (HEAD_KEEP - HEAD_LEAK), 0.0, 1.0))
+        if cut <= 0:
+            continue
+        kept = {g: w * (1.0 - cut) if g in limb else w for g, w in weights.items()}
+        others = sum(w for g, w in kept.items() if g not in limb)
+        freed = total - sum(kept.values())
+        for g, w in kept.items():
+            if g in limb and w <= 1e-6:
+                mesh_obj.vertex_groups[g].remove([i])
+            elif g in limb:
+                mesh_obj.vertex_groups[g].add([i], w / total, "REPLACE")
+            else:
+                mesh_obj.vertex_groups[g].add([i], (w + freed * w / others) / total if others > 0 else w / total, "REPLACE")
+        if others <= 0:
+            head.add([i], freed / total, "REPLACE")
+        changed += 1
+    return changed
 
 
 def reaching_across(mesh_obj, armature_obj):

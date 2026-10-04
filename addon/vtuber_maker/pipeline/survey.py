@@ -243,7 +243,7 @@ def _face_colour(mesh_obj, found):
         colours = texture_space.vertex_colors(mesh_obj, texture_space.base_color_image(mesh_obj))
     except ValueError:
         return None
-    face = colours[found.labels == found.face]
+    face = colours[found.face_area]
     return [round(float(c), 3) for c in _dominant_color(face)] if len(face) else None
 
 
