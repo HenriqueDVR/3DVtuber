@@ -496,7 +496,8 @@ def _front_onto_patch(obj, box, au, av, step=0.0002):
     polys = np.empty(len(mesh.loop_triangles), np.int64)
     mesh.loop_triangles.foreach_get("polygon_index", polys)
     tree = BVHTree.FromPolygons([Vector(v) for v in verts], tris.reshape(-1, 3).tolist())
-    keep = {mesh.materials.find(FACE_PATCH_MATERIAL), mesh.materials.find(MOUTH_PATCH_MATERIAL)}
+    keep = {mesh.materials.find(FACE_PATCH_MATERIAL), mesh.materials.find(MOUTH_PATCH_MATERIAL),
+            mesh.materials.find(face_points.FACE_PATCH_OVER)}
     x0, z0, x1, z1 = box
     found = set()
     for x in np.arange(x0, x1 + step, step):

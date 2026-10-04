@@ -13,6 +13,9 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
 FACE_PATCH_MATERIAL = "face_patch"
+# Hair lying over the face, split off the patch by scripts/retexture/face_patch.py onto its own
+# copy of the picture: mapped the same way, but not the face. Nothing here moves it back.
+FACE_PATCH_OVER = "face_patch_over"
 # Surface hits further than this in front of the feature found without points are hair
 # strands crossing the face; the feature's own depth is kept then.
 HAIR_IN_FRONT = 0.015
