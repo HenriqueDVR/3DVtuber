@@ -68,15 +68,15 @@ async function openProject(path) {
 }
 app.openProject = openProject;
 
-// Before/after pictures from characters already built (model A, model B), in out/: private art, so
+// Before/after pictures from characters already built, in out/examples/: private art, so
 // they're read where they lie and never copied into the app. A picture that isn't there is left out.
 const EXAMPLES = {
-  follow_bone: [["/out/<name>_clothing_ready_raised/raised_front.png", "before: the sleeve tabs stay at the hips when the arms go up"],
-    ["/out/<name>_sleeves_ready_views/raised_front.png", "after giving them “follows one bone” (upper arm): they go up with the arms"]],
-  eyes: [["/out/<name>_eyes2_renders/rest.png", "moving iris (model A): looking ahead"], ["/out/<name>_eyes2_renders/look_left.png", "moving iris: looking to the side"],
-    ["/out/<name>_eyes_renders/rest.png", "sliding patches (model B): looking ahead"], ["/out/<name>_eyes_renders/look_left.png", "sliding patches: looking to the side"]],
-  mouth: [["/out/<name>_mouth2_renders/before/aa.png", "before: saying “a” with the model's own mouth"],
-    ["/out/<name>_mouth2_renders/after/aa.png", "after: redrawn, free mouth, size × 1.3"]],
+  follow_bone: [["/out/examples/follow_bone_before.png", "before: the sleeve tabs stay at the hips when the arms go up"],
+    ["/out/examples/follow_bone_after.png", "after giving them “follows one bone” (upper arm): they go up with the arms"]],
+  eyes: [["/out/examples/eyes_iris_ahead.png", "moving iris: looking ahead"], ["/out/examples/eyes_iris_side.png", "moving iris: looking to the side"],
+    ["/out/examples/eyes_slide_ahead.png", "sliding patches: looking ahead"], ["/out/examples/eyes_slide_side.png", "sliding patches: looking to the side"]],
+  mouth: [["/out/examples/mouth_before.png", "before: saying “a” with the model's own mouth"],
+    ["/out/examples/mouth_after.png", "after: redrawn, free mouth, size × 1.3"]],
 };
 document.querySelectorAll("[data-examples]").forEach((host) => {
   host.innerHTML = (EXAMPLES[host.dataset.examples] || []).map(([src, text]) =>

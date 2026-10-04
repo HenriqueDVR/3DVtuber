@@ -210,8 +210,8 @@ $("face-build").onclick = async () => {
 };
 const EYE_CHOICE = {
   "": () => `Picks for you: a moving iris if the eyes are modelled as their own pieces, sliding patches if they're painted on the face${S.manifest?.face ? "" : " (and no eye movement until the points are marked)"}.`,
-  iris: () => "The coloured part of the eye (iris and pupil) moves inside the eye white. For models whose eyes are separate pieces, like model A.",
-  slide: () => "The whole painted eye slides a little across the face. For eyes painted onto the face texture, like a mascot.",
+  iris: () => "The coloured part of the eye (iris and pupil) moves inside the eye white. For models whose eyes are separate pieces.",
+  slide: () => "The whole painted eye slides a little across the face. For eyes painted onto the face texture.",
   none: () => "The eyes stay still; blinking still works.",
 };
 const showEyeChoice = () => { $("eyes-choice").textContent = EYE_CHOICE[$("eyes").value](); };

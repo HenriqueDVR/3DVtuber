@@ -56,7 +56,7 @@ OPTIONS = {
     "face_tracking": True,    # ARKit shapes; needs `face`
     "loose_pieces": True,     # scripts/fix_loose_pieces.py
     "keep_seams": False,      # with it: don't join touching surfaces (model A's verified build kept them)
-    "fingers": "guides",      # "guides" (surface guides, the model A/model B route), "auto" or "none"
+    "fingers": "guides",      # "guides" (surface guides, the measured route), "auto" or "none"
     "skinning": "heat",       # "heat" (bone heat and the arm/body rules), "template" (template_skin.py) or "voxel" (voxel_skin.py, same rules)
     "tpose": "spec",          # "spec" (spec hands, straight fingers), "plain" or "none"
     "repair_shoulder_seams": True,
