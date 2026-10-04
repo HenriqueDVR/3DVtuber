@@ -10,8 +10,9 @@ import { loadFace, renderFace } from "./face.js";
 import { renderOptions } from "./options.js";
 import { renderSteps, loadRuns } from "./build.js";
 import { loadMovement, loadSprings } from "./movement.js";
-import { loadFeedback, loadRenders } from "./review.js";
+import { loadFeedback, loadRenders, loadSheets } from "./review.js";
 import { loadSetup } from "./setup.js";
+import { resetPaint } from "./paint.js";
 
 const LAST = "vtuber-maker-project";
 
@@ -47,19 +48,20 @@ async function openProject(path) {
   try { path ? localStorage.setItem(LAST, path) : localStorage.removeItem(LAST); } catch {}
   if (!path) {
     Object.assign(S, { manifest: null, status: null, movement: null, springs: null, feedback: [], runs: [], renders: [] });
-    await loadParts(null); setGhost(null);
+    await loadParts(null); setGhost(null); resetPaint();
     renderAll();
-    await Promise.all([loadFace(), loadMovement(null), loadSprings(), loadFeedback(), loadRuns(), loadRenders()]).catch(failed);
+    await Promise.all([loadFace(), loadMovement(null), loadSprings(), loadFeedback(), loadRuns(), loadRenders(), loadSheets()]).catch(failed);
     return;
   }
   try {
     [S.manifest, S.status] = await Promise.all([call("manifest"), call("status")]);
+    resetPaint();
     const pieces = await call("pieces");
     S.listing = pieces.listing;
     const gltf = await loadParts(pieces.glb);
     setGhost(gltf?.scene);
     renderAll();
-    await Promise.all([loadFace(), loadMovement(gltf), loadSprings(), loadFeedback(), loadRuns(), loadRenders()].map((p) => p.catch(failed)));
+    await Promise.all([loadFace(), loadMovement(gltf), loadSprings(), loadFeedback(), loadRuns(), loadRenders(), loadSheets()].map((p) => p.catch(failed)));
     renderNav();
     refreshProjects().catch(failed);
   } catch (e) { failed(e); }

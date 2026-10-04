@@ -16,7 +16,9 @@ export function renderHome() {
     const chips = [p.approved ? ["marked good", "good"] : null,
       p.built ? (p.failed?.length ? [`built without ${p.failed.join(", ").replaceAll("_", " ")}`, "warn"] : ["built", "info"])
         : p.surveyed ? ["started", ""] : ["new", ""],
-      p.stale?.length ? ["changes not built", "warn"] : null].filter(Boolean);
+      p.stale?.length ? ["changes not built", "warn"] : null,
+      // built and checked, and nobody has said how it looks: SETUP.md filled with "awaiting verdict"
+      p.waiting && !p.stale?.length ? ["waiting for your look", "info"] : null].filter(Boolean);
     const when = p.finished ? new Date(p.finished).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
     const where = p.manifest.replaceAll("\\", "/").split("/").slice(-3, -1).join("/");
     return `<button class="char ${p.manifest === S.manifestPath ? "open" : ""}" data-manifest="${esc(p.manifest)}">
@@ -69,6 +71,22 @@ $("disk-prune").onclick = async () => {
   } catch (e) { toast(e.message, "bad"); }
 };
 
+// ---------- every character rebuilt and compared with its good build (python -m app regress)
+$("regress-run").onclick = async () => {
+  const count = S.projects.filter((p) => p.built).length;
+  if (!await ask("Rebuild every character", { text: `Rebuilds ${count || "every"} built character${count === 1 ? "" : "s"} in scratch folders and compares each with its good build. `
+    + "A few minutes each; nothing of theirs is changed.", ok: "Rebuild and compare" })) return;
+  say("regress-msg", ""); $("regress-out").innerHTML = "";
+  const state = await job("regress", {});
+  if (!state?.result?.characters) { say("regress-msg", state?.error ? state.error.split("\n")[0] : state?.cancelled ? "Stopped." : "", !!state?.error); return; }
+  const rows = state.result.characters;
+  say("regress-msg", state.result.worse ? `${state.result.worse} thing${state.result.worse === 1 ? "" : "s"} measured worse.` : "Nothing measured worse.", !!state.result.worse);
+  $("regress-out").innerHTML = `<table><thead><tr><th>Character</th><th>Against</th><th>Worse</th><th>Better</th><th>Time</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td>${esc(r.name)}</td><td class="msg">${esc(r.baseline || "")}</td>
+      <td class="${r.error || r.worse.length ? "failed" : "done"}">${r.error ? esc(r.error) : r.worse.length ? r.worse.map(esc).join("<br>") : "nothing"}</td>
+      <td class="done">${r.better.map(esc).join("<br>")}</td><td class="num">${r.seconds ? `${Math.round(r.seconds / 60)} min` : ""}</td></tr>`).join("")}</tbody></table>`;
+};
+
 // ---------- Model: a new character's form, or the open one's survey and rig
 $("create").onclick = async () => {
   try {
@@ -84,6 +102,17 @@ $("create").onclick = async () => {
     await app.loadProjects(made.manifest);
     if ($("create-prepare").checked) job("prepare", {});
   } catch (e) { say("create-msg", e.message, true); }
+};
+$("duplicate").onclick = async () => {
+  const name = await ask("Duplicate this character", { text: "A name for the copy: letters, digits, _ and -. Nothing is built yet in it.",
+    input: true, value: `${S.manifest?.name || "copy"}_b`, ok: "Duplicate" });
+  if (!name) return;
+  try {
+    const made = await call("duplicate", { name });
+    toast(`Made ${made.name}. Change what you want to compare, then build it.`, "good", { ms: 8000 });
+    await app.loadProjects(made.manifest);
+    app.go("options");
+  } catch (e) { say("duplicate-msg", e.message, true); }
 };
 $("survey-run").onclick = () => job("run", { only: "survey" });
 $("prepare-run").onclick = () => job("prepare", {});

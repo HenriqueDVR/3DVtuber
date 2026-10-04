@@ -71,8 +71,9 @@ CHEST_AMOUNT = (0.25, 2.0)  # chest.AMOUNT_RANGE (this module stays plain Python
 FINGERS = ("guides", "auto", "none")
 TPOSE = ("spec", "plain", "none")
 SKINNING = ("heat", "template", "voxel")
-# Paths, relative to the manifest's folder when not absolute.
-PATHS = ("source", "reference", "face", "out_dir", "rig")
+# Paths, relative to the manifest's folder when not absolute. `paint`: the folder of texture paint
+# (one transparent overlay per picture of the source, app/paint.py), laid over the source for a build.
+PATHS = ("source", "reference", "face", "out_dir", "rig", "paint")
 # The glTF scene extra through which a GLB names the rigged FBX it was made from: the texture
 # steps (matte, tint, face patch) write Tripo's FBX out as the mesh alone.
 RIG_KEY = "vtuber_rig"

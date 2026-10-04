@@ -22,7 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import cli, engine, vendor
+from . import cli, engine, paint, vendor
 from .engine import REPO, Cancelled, Project, StepFailed
 
 GUI = Path(__file__).resolve().parent / "gui"
@@ -36,6 +36,14 @@ mimetypes.add_type("model/gltf-binary", ".vrm")
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("text/javascript", ".mjs")
 mimetypes.add_type("application/wasm", ".wasm")  # a browser only compiles wasm served as this
+
+# The calls a GET may make: they only read. Everything else starts a run or changes a file and
+# needs the POST with the page's header, which another site open in the browser can't send
+# (an <img src=".../api/prune?manifest=..."> could otherwise delete a character's old runs).
+READ_ONLY = {"projects", "setup", "disk", "status", "manifest", "pieces", "renders", "sheets", "runs", "feedback_list",
+             "face", "movement_result", "springs_result", "events", "paint"}
+# How much of the running step's log the Progress pane shows.
+LOG_TAIL = 1500
 
 
 class Jobs:
@@ -72,7 +80,17 @@ class Jobs:
 
     def poll(self, since=0):
         return {"running": self.running, "events": self.events[since:], "next": len(self.events),
-                "result": self.result, "error": self.error, "cancelled": self.cancelled}
+                "result": self.result, "error": self.error, "cancelled": self.cancelled, "tail": self.tail()}
+
+    def tail(self):
+        """The end of the running step's log: a three-minute step otherwise shows nothing until it ends."""
+        log = next((e["log"] for e in reversed(self.events) if e.get("status") == "running" and e.get("log")), None)
+        if not self.running or not log:
+            return None
+        try:
+            return engine._log_tail(log, LOG_TAIL)
+        except OSError:
+            return None  # Blender hasn't opened it yet
 
 
 JOBS = Jobs()
@@ -143,11 +161,20 @@ def api(route, query, body):
         def work(emit):
             return Project(m).run(start=body.get("from"), stop=body.get("to"), only=body.get("only"), on_event=emit)
         return JOBS.start("build", work)
+    if route == "regress":
+        # every character with a finished build, in scratch folders: the A/B a change to the app needs
+        return JOBS.start("rebuilding every character", lambda emit: cli.cmd_regress(
+            _args(manifests=body.get("manifests") or [], keep=False, on_event=emit)))
     if route == "render":
         return JOBS.start("render", lambda emit: _with_urls(cli.cmd_render(
             _args(manifest=Path(m), pose=body.get("pose", "raised"), step=body.get("step"), run=body.get("run"), size=700))))
     if route == "renders":
         return {"renders": _renders(Project(m).out / "renders")}
+    if route == "sheet":
+        # a browser, not Blender, but a job all the same: it loads the whole .vrm beside whatever runs
+        return JOBS.start("contact sheets", lambda emit: _sheet(Project(m), body.get("run")))
+    if route == "sheets":
+        return {"sheets": _sheets(Project(m).out / "renders")}
     if route == "runs":
         return {"runs": [dict(r, vrm_url=_url(r["vrm"]) if r["vrm"] else None) for r in Project(m).runs()]}
     if route == "compare":
@@ -176,16 +203,31 @@ def api(route, query, body):
         viewable = source is not None and source.suffix.lower() in (".glb", ".vrm")
         return {"points": engine._read_json(face, None) if face else None,
                 "model": f"/api/model?key=source&manifest={quote(str(project.manifest_path))}" if viewable else None}
+    if route == "paint":
+        state = cli.paint_state(Path(m))
+        at = f"manifest={quote(str(Path(m).resolve()))}"
+        for picture in state["pictures"]:
+            picture["url"] = f"/api/overlay?{at}&name={quote(picture['overlay'])}" if picture["painted"] else None
+        return dict(state, model=f"/api/model?key=source&{at}" if state["paintable"] else None)
+    if route == "paint_save":
+        if JOBS.running:
+            # a build may be reading the painted copy this would write again
+            raise StepFailed(f"busy: {JOBS.running} is still running")
+        return cli.save_paint(Path(m), body.get("images") or {})
     if route == "face_patch":
         return JOBS.start("making the face patch", lambda emit: cli.cmd_face_patch(_args(manifest=Path(m))))
     if route == "face_guess":
-        return {"points": cli.guess_face(Path(m))}
+        # a job: the detector takes a GB of memory, and beside a running Blender that hung the machine
+        return JOBS.start("finding the face", lambda emit: {"points": cli.guess_face(Path(m))})
     if route == "face_save":
         return cli.save_face(Path(m), body["points"])
     if route == "feedback":
-        return cli.save_feedback(Path(m), body.get("note", ""), body.get("images") or [])
+        return cli.save_feedback(Path(m), body.get("note", ""), body.get("images") or [],
+                                 checks=body.get("checks") or [], verdict=body.get("verdict") or None)
     if route == "feedback_list":
         return {"feedback": [dict(f, urls=[_url(Path(f["folder"]) / n) for n in f["screenshots"]]) for f in cli.list_feedback(Path(m))]}
+    if route == "duplicate":
+        return cli.duplicate(Path(m), (body.get("name") or "").strip())
     if route == "approve":
         return cli.cmd_approve(_args(manifest=Path(m), note=body.get("note", "")))
     if route == "bundle":
@@ -239,6 +281,27 @@ def _renders(folder):
         match = RENDER_FOLDER.match(path.name)
         if match:
             found.append({**match.groupdict(), "urls": [_url(p) for p in sorted(path.glob("*.png"))]})
+    return found
+
+
+def _sheet(project, run=None):
+    """Draws the contact sheets of the finished .vrm, or of an earlier run's (the build marked good)."""
+    if not run:
+        return _with_urls(cli.cmd_sheet(_args(target=project.manifest_path, out=None, browser=None)))
+    vrm = next((r["vrm"] for r in project.runs() if r["run"] == run and r["vrm"]), None)
+    if vrm is None:
+        raise StepFailed(f"run {run} has no .vrm (its model files may have been freed)")
+    return _with_urls(cli.cmd_sheet(_args(target=Path(vrm), out=project.out / "renders" / f"sheets_{run}", browser=None)))
+
+
+def _sheets(folder):
+    """Every build's contact sheets (cli.cmd_sheet: renders/sheets_<run>/), newest first."""
+    found = []
+    for path in sorted(folder.glob("sheets_*"), key=lambda p: p.stat().st_mtime, reverse=True):
+        urls = [_url(p) for p in sorted(path.glob("sheet_*.png"))]
+        if urls:
+            found.append({"run": path.name[len("sheets_"):], "urls": urls,
+                          "report": engine._read_json(path / "sheet.json", None)})
     return found
 
 
@@ -323,7 +386,11 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if url.path == "/api/model":
             return self._model(parse_qs(url.query))
+        if url.path == "/api/overlay":
+            return self._overlay(parse_qs(url.query))
         if url.path.startswith("/api/"):
+            if url.path[5:] not in READ_ONLY:
+                return self._json({"error": "this call changes things: it takes a POST from the app's own page"}, 405)
             return self._api(url.path[5:], parse_qs(url.query), {})
         path = unquote(url.path)
         if path in ("/", "/index.html"):
@@ -364,6 +431,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)
         self._file(Path(path))
 
+    def _overlay(self, query):
+        """A listed character's paint on one picture, wherever its folder lives on disk."""
+        wanted = Path((query.get("manifest") or [""])[0]).resolve()
+        if wanted not in {Path(p).resolve() for p in _characters()}:
+            return self.send_error(403)
+        kept = paint.overlays(engine.manifest.path_of(engine.manifest.load(wanted), "paint"))
+        path = kept.get((query.get("name") or [""])[0])
+        if path is None:
+            return self.send_error(404)
+        self._file(path)
+
     def _json(self, data, code=200):
         raw = json.dumps(data, default=str).encode()
         self.send_response(code)
@@ -396,19 +474,67 @@ def main():
     parser.add_argument("--port", type=int, default=8322)
     parser.add_argument("--no-window", action="store_true", help="serve only; open the page yourself")
     args = parser.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    address = f"http://127.0.0.1:{args.port}/"
+    server, port = _listen(args.port)
+    address = f"http://127.0.0.1:{port}/"
+    if server is None:
+        # started twice: the first one holds the builds and the one Blender, so show that one
+        print(f"VTuber Maker is already running at {address}", flush=True)
+        if not args.no_window:
+            _show(address)
+        return
     print(f"VTuber Maker at {address}", flush=True)
     if args.no_window:
         server.serve_forever()
         return
     try:
-        import webview
+        import webview  # noqa: F401
     except ImportError:
         webbrowser.open(address)
         server.serve_forever()
         return
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    _show(address)
+
+
+# A port another program holds is passed over, this many times.
+PORT_TRIES = 10
+
+
+class Server(ThreadingHTTPServer):
+    # Windows lets a second server take a port in use when this is on: two apps then answered on
+    # one port, each with its own idea of what was running
+    allow_reuse_address = os.name != "nt"
+
+
+def _listen(port):
+    """(server, port). (None, port) when the app itself is already answering there."""
+    for candidate in range(port, port + PORT_TRIES):
+        try:
+            server = Server(("127.0.0.1", candidate), Handler)
+            return server, server.server_port
+        except OSError:
+            if _ours(candidate):
+                return None, candidate
+    raise SystemExit(f"ports {port} to {port + PORT_TRIES - 1} are all taken: pass --port")
+
+
+def _ours(port):
+    """Whether this app is what answers on the port (its job report has these fields)."""
+    from urllib.request import urlopen
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/api/events", timeout=2) as response:
+            return {"running", "events", "next"} <= set(json.load(response))
+    except (OSError, ValueError):
+        return False
+
+
+def _show(address):
+    """The page in a pywebview window (back once it is closed), else in the browser."""
+    try:
+        import webview
+    except ImportError:
+        webbrowser.open(address)
+        return
     webview.create_window("VTuber Maker", address, width=1400, height=900)
     webview.start()
 

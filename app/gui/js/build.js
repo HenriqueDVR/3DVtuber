@@ -194,6 +194,7 @@ export async function loadRuns() {
 function renderRuns() {
   const body = $("run-rows");
   $("runs-compare").disabled = ticked.length !== 2;
+  $("runs-view").disabled = ticked.length !== 2 || !pair().every((r) => r.vrm_url);
   if (!S.runs.length) { body.innerHTML = `<tr><td colspan="5" class="msg">No runs yet.</td></tr>`; return; }
   body.innerHTML = S.runs.map((r) => {
     const when = r.when ? new Date(r.when).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : r.run;
@@ -218,12 +219,33 @@ function renderRuns() {
     if (!$("runbar").hidden) tr.querySelector("[data-render]").disabled = true;
   });
 }
+// older first: the table says what got better or worse since
+const pair = () => ticked.map((t) => S.runs.find((r) => r.run === t)).sort((a, b) => a.run.localeCompare(b.run));
+const whenOf = (r) => r.when ? new Date(r.when).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : r.run;
 $("runs-compare").onclick = async () => {
-  // older first: the report says what got better or worse since
-  const [before, after] = ticked.map((t) => S.runs.find((r) => r.run === t)).sort((a, b) => a.run.localeCompare(b.run));
+  const [before, after] = pair();
   try {
     const out = await call("compare", { before: before.check, after: after.check });
+    const cell = ([a, b], way, unit) => `<td class="num ${way === "worse" ? "failed" : way === "better" ? "done" : ""}">${a ?? "–"} → ${b ?? "–"}${unit}${way ? ` (${way})` : ""}</td>`;
     $("runs-out").hidden = false;
-    $("runs-out").textContent = `${before.run} → ${after.run}${out.worse ? "  (something got worse)" : ""}\n\n${out.report}`;
+    $("runs-out").innerHTML = `<p class="msg">${esc(whenOf(before))} → ${esc(whenOf(after))}: ${out.worse ? `<span class="failed">something got worse</span>` : "nothing got worse"}.
+        Stretch is the longest an edge grows in that pose; squash the shortest one gets, as a share of its length (1 is untouched).</p>
+      <table><thead><tr><th>Pose</th><th>Stretch</th><th>Squash</th><th></th></tr></thead><tbody>
+      ${out.poses.map((p) => `<tr><td>${esc(p.pose)}</td>${cell(p.stretch, p.stretch_way, " cm")}${cell(p.squash, p.squash_way, "")}
+        <td><button class="act alt small" data-both="${esc(p.pose)}" ${before.vrm_url && after.vrm_url ? "" : "disabled"} title="both avatars in this pose, side by side">Watch</button></td></tr>`).join("")}
+      ${out.unweighted ? `<tr><td>vertices on no bone</td><td class="num">${out.unweighted[0]} → ${out.unweighted[1]}</td><td></td><td></td></tr>` : ""}</tbody></table>`;
+    $("runs-out").querySelectorAll("[data-both]").forEach((b) => b.onclick = () => viewBoth(b.dataset.both));
   } catch (e) { toast(e.message, "bad"); }
 };
+// The two ticked runs' avatars side by side, springs running, in the same pose.
+function viewBoth(pose) {
+  const runs = pair();
+  if (runs.length !== 2 || !runs.every((r) => r.vrm_url)) return toast("One of the two runs has no .vrm (its model files may have been freed).", "bad");
+  $("runs-viewers").hidden = false;
+  for (const [id, r] of [["a", runs[0]], ["b", runs[1]]]) {
+    $(`runs-viewer-${id}-label`).textContent = `${whenOf(r)}${r.approved ? " · marked good" : ""}${r.current ? " · in use" : ""}`;
+    $(`runs-viewer-${id}`).src = `/viewer/index.html?model=${encodeURIComponent(r.vrm_url)}${pose ? `&pose=${encodeURIComponent(pose)}` : ""}`;
+  }
+  $("runs-viewers").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+$("runs-view").onclick = () => viewBoth("");

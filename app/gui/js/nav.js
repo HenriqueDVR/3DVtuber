@@ -60,6 +60,7 @@ export function renderNav() {
     build: st?.verdict?.ready && !pending ? ["ready", "good"] : failed ? [`${failed} failed`, "bad"]
       : pending && nextRun(st) ? [`${pending} to build`, "warn"] : steps.build?.status === "done" ? ["built", "info"] : ["", ""],
     movement: S.movement ? (flagged ? [`${flagged} flagged`, "warn"] : ["clear", "good"]) : ["", ""],
+    paint: m.paint ? ["painted", "info"] : ["", ""],
     review: S.feedback.length ? [`${S.feedback.length} note${S.feedback.length === 1 ? "" : "s"}`, "info"] : ["", ""],
   };
   document.querySelectorAll("[data-badge]").forEach((el) => {

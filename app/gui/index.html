@@ -23,6 +23,7 @@
     <li><button data-go="parts"><span class="n">2</span><span class="t">Parts</span><span class="badge" data-badge="parts"></span></button></li>
     <li><button data-go="joints"><span class="n">3</span><span class="t">Joints</span><span class="badge" data-badge="joints"></span></button></li>
     <li><button data-go="face"><span class="n">4</span><span class="t">Face</span><span class="badge" data-badge="face"></span></button></li>
+    <li><button data-go="paint" class="side"><span class="n">✎</span><span class="t">Paint</span><span class="badge" data-badge="paint"></span></button></li>
     <li><button data-go="options"><span class="n">5</span><span class="t">Options</span><span class="badge" data-badge="options"></span></button></li>
     <li><button data-go="build"><span class="n">6</span><span class="t">Build</span><span class="badge" data-badge="build"></span></button></li>
     <li><button data-go="movement"><span class="n">7</span><span class="t">Movement</span><span class="badge" data-badge="movement"></span></button></li>
@@ -65,6 +66,14 @@
     <div id="disk"></div>
     <div class="row" style="margin-top:var(--s2)"><button class="act alt" id="disk-check">Check disk use</button>
       <button class="act alt" id="disk-prune" disabled>Free up space…</button><span class="msg" id="disk-msg"></span></div>
+  </div>
+  <div class="card w-lg" style="margin-top:var(--s3)">
+    <div class="title">After the app itself changed</div>
+    <p class="help">Rebuilds every character that has a finished build, each in a scratch folder (its own files are not touched),
+      and compares the checks with the build you marked good, or else its last build: a rule that helps one character must
+      not quietly break another. A few minutes a character, one after the other; Stop ends it.</p>
+    <div class="row"><button class="act alt" id="regress-run" data-job>Rebuild every character and compare…</button><span class="msg" id="regress-msg"></span></div>
+    <div id="regress-out"></div>
   </div>
 </section>
 
@@ -141,6 +150,13 @@
           <button class="act alt" data-browse="rig" data-for="rig-path">Browse…</button></div>
         <div class="row" style="margin-top:var(--s2)"><button class="act alt" id="rig-save">Use this rig</button><span class="msg" id="rig-msg"></span></div>
         <p class="help" id="model-files"></p>
+      </div>
+      <div class="card">
+        <div class="title">Try a choice both ways</div>
+        <p class="help">Makes this character again under another name: the same model, parts, joints, face points and paint,
+          with its own builds. Change one thing in the copy (moving iris or sliding eyes, a bigger mouth, chest bounce) and
+          build both, instead of writing one choice over the other.</p>
+        <div class="row"><button class="act alt" id="duplicate">Duplicate this character…</button><span class="msg" id="duplicate-msg"></span></div>
       </div>
     </div>
   </div>
@@ -247,7 +263,7 @@
         bottom points just above and just below its middle, the same distance from it. Only the corners set how big the
         talking mouth is; the top and bottom only say how high it sits, so there is no need to mark a bigger box. For a
         bigger mouth, raise "size ×" under Mouth below.</p>
-      <div class="row"><button class="act alt" id="points-guess">Place them for me</button><span class="msg" id="guess-msg"></span></div>
+      <div class="row"><button class="act alt" id="points-guess" data-job>Place them for me</button><span class="msg" id="guess-msg"></span></div>
       <p class="help">A face detector puts all twelve points down as a first guess (about 15 seconds). Check each one and
         drag any that is off: it is usually within a few pixels, and now and then plainly wrong.</p>
       <div class="split">
@@ -287,6 +303,58 @@
   </div>
 </section>
 
+<section class="page" id="paint">
+  <header class="page-head">
+    <div class="kicker">Optional, any time before a build</div>
+    <h2>Paint <span class="chip" id="paint-state"></span></h2>
+    <p class="lead">Fix the texture on the model itself: a smudge by an eye, a seam of the wrong colour, a stray strand painted on
+      the forehead, shading that is missing. <b>Drag on the model</b> to paint; drag beside it, or with the right button, to turn it.</p>
+    <details class="more"><summary>More about this page</summary>
+      <p>The paint is kept apart from the generated texture and laid over it when the avatar is built, so nothing here is
+        final: the eraser brings the original back, and so does Clear. It goes on at the “build” step, so save and rebuild
+        from there to see it on the avatar. Pick colours from the model (Alt+click) rather than by eye: a patch in the
+        model's own colour is what makes a fix invisible. Keys: B brush, E eraser, S soften, C clone, F fill, I pick,
+        [ and ] brush size, Ctrl+Z undo, Shift+click a straight line from the last stroke.</p></details>
+  </header>
+  <div class="split narrow-side">
+    <div class="view sticky" id="paint-view"><div class="hint">drag on the model: paint · drag beside it or right-drag: turn · scroll: zoom · middle-drag: move</div></div>
+    <div class="stack">
+      <div class="card">
+        <div class="chips" id="paint-tools"></div>
+        <p class="help" id="paint-tool-help"></p>
+        <div class="row"><input type="color" id="paint-colour" value="#e8a070" aria-label="colour"><div id="paint-recent" class="swatches"></div></div>
+        <div class="row" id="paint-mode-row" style="margin-top:var(--s2)"><label class="inline" for="paint-mode">the colour goes on</label><select id="paint-mode"></select></div>
+        <label for="paint-size">Size <span id="paint-size-text" class="msg"></span></label>
+        <input type="range" id="paint-size" min="0.2" max="12" step="0.1" value="1.5" style="width:100%">
+        <label for="paint-hard">Edge <span id="paint-hard-text" class="msg"></span></label>
+        <input type="range" id="paint-hard" min="0" max="0.95" step="0.05" value="0.5" style="width:100%">
+        <label for="paint-flow">Strength <span id="paint-flow-text" class="msg"></span></label>
+        <input type="range" id="paint-flow" min="0.05" max="1" step="0.05" value="1" style="width:100%">
+        <div id="paint-fill-row" hidden><label for="paint-tolerance">How alike a colour must be to be filled</label>
+          <input type="range" id="paint-tolerance" min="2" max="120" step="1" value="24" style="width:100%"></div>
+        <div class="checks" style="margin-top:var(--s3)">
+          <label class="inline" title="paints the same spot on the other side of the body"><input type="checkbox" id="paint-mirror"> both sides at once</label>
+          <label class="inline" title="the brush spreads over the surface it is on, and leaves alone what lies behind or beside it: painting a strand of hair doesn't colour the clothing under it. Off: it paints everything within its reach that you can see, for many small pieces at once"><input type="checkbox" id="paint-piece" checked> stay on the surface under the brush</label>
+          <label class="inline" title="with light and shadow, as Blender shows it; off is flat, as a toon avatar is drawn"><input type="checkbox" id="paint-lit"> show with lighting</label>
+          <label class="inline" title="greys the model so what you painted stands out"><input type="checkbox" id="paint-only"> show only the paint</label>
+        </div>
+        <div class="row" style="margin-top:var(--s3)"><button class="act" id="paint-build" data-job disabled>Save and rebuild</button>
+          <button class="act alt" id="paint-save" disabled>Save</button>
+          <button class="act alt" id="paint-undo">Undo</button>
+          <button class="act alt danger" id="paint-clear" disabled>Clear all paint…</button></div>
+        <p class="msg" id="paint-msg"></p>
+      </div>
+      <div class="card">
+        <div class="title">The texture</div>
+        <p class="help">Where the paint lands on the picture the model wears. A model has one for the body and, once the face
+          patch is made, one for the face.</p>
+        <select id="paint-picture" aria-label="picture"></select>
+        <canvas id="paint-preview" class="texture"></canvas>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section class="page" id="options" data-step="5">
   <header class="page-head">
     <div class="kicker">Step 5 of 8</div>
@@ -321,11 +389,15 @@
         <div class="card"><div class="title">History</div>
           <p class="help">Every run keeps its own files. Tick two to compare their rig checks.</p>
           <div class="list"><table><thead><tr><th></th><th>When</th><th>Steps</th><th>Rig check</th><th></th></tr></thead><tbody id="run-rows"></tbody></table></div>
-          <div class="row" style="margin-top:var(--s2)"><button class="act alt" id="runs-compare" disabled>Compare the two ticked</button></div>
-          <pre id="runs-out" hidden></pre></div>
+          <div class="row" style="margin-top:var(--s2)"><button class="act alt" id="runs-compare" disabled>Compare the two ticked</button>
+            <button class="act alt" id="runs-view" disabled title="both runs' avatars side by side in the viewer">View both</button></div>
+          <div id="runs-out" hidden></div>
+          <div class="compare" id="runs-viewers" hidden><div><p class="help" id="runs-viewer-a-label"></p><iframe id="runs-viewer-a" title="older run"></iframe></div>
+            <div><p class="help" id="runs-viewer-b-label"></p><iframe id="runs-viewer-b" title="newer run"></iframe></div></div></div>
       </div>
       <div class="card"><div class="title">Result</div><div id="verdict"></div><div id="ships"></div><div id="approved"></div>
         <div class="title" style="margin-top:var(--s3)">Progress</div><pre id="events"></pre>
+        <pre id="run-tail" hidden title="the end of the running step's log"></pre>
         <div class="title" style="margin-top:var(--s3)">Rig check</div><div id="check"></div></div>
     </div>
   </div>
@@ -366,10 +438,21 @@
   <header class="page-head">
     <div class="kicker">Step 8 of 8</div>
     <h2>Review <span class="chip" data-chip="review"></span></h2>
-    <p class="lead">The checks can pass and the avatar still look wrong, so look at it: a still render (no physics), the
-      viewer (physics and face running), and finally Warudo itself.</p>
+    <p class="lead">The checks can pass and the avatar still look wrong, so look at it: the contact sheets, a still render
+      (no physics), the viewer (physics and face running), and finally Warudo itself.</p>
   </header>
   <div class="stack">
+    <div class="card">
+      <div class="title">Contact sheets</div>
+      <p class="help">The finished .vrm drawn the way tracking apps draw it (toon shading, springs settled): the face blinking,
+        looking and talking, the body in the rig check's poses from four sides, and the neck, hands and shoulders close up.
+        Closer to Warudo than the still render below. About ten seconds; click a sheet to see it full size.</p>
+      <div class="row"><button class="act" id="sheet-run" data-job>Draw the sheets</button><span class="msg" id="sheet-msg"></span></div>
+      <div class="compare" style="margin-top:var(--s3)">
+        <div><p class="help" id="sheets-label"></p><div class="imgs sheets" id="sheets"></div></div>
+        <div id="approved-sheets-box" hidden><p class="help" id="approved-sheets-label"></p><div class="imgs sheets" id="approved-sheets"></div></div>
+      </div>
+    </div>
     <div class="card">
       <div class="title">Still render</div>
       <div class="row"><select id="pose" aria-label="pose"><option value="raised">arms raised</option><option value="t-pose">T-pose</option>
@@ -407,6 +490,10 @@
         <label class="inline"><input type="checkbox"> fingers open and close evenly</label>
         <label class="inline"><input type="checkbox"> hair and cloth swing, don't clip</label>
       </div>
+      <div class="row" id="fb-verdict" style="margin-top:var(--s3)"><span class="help" style="margin:0">All in all:</span>
+        <label class="inline"><input type="radio" name="fb-verdict" value="right"> it looks right</label>
+        <label class="inline"><input type="radio" name="fb-verdict" value="wrong"> something is wrong</label>
+        <label class="inline"><input type="radio" name="fb-verdict" value="" checked> not sure yet</label></div>
       <label for="fb-note">What you saw in Warudo</label>
       <textarea id="fb-note" rows="3" placeholder="blink fine; left sleeve pokes through when the arm is down"></textarea>
       <div class="row" style="margin-top:var(--s2)"><input type="file" id="fb-shots" accept="image/png,image/jpeg" multiple aria-label="screenshots">

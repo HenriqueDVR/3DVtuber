@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import engine, face_guess, sheet, vendor
+from . import engine, face_guess, paint, sheet, vendor
 from .engine import REPO, Project, StepFailed, manifest
 
 
@@ -103,6 +103,14 @@ def main(argv=None):
 
     p = sub.add_parser("face-patch", help="give the model a front-mapped face texture to mark points on (runs Blender)")
     p.add_argument("manifest", type=Path)
+
+    p = sub.add_parser("duplicate", help="the character again under another name: same model, own output folder, to build a choice both ways")
+    p.add_argument("manifest", type=Path)
+    p.add_argument("name")
+
+    p = sub.add_parser("paint", help="the texture paint kept with a character (Paint page): what there is, or --clear it")
+    p.add_argument("manifest", type=Path)
+    p.add_argument("--clear", action="store_true", help="drop all of it: the build reads the generated texture again")
 
     p = sub.add_parser("face-guess", help="face points placed by an anime face detector, to check and nudge (needs a Python with anime-face-detector)")
     p.add_argument("manifest", type=Path)
@@ -214,7 +222,7 @@ def cmd_regress(args):
     out/compare/*); this is that, as one command and one table. One Blender at a time, a few
     minutes a character. `worse` > 0 means something measured worse than the baseline.
     """
-    events = lambda event: print(json.dumps(event, default=str), file=sys.stderr, flush=True)  # noqa: E731
+    events = getattr(args, "on_event", None) or (lambda event: print(json.dumps(event, default=str), file=sys.stderr, flush=True))
     chosen = [Path(m).resolve() for m in args.manifests] or [m for m in engine.characters() if Project(m).baseline()[0]]
     rows = []
     for path in chosen:
@@ -472,7 +480,7 @@ def cmd_face_patch(args):
     before = manifest.path_of(project.data, "source")
     reference = manifest.path_of(project.data, "reference") or before
     folder = project.out / "face"
-    if folder.resolve() in before.resolve().parents:
+    if folder.resolve() in before.resolve().parents or _patched(before):
         before = reference  # remaking: from the model before the last patch, never a patch of a patch
     views, image, patched = folder / "views", folder / "face_patch_head_000.png", folder / f"{project.name}_face.glb"
     head_at = []
@@ -484,6 +492,14 @@ def cmd_face_patch(args):
     elif survey and "head" in survey.get("joints", {}):
         # the face, a little above the head joint (a guess where clothing or a tail hides the neck)
         head_at = ["--head-at", round((survey["joints"]["head"][2] + FACE_ABOVE_HEAD * height) / height, 3)]
+    # a remake frames the head as the patch before it did: the face points are pixels in that picture,
+    # and a survey of the patched model put the frame a millimetre lower (8 px) than the first one
+    kept = _framing(folder) if project.data.get("face") else None
+    if kept is not None:
+        head_at = ["--head-at", kept]
+    if head_at:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "head_at.json").write_text(json.dumps({"head_at": head_at[1]}), encoding="utf-8")
     code, output = engine.run_script(project.blender, "retexture/render_views.py", [before, views, 1024, *head_at],
                                      log=folder / "render_views.log")
     if code != 0 or not (views / "color_head_000.png").exists():
@@ -500,6 +516,28 @@ def cmd_face_patch(args):
     manifest.save(data, project.manifest_path)
     return {"source": str(patched), "reference": str(reference), "image": str(image),
             "next": "mark the face points on the image, then rerun from survey"}
+
+
+def _framing(folder):
+    """The height (as a share of the model's) the last face patch in this folder centred the head
+    view on: as recorded, else read back from that render's camera. None without one."""
+    said = engine._read_json(folder / "head_at.json", None)
+    if said and isinstance(said.get("head_at"), (int, float)):
+        return said["head_at"]
+    views = engine._read_json(folder / "views" / "views.json", None)
+    try:
+        head = next(v for v in views["views"] if v["name"] == "head_000")
+        return round(head["matrix_world"][2][3] / views["height"], 3)
+    except (TypeError, KeyError, StopIteration, IndexError, ZeroDivisionError):
+        return None
+
+
+def _patched(model):
+    """Whether a model already wears a face patch (a duplicate's source is its original's patched copy)."""
+    try:
+        return any(m.get("name") == "face_patch" for m in paint.read_glb(model)[0].get("materials", []))
+    except (paint.NotPaintable, OSError, ValueError):
+        return False
 
 
 # The face's middle sits this share of the height above the head joint (the head bone's base).
@@ -525,6 +563,51 @@ def guess_face(manifest_path, python=None, blender=None):
     except (face_guess.NoDetector, face_guess.NoFace, RuntimeError) as error:
         raise StepFailed(f"face-guess: {error}")
     return {**points, "image": "face_patch.png"}
+
+
+def paint_state(manifest_path, blender=None):
+    """What the Paint page opens on: the source's paintable pictures, each with its paint if any."""
+    project = Project(manifest_path, blender=blender)
+    source = manifest.path_of(project.data, "source")
+    if source is None or source.suffix.lower() != ".glb" or not source.exists():
+        # an FBX or OBJ becomes a .glb with the face patch ("Get it ready")
+        return {"paintable": False, "why": "the model isn't a .glb yet: make the face patch first (Face page, or Get it ready)",
+                "pictures": []}
+    try:
+        found = paint.pictures(paint.read_glb(source)[0])
+    except (paint.NotPaintable, ValueError, KeyError, IndexError) as error:
+        return {"paintable": False, "why": str(error), "pictures": []}
+    kept = paint.overlays(manifest.path_of(project.data, "paint"))
+    for picture in found:
+        picture["painted"] = picture["overlay"] in kept
+    return {"paintable": bool(found), "why": "" if found else "the model has no texture to paint on", "pictures": found,
+            "orphans": sorted(set(kept) - {p["overlay"] for p in found})}
+
+
+def save_paint(manifest_path, images, blender=None):
+    """Keep the page's paint ({overlay name: PNG data URL or None}) with the character, and mark
+    what was built from it stale: the texture goes in at the build step."""
+    project = Project(manifest_path, blender=blender)
+    source = manifest.path_of(project.data, "source")
+    folder = manifest.path_of(project.data, "paint") or project.out / "paint" / "overlays"
+    kept = paint.save(folder, source, images)
+    data = manifest.load(project.manifest_path)
+    data["paint"] = _relative(folder, project.manifest_path) if kept else None
+    manifest.save(data, project.manifest_path)
+    project = Project(manifest_path, blender=blender)
+    project.model()  # made now: a picture that won't composite fails here, not minutes into a build
+    project.mark_stale("build")
+    return {"painted": kept, "next": "rerun from build: the texture goes in there"}
+
+
+def cmd_paint(args):
+    if args.clear:
+        project = _project(args)
+        kept = paint.overlays(manifest.path_of(project.data, "paint"))
+        return save_paint(args.manifest, {name: None for name in kept if name in
+                                          {p["overlay"] for p in paint_state(args.manifest)["pictures"]}}, blender=args.blender)
+    project = _project(args)
+    return {**paint_state(args.manifest, blender=args.blender), "model": str(project.model())}
 
 
 def cmd_face_guess(args):
@@ -562,7 +645,69 @@ def cmd_compare(args):
     import subprocess
     result = subprocess.run([sys.executable, str(REPO / "scripts" / "compare_checks.py"), str(args.before),
                              str(args.after)], capture_output=True, text=True)
-    return {"worse": result.returncode == 1, "report": result.stdout}
+    return {"worse": result.returncode == 1, "report": result.stdout, **compare_rows(args.before, args.after)}
+
+
+def compare_rows(before, after):
+    """The same comparison pose by pose, for the app's table: each pose's stretch and squash in both
+    reports, and which way it moved past the noise (compare_checks' own margins)."""
+    checks = engine.compare_checks
+    old, new = (engine._read_json(path, None) for path in (before, after))
+    if not old or not new or "poses" not in old or "poses" not in new:
+        return {"poses": [], "unweighted": None}
+    rows = []
+    for pose in sorted(set(old["poses"]) | set(new["poses"])):
+        a, b = old["poses"].get(pose, {}), new["poses"].get(pose, {})
+        stretch, squash = [a.get("stretch_cm"), b.get("stretch_cm")], [a.get("squash"), b.get("squash")]
+        way = lambda pair, margin, small: ("worse" if checks._grew(*pair, margin, smaller_is_worse=small)  # noqa: E731
+                                           else "better" if checks._grew(*pair[::-1], margin, smaller_is_worse=small) else "")
+        rows.append({"pose": pose, "stretch": stretch, "squash": squash,
+                     "stretch_way": way(stretch, checks.STRETCH_NOISE, False), "squash_way": way(squash, checks.SQUASH_NOISE, True)})
+    return {"poses": rows, "unweighted": [old.get("unweighted"), new.get("unweighted")]}
+
+
+# How a build looked to the user: the two answers a note can carry.
+VERDICTS = ("right", "wrong")
+
+
+def duplicate(manifest_path, name):
+    """The character again under another name, to build one choice both ways (iris or sliding eyes,
+    a bigger mouth) and compare them instead of writing over one manifest. Same model files; its
+    own output folder, face points and paint; nothing built yet."""
+    if not name or Path(name).name != name or not all(c.isalnum() or c in "_-" for c in name):
+        raise ValueError("the name is a folder name: letters, digits, _ and -")
+    project = Project(manifest_path)
+    out = REPO / "out" / name
+    path = out / "character.json"
+    if path.exists():
+        raise ValueError(f"{name} exists already")
+    out.mkdir(parents=True, exist_ok=True)
+    data = {k: v for k, v in json.loads(json.dumps(project.data)).items() if not k.startswith("_")}
+    data["name"], data["out_dir"] = name, None
+    for key in ("source", "reference", "rig"):
+        if data.get(key):
+            data[key] = _relative(manifest.path_of(project.data, key), path)
+    face = manifest.path_of(project.data, "face")
+    if face and face.exists():
+        shutil.copy2(face, out / "face.json")
+        data["face"] = "face.json"
+    kept = paint.overlays(manifest.path_of(project.data, "paint"))
+    data["paint"] = None
+    if kept:
+        (out / "paint" / "overlays").mkdir(parents=True)
+        for overlay in kept.values():
+            shutil.copy2(overlay, out / "paint" / "overlays" / overlay.name)
+        data["paint"] = str(Path("paint") / "overlays")
+    manifest.save(data, path)
+    # the listing names the pieces on the Parts page, and the survey says what "auto" means: both are the model's
+    for extra in ("pieces.json", "pieces.glb"):
+        if (project.out / extra).exists():
+            shutil.copy2(project.out / extra, out / extra)
+    return {"manifest": str(path), "name": name, "from": project.name, "next": f"python -m app run {path}"}
+
+
+def cmd_duplicate(args):
+    return duplicate(args.manifest, args.name)
 
 
 # Screenshots a user attaches from Warudo: kinds, and the most one note may carry (bytes).
@@ -570,15 +715,20 @@ SCREENSHOT_KINDS = {"image/png": ".png", "image/jpeg": ".jpg"}
 SCREENSHOT_MAX = 8 * 1024 * 1024
 
 
-def save_feedback(manifest_path, note, images=()):
+def save_feedback(manifest_path, note, images=(), checks=(), verdict=None):
     """What the user saw in Warudo, kept with the exact .vrm it was about. Returns the entry.
 
     `images` are data URLs (PNG or JPEG) from the page. Feedback given earlier was lost between
     sessions or tied to the wrong build; each note now sits in its own folder beside the build.
+    `checks` are the poses tried that looked right, `verdict` "right" or "wrong" for the whole
+    build: kept as their own fields, so the app can say which builds still wait for a look.
     """
     import base64
     project = Project(manifest_path)
-    if not (note or "").strip() and not images:
+    if verdict not in (None, *VERDICTS):
+        raise ValueError(f"verdict is one of {', '.join(VERDICTS)}")
+    checks = [str(c) for c in checks]
+    if not (note or "").strip() and not images and not checks and verdict is None:
         raise ValueError("say what you saw, or attach a screenshot")
     shots = []
     for i, url in enumerate(images):
@@ -600,7 +750,7 @@ def save_feedback(manifest_path, note, images=()):
         (folder / name).write_bytes(raw)
         saved.append(name)
     entry = {"when": datetime.now().isoformat(timespec="seconds"), "note": note or "",
-             "vrm": str(project._last_vrm() or ""), "screenshots": saved}
+             "vrm": str(project._last_vrm() or ""), "screenshots": saved, "checks": checks, "verdict": verdict}
     (folder / "feedback.json").write_text(json.dumps(entry, indent=2), encoding="utf-8")
     return dict(entry, folder=str(folder))
 
@@ -610,7 +760,8 @@ def list_feedback(manifest_path):
     root = Project(manifest_path).out / "feedback"
     entries = []
     for path in sorted(root.glob("*/feedback.json"), reverse=True) if root.exists() else []:
-        entries.append(dict(json.loads(path.read_text(encoding="utf-8")), folder=str(path.parent)))
+        # notes from before the ticks and the verdict were kept apart carry neither
+        entries.append({"checks": [], "verdict": None, **json.loads(path.read_text(encoding="utf-8")), "folder": str(path.parent)})
     return entries
 
 
@@ -644,7 +795,7 @@ def cmd_bundle(args):
 
 COMMANDS = {"init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_set, "joint": cmd_joint,
             "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "sheet": cmd_sheet, "movement": cmd_movement, "springs": cmd_springs,
-            "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
+            "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "paint": cmd_paint, "duplicate": cmd_duplicate, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
             "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup,
             "regress": cmd_regress, "vendor": cmd_vendor, "warudo": cmd_warudo}
 

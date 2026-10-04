@@ -10,7 +10,7 @@ from types import SimpleNamespace
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from app import cli, engine, errors, server, vendor  # noqa: E402
+from app import cli, engine, errors, paint, server, vendor  # noqa: E402
 from app.engine import Project, manifest  # noqa: E402
 
 
@@ -215,7 +215,7 @@ class Engine(unittest.TestCase):
     def test_a_character_card_says_how_far_the_build_got(self):
         project = self.project()
         self.assertEqual(project.summary(), {"surveyed": False, "built": False, "stale": [], "failed": [],
-                                             "finished": None, "approved": False, "picture": None})
+                                             "finished": None, "approved": False, "picture": None, "waiting": False})
         self.finished(project, eyes={"status": "failed", "finished": "2026-01-02T10:00:00"}, tpose={"status": "stale"})
         pictures = project.out / "renders" / "20260102-100000_09_tpose_raised"
         pictures.mkdir(parents=True)
@@ -346,6 +346,74 @@ class Engine(unittest.TestCase):
             cli.save_feedback(self.path, "x", ["data:text/html;base64,PGI+"])
         with self.assertRaisesRegex(ValueError, "say what you saw"):
             cli.save_feedback(self.path, "  ")
+
+    def test_a_note_keeps_its_ticks_and_verdict_apart(self):
+        saved = cli.save_feedback(self.path, "", checks=["arms up: sleeves and shoulders follow"], verdict="right")
+        self.assertEqual((saved["note"], saved["checks"], saved["verdict"]), ("", ["arms up: sleeves and shoulders follow"], "right"))
+        with self.assertRaisesRegex(ValueError, "verdict"):
+            cli.save_feedback(self.path, "x", verdict="perfect")
+        # a note from before they were kept apart still lists
+        old = Project(self.path).out / "feedback" / "20260101-100000"
+        old.mkdir(parents=True)
+        (old / "feedback.json").write_text(json.dumps({"when": "2026-01-01T10:00:00", "note": "old", "vrm": "", "screenshots": []}))
+        self.assertEqual([(f["note"], f["checks"], f["verdict"]) for f in cli.list_feedback(self.path)],
+                         [("", ["arms up: sleeves and shoulders follow"], "right"), ("old", [], None)])
+
+    def test_a_finished_build_waits_until_someone_has_looked(self):
+        project = self.project()
+        self.assertIsNone(project.looked_at())  # nothing built
+        run = project.out / "runs" / "20260102-100000"
+        run.mkdir(parents=True)
+        (run / "14_export.vrm").write_bytes(b"vrm")
+        self.finished(project, export={"status": "done", "vrm": str(run / "14_export.vrm")})
+        project._save_state()
+        self.assertIs(project.looked_at(), False)
+        self.assertTrue(project.summary()["waiting"])
+        cli.save_feedback(self.path, "blink fine")
+        self.assertIs(Project(self.path).looked_at(), True)
+        # a later build is a new file: the note was about the old one
+        later = project.out / "runs" / "20260103-100000"
+        later.mkdir(parents=True)
+        (later / "14_export.vrm").write_bytes(b"vrm")
+        project.state["steps"]["export"]["vrm"] = str(later / "14_export.vrm")
+        self.assertIs(project.looked_at(), False)
+
+    def test_compare_rows_say_which_way_each_pose_moved(self):
+        before, after = self.root / "before.json", self.root / "after.json"
+        before.write_text(json.dumps({"unweighted": 0, "poses": {"arms raised": {"stretch_cm": 5.0, "squash": 0.5}, "head turn": {"stretch_cm": 3.0, "squash": 0.6}}}))
+        after.write_text(json.dumps({"unweighted": 2, "poses": {"arms raised": {"stretch_cm": 9.0, "squash": 0.5}, "head turn": {"stretch_cm": 3.1, "squash": 0.8}}}))
+        rows = cli.compare_rows(before, after)
+        self.assertEqual(rows["unweighted"], [0, 2])
+        self.assertEqual([(r["pose"], r["stretch"], r["stretch_way"], r["squash_way"]) for r in rows["poses"]],
+                         [("arms raised", [5.0, 9.0], "worse", ""), ("head turn", [3.0, 3.1], "", "better")])
+        self.assertEqual(cli.compare_rows(before, self.root / "missing.json"), {"poses": [], "unweighted": None})
+
+    def test_a_duplicate_is_the_same_character_with_its_own_builds(self):
+        (self.root / "face.json").write_text(json.dumps({"size": [8, 8]}))
+        data = manifest.load(self.path)
+        data["options"]["eyes"] = "iris"
+        data["joints"] = {"hips": [0.0, 0.0, 0.9]}
+        manifest.save(data, self.path)
+        (self.root / "out").mkdir()
+        (self.root / "out" / "pieces.json").write_text("{}")
+        real = cli.REPO
+        cli.REPO = self.root
+        try:
+            made = cli.duplicate(self.path, "Test_b")
+            with self.assertRaisesRegex(ValueError, "exists already"):
+                cli.duplicate(self.path, "Test_b")
+            for name in ("../evil", "a b", ""):
+                with self.assertRaisesRegex(ValueError, "folder name"):
+                    cli.duplicate(self.path, name)
+        finally:
+            cli.REPO = real
+        copy = manifest.load(made["manifest"])
+        self.assertEqual(Path(made["manifest"]), self.root / "out" / "Test_b" / "character.json")
+        self.assertEqual((copy["name"], copy["out_dir"], copy["options"]["eyes"], copy["joints"]), ("Test_b", None, "iris", {"hips": [0.0, 0.0, 0.9]}))
+        self.assertEqual(manifest.path_of(copy, "source"), manifest.path_of(manifest.load(self.path), "source"))
+        self.assertEqual(manifest.path_of(copy, "face"), (self.root / "out" / "Test_b" / "face.json").resolve())
+        self.assertTrue((self.root / "out" / "Test_b" / "pieces.json").exists())
+        self.assertFalse((self.root / "out" / "Test_b" / "state.json").exists())
 
 
     def test_a_half_written_state_falls_back_to_its_backup(self):
@@ -1121,6 +1189,66 @@ class Server(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "path"):
             server.api("init", {}, {"model": "m.glb", "name": "../evil"})
 
+    def test_a_get_only_reads(self):
+        # another site's <img src=".../api/prune?manifest=..."> reached every call: no header is asked of a GET
+        class Probe(server.Handler):
+            def __init__(self, path):
+                self.path, self.headers, self.said = path, {"Host": "127.0.0.1:1"}, []
+                self.server = SimpleNamespace(server_port=1)
+
+            def _json(self, data, code=200):
+                self.said.append(code)
+
+            def _api(self, route, query, body):
+                self.said.append(route)
+        for route in ("run", "prune", "approve", "cancel", "vendor", "sheet", "face_guess", "send_warudo", "set", "bundle"):
+            probe = Probe(f"/api/{route}?manifest=x")
+            probe.do_GET()
+            self.assertEqual(probe.said, [405], route)
+        for route in server.READ_ONLY:
+            probe = Probe(f"/api/{route}")
+            probe.do_GET()
+            self.assertEqual(probe.said, [route])
+
+    def test_a_running_step_shows_the_end_of_its_log(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / "01_build.log"
+            log.write_bytes(b"x" * 5000 + b"\nskinning the arms\n")
+            jobs = server.Jobs()
+            jobs.running, jobs.events = "build", [{"step": "survey", "status": "done"}, {"step": "build", "status": "running", "log": str(log)}]
+            tail = jobs.poll()["tail"]
+            self.assertTrue(tail.endswith("skinning the arms\n") and len(tail) <= server.LOG_TAIL)
+            jobs.events.append({"step": "hair", "status": "running", "log": str(Path(folder) / "02_hair.log")})
+            self.assertIsNone(jobs.poll()["tail"])  # not written yet
+            jobs.running = None
+            self.assertIsNone(jobs.poll()["tail"])
+
+    def test_sheets_are_listed_by_run(self):
+        with tempfile.TemporaryDirectory(dir=REPO / "out") as folder:
+            renders = Path(folder) / "renders"
+            for run in ("20260101-100000", "20260102-100000"):
+                (renders / f"sheets_{run}").mkdir(parents=True)
+                (renders / f"sheets_{run}" / "sheet_face.png").write_bytes(b"png")
+            (renders / "sheets_20260102-100000" / "sheet.json").write_text(json.dumps({"missing": ["blink"]}))
+            (renders / "sheets_empty").mkdir()
+            found = {s["run"]: s for s in server._sheets(renders)}
+            self.assertEqual(sorted(found), ["20260101-100000", "20260102-100000"])
+            self.assertEqual(found["20260102-100000"]["report"], {"missing": ["blink"]})
+            self.assertTrue(found["20260101-100000"]["urls"][0].endswith("/renders/sheets_20260101-100000/sheet_face.png"))
+
+    def test_a_second_start_finds_the_first(self):
+        import threading
+        first, port = server._listen(0)
+        self.assertIsNotNone(first)
+        threading.Thread(target=first.serve_forever, daemon=True).start()
+        try:
+            self.assertTrue(server._ours(port))
+            self.assertEqual(server._listen(port), (None, port))
+        finally:
+            first.shutdown()
+            first.server_close()
+        self.assertFalse(server._ours(port))
+
     def test_only_character_manifests_are_listed(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -1134,6 +1262,173 @@ class Server(unittest.TestCase):
                 self.assertEqual([p.name for p in server._characters()], ["Real.json"])
             finally:
                 engine.REPO = real
+
+
+class Paint(unittest.TestCase):
+    """Texture paint kept as overlays and laid over the source for a build (app/paint.py)."""
+
+    def setUp(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            # Blender's own Python, which runs this file too with the suite, has no Pillow; the app's has
+            self.skipTest("Pillow is not in this Python: run with python -m unittest tests.test_app")
+        self.Image = Image
+        self.folder = tempfile.TemporaryDirectory()
+        self.root = Path(self.folder.name)
+        # a model with two pictures, the first a normal map no material paints on, and its geometry first in the file
+        self.geometry = bytes(range(40))
+        views, binary = [], bytearray()
+        for data in (self.geometry, self.png((8, 8), (10, 20, 30, 255)), self.png((4, 4), (200, 100, 50, 255))):
+            binary += b"\0" * (-len(binary) % 4)
+            views.append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(data)})
+            binary += data
+        gltf = {"asset": {"version": "2.0"}, "scenes": [{"nodes": [0], "extras": {"vtuber_rig": "rig.fbx"}}], "nodes": [{"mesh": 0}],
+                "buffers": [{"byteLength": len(binary)}], "bufferViews": views,
+                "images": [{"name": "normal", "mimeType": "image/png", "bufferView": 1}, {"name": "base colour", "mimeType": "image/png", "bufferView": 2}],
+                "textures": [{"source": 0}, {"source": 1}],
+                "materials": [{"name": "skin", "normalTexture": {"index": 0}, "pbrMetallicRoughness": {"baseColorTexture": {"index": 1}}}]}
+        self.source = self.root / "model.glb"
+        paint.write_glb(self.source, gltf, binary)
+        self.path = self.root / "character.json"
+        data = manifest.new("model.glb", "Test")
+        data["out_dir"] = "out"
+        manifest.save(data, self.path)
+
+    def tearDown(self):
+        if hasattr(self, "folder"):
+            self.folder.cleanup()
+
+    def png(self, size, colour):
+        import io
+        out = io.BytesIO()
+        self.Image.new("RGBA", size, colour).save(out, "PNG")
+        return out.getvalue()
+
+    def url(self, raw):
+        import base64
+        return "data:image/png;base64," + base64.b64encode(raw).decode()
+
+    def pixels(self, glb, image):
+        import io
+        gltf, binary = paint.read_glb(glb)
+        view = gltf["bufferViews"][gltf["images"][image]["bufferView"]]
+        return self.Image.open(io.BytesIO(binary[view["byteOffset"]:view["byteOffset"] + view["byteLength"]])).convert("RGBA")
+
+    def test_only_base_colour_pictures_take_paint(self):
+        self.assertEqual(cli.paint_state(self.path)["pictures"],
+                         [{"index": 1, "name": "base colour", "overlay": "base_colour.png", "materials": ["skin"], "painted": False}])
+        with self.assertRaisesRegex(ValueError, "not one of this model's pictures"):
+            cli.save_paint(self.path, {"normal.png": self.url(self.png((8, 8), (255, 0, 0, 255)))})
+        with self.assertRaisesRegex(ValueError, "not one of this model's pictures"):
+            cli.save_paint(self.path, {"../evil.png": self.url(self.png((4, 4), (255, 0, 0, 255)))})
+
+    def test_a_build_reads_the_painted_copy_and_nothing_else_changes(self):
+        project = Project(self.path, blender="blender")
+        self.assertEqual(project.model(), self.source.resolve())
+        project.state["steps"] = {"survey": {"status": "done"}, "build": {"status": "done"}, "hair": {"status": "done"}}
+        project._save_state()
+        # half-opaque red over the lower half
+        over = self.Image.new("RGBA", (4, 4), (0, 0, 0, 0))
+        over.paste((255, 0, 0, 128), (0, 2, 4, 4))
+        import io
+        raw = io.BytesIO()
+        over.save(raw, "PNG")
+        self.assertEqual(cli.save_paint(self.path, {"base_colour.png": self.url(raw.getvalue())})["painted"], ["base_colour.png"])
+        project = Project(self.path, blender="blender")
+        self.assertEqual(manifest.path_of(project.data, "paint"), (self.root / "out" / "paint" / "overlays").resolve())
+        self.assertEqual({n: e["status"] for n, e in project.state["steps"].items()}, {"survey": "done", "build": "stale", "hair": "stale"})
+        painted = project.model()
+        self.assertEqual(painted, self.root.resolve() / "out" / "paint" / "Test_painted.glb")
+        self.assertEqual(project._arguments("build", self.root / "out" / "runs" / "r" / "01_build", None)[0][1], painted)
+        self.assertEqual(self.pixels(painted, 1).getpixel((0, 0)), (200, 100, 50, 255))
+        self.assertEqual(self.pixels(painted, 1).getpixel((0, 3)), (228, 50, 25, 255))
+        self.assertEqual(self.pixels(painted, 0).getpixel((0, 0)), (10, 20, 30, 255))
+        before, after = paint.read_glb(self.source), paint.read_glb(painted)
+        for key in ("scenes", "nodes", "textures", "materials"):
+            self.assertEqual(before[0][key], after[0][key])
+        view = after[0]["bufferViews"][0]
+        self.assertEqual(after[1][view["byteOffset"]:view["byteOffset"] + view["byteLength"]], self.geometry)
+        self.assertEqual(manifest.rig_of(painted), None)  # read without error: the scene's extras came along
+        self.assertEqual(manifest._scene_extras(painted), {"vtuber_rig": "rig.fbx"})
+
+    def test_the_copy_is_made_again_when_the_paint_or_the_model_changes(self):
+        cli.save_paint(self.path, {"base_colour.png": self.url(self.png((4, 4), (0, 255, 0, 255)))})
+        project = Project(self.path, blender="blender")
+        painted = project.model()
+        made = painted.stat().st_mtime_ns
+        self.assertEqual(project.model().stat().st_mtime_ns, made)  # nothing changed: not made again
+        cli.save_paint(self.path, {"base_colour.png": self.url(self.png((4, 4), (0, 0, 255, 255)))})
+        self.assertEqual(self.pixels(Project(self.path, blender="blender").model(), 1).getpixel((1, 1)), (0, 0, 255, 255))
+        # an overlay of another size than the picture (a face patch remade larger) is stretched over it
+        cli.save_paint(self.path, {"base_colour.png": self.url(self.png((2, 2), (9, 9, 9, 255)))})
+        self.assertEqual(self.pixels(Project(self.path, blender="blender").model(), 1).size, (4, 4))
+
+    def test_cleared_paint_gives_the_source_back(self):
+        cli.save_paint(self.path, {"base_colour.png": self.url(self.png((4, 4), (0, 255, 0, 255)))})
+        cli.cmd_paint(SimpleNamespace(manifest=self.path, clear=True, blender="blender"))
+        project = Project(self.path, blender="blender")
+        self.assertIsNone(project.data["paint"])
+        self.assertEqual(project.model(), self.source.resolve())
+
+    def test_a_remade_face_patch_keeps_the_frame_and_starts_from_the_unpatched_model(self):
+        folder = self.root / "out" / "face"
+        self.assertIsNone(cli._framing(folder))
+        (folder / "views").mkdir(parents=True)
+        # the camera of the patch before, 0.8446 up a model 0.9995 tall: the face points are pixels in that frame
+        (folder / "views" / "views.json").write_text(json.dumps({"height": 0.9995, "views": [
+            {"name": "head_000", "matrix_world": [[1, 0, 0, 0], [0, 0, -1, -3], [0, 1, 0, 0.8446], [0, 0, 0, 1]]}]}))
+        self.assertEqual(cli._framing(folder), 0.845)
+        (folder / "head_at.json").write_text(json.dumps({"head_at": 0.808}))
+        self.assertEqual(cli._framing(folder), 0.808)
+        # a duplicate's source is its original's patched copy, outside its own folder: still not patched again
+        self.assertFalse(cli._patched(self.source))
+        gltf, binary = paint.read_glb(self.source)
+        gltf["materials"].append({"name": "face_patch"})
+        paint.write_glb(self.root / "patched.glb", gltf, binary)
+        self.assertTrue(cli._patched(self.root / "patched.glb"))
+        self.assertFalse(cli._patched(self.root / "model.fbx"))
+
+    def test_paint_for_a_picture_the_model_lost_is_left_out(self):
+        folder = self.root / "out" / "paint" / "overlays"
+        folder.mkdir(parents=True)
+        (folder / "face_patch_head_000.png").write_bytes(self.png((4, 4), (1, 2, 3, 255)))
+        data = manifest.load(self.path)
+        data["paint"] = "out/paint/overlays"
+        manifest.save(data, self.path)
+        self.assertEqual(Project(self.path, blender="blender").model(), self.source.resolve())
+        self.assertEqual(cli.paint_state(self.path)["orphans"], ["face_patch_head_000.png"])
+
+
+class Pages(unittest.TestCase):
+    """The app's page opened in a browser without a window: every module loads and runs to its end.
+    A page that throws while loading shows a half-drawn app and no error anywhere a test would see."""
+
+    def test_every_page_module_runs(self):
+        import subprocess
+        import threading
+        from app import sheet
+        try:
+            browser = sheet.find_browser()
+        except sheet.NoBrowser as error:
+            self.skipTest(str(error))
+        served, port = server._listen(0)
+        threading.Thread(target=served.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as profile:
+                done = subprocess.run([browser, "--headless=new", f"--user-data-dir={profile}", "--no-first-run", "--mute-audio",
+                                       "--enable-unsafe-swiftshader", "--enable-logging=stderr", "--v=0", "--virtual-time-budget=15000",
+                                       "--dump-dom", f"http://127.0.0.1:{port}/"], capture_output=True, text=True, encoding="utf-8",
+                                      errors="replace", timeout=120)
+        finally:
+            served.shutdown()
+            served.server_close()
+        page = done.stdout
+        errors_said = [line for line in done.stderr.splitlines() if "CONSOLE" in line and ("Uncaught" in line or "SyntaxError" in line)]
+        self.assertEqual(errors_said, [])
+        # each is drawn by its module's last lines, or by main.js after every import ran
+        for mark in ('data-tool="brush"', "New character", 'class="page on" id="home"', "Open or create a character first"):
+            self.assertTrue(mark in page, f"not drawn: {mark}")
 
 
 class Vendor(unittest.TestCase):

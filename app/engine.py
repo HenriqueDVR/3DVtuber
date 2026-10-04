@@ -29,7 +29,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import contracts, errors, vendor
+from . import contracts, errors, paint, vendor
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
@@ -213,6 +213,21 @@ class Project:
         return self._blender
 
     # ----- what the steps will do
+
+    def model(self):
+        """The model the steps read: the source, or its painted copy when the character has paint."""
+        source = manifest.path_of(self.data, "source")
+        return paint.painted(source, manifest.path_of(self.data, "paint"), self.out, self.name)
+
+    def mark_stale(self, start="build"):
+        """What was built from `start` on no longer shows the manifest: the app then offers the rebuild."""
+        changed = False
+        for name in NAMES[NAMES.index(start):]:
+            if self.state["steps"].get(name, {}).get("status") == "done":
+                self.state["steps"][name]["status"] = "stale"
+                changed = True
+        if changed:
+            self._save_state()
 
     def survey(self):
         entry = self.state["steps"].get("survey")
@@ -491,6 +506,17 @@ class Project:
                             path.unlink()
         return {"name": self.name, "removed": len(removed), "freed": freed, "dry": dry}
 
+    def looked_at(self):
+        """Whether the finished .vrm has a verdict: marked good, or a Warudo note written about it.
+        None without a finished build. A build that only passed its checks is still waiting to be seen."""
+        vrm = self._last_vrm()
+        if vrm is None or self.state["steps"].get("vrm_check", {}).get("status") != "done":
+            return None
+        same = lambda other: bool(other) and Path(other).resolve() == vrm.resolve()  # noqa: E731
+        if same((self.approved() or {}).get("vrm")):
+            return True
+        return any(same((_read_json(p, None) or {}).get("vrm")) for p in (self.out / "feedback").glob("*/feedback.json"))
+
     def summary(self):
         """How far the build got and the newest render: a card on the app's Characters page."""
         steps = self.state["steps"]
@@ -501,7 +527,8 @@ class Project:
                 "stale": sorted(n for n, s in statuses.items() if s == "stale"),
                 "failed": sorted(n for n, s in statuses.items() if s == "failed"),
                 "finished": max((e.get("finished") or "" for e in steps.values()), default="") or None,
-                "approved": self.approved() is not None, "picture": str(pictures[0]) if pictures else None}
+                "approved": self.approved() is not None, "picture": str(pictures[0]) if pictures else None,
+                "waiting": self.looked_at() is False}
 
     # ----- running
 
@@ -534,7 +561,8 @@ class Project:
                     self._record(name, {"status": "skipped", "reason": why})
                     emit({"step": name, "status": "skipped", "reason": why})
                     continue
-                emit({"step": name, "status": "running"})
+                # with its log's name: the app shows the log's end while the step runs
+                emit({"step": name, "status": "running", "log": str(folder / f"{index:02d}_{name}.log")})
                 try:
                     try:
                         entry = self._run_step(name, index, folder)
@@ -638,7 +666,7 @@ class Project:
         """(script and its arguments, Blender arguments before -P)."""
         o, data = self.options(), self.data
         blend, vrm = stem.with_suffix(".blend"), stem.with_suffix(".vrm")
-        source = manifest.path_of(data, "source")
+        source = self.model() if name in ("survey", "build") else manifest.path_of(data, "source")
         face = manifest.path_of(data, "face")
         if name == "survey":
             return ["preflight.py", source, "--json", stem.with_suffix(".json"), "--height", o["height"]], []

@@ -167,15 +167,16 @@ $("patch-make").onclick = () => job("face_patch", {});
 $("points-guess").onclick = async () => {
   if (!facePatch) { say("guess-msg", "Make the face patch first (step 1).", true); return; }
   if (placed(facePoints) && !confirm("Replace the points already placed with the detector's guess?")) return;
-  $("points-guess").disabled = true; say("guess-msg", "Looking for the face…");
+  say("guess-msg", "Looking for the face…");
+  // a job like a build: the detector must not run beside a Blender (memory)
+  const state = await job("face_guess", {});
+  if (!state?.result?.points) { say("guess-msg", state?.error ? state.error.split("\n")[0] : state?.cancelled ? "Stopped." : "", !!state?.error); return; }
   try {
-    const { points } = await call("face_guess", {});
-    const { sure, ...kept } = points;
+    const { sure, ...kept } = state.result.points;
     facePoints = kept; sendFaceImage(); showFacePoints(); showPointsState();
     await savePoints();
     say("guess-msg", `Placed (the detector is ${Math.round(sure * 100)}% sure of its least certain point). Check each one and drag any that is off.`);
   } catch (e) { say("guess-msg", e.message, true); }
-  $("points-guess").disabled = false;
 };
 export function renderFace() {
   if (!S.manifest) return;

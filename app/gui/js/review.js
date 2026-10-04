@@ -1,7 +1,35 @@
 // Review: still renders (next to the approved build's), the spring viewer, and notes from Warudo.
-import { $, S, app, call, esc, lastVrm } from "./core.js";
+import { $, S, app, call, esc, lastVrm, say } from "./core.js";
 import { toast } from "./ui.js";
 import { job } from "./jobs.js";
+
+// ---------- contact sheets: the exported file as apps draw it, beside the approved build's
+const sheetPictures = (urls, label) => urls.filter(Boolean).map((u) =>
+  `<img src="${u}?t=${Date.now()}" alt="${esc(label)}: ${esc(u.split("/").pop().replace("sheet_", "").replace(".png", ""))}">`).join("");
+const vrmRun = () => { const vrm = lastVrm(); return vrm ? vrm.replaceAll("\\", "/").split("/").slice(-2)[0] : null; };
+let sheets = [];
+export async function loadSheets() {
+  sheets = S.manifestPath ? (await call("sheets")).sheets : [];
+  showSheets();
+}
+function showSheets() {
+  const run = vrmRun(), good = approvedRun();
+  const mine = sheets.find((s) => s.run === run);
+  $("sheets-label").textContent = !run ? "No finished .vrm yet: build first." : !mine ? "No sheets of this build yet: press Draw the sheets."
+    // what the shots asked for and the file lacks: said, or those shots read as a face that didn't move
+    : `${run === good ? "The build marked good" : "This build"}.${mine.report?.missing?.length ? ` Not on this avatar: ${mine.report.missing.join(", ")}.` : ""}`;
+  $("sheets").innerHTML = mine ? sheetPictures(mine.urls, "this build") : "";
+  const theirs = good && sheets.find((s) => s.run === good);
+  const box = $("approved-sheets-box");
+  box.hidden = !good || !run || run === good;
+  if (box.hidden) return;
+  $("approved-sheets-label").innerHTML = theirs ? "The build marked good."
+    : `The build marked good has no sheets. <button class="act alt small" id="sheet-approved" data-job>Draw them</button>`;
+  $("approved-sheets").innerHTML = theirs ? sheetPictures(theirs.urls, "marked good") : "";
+  $("sheet-approved")?.addEventListener("click", () => job("sheet", { run: good }));
+  if (!$("runbar").hidden && $("sheet-approved")) $("sheet-approved").disabled = true;
+}
+$("sheet-run").onclick = () => { say("sheet-msg", ""); job("sheet", {}); };
 
 // ---------- still renders
 const POSE_NAME = { raised: "arms raised", "t-pose": "T-pose", forward: "arms forward", hang: "arms down", rest: "rest" };
@@ -94,9 +122,12 @@ document.querySelectorAll("[data-face]").forEach((b) => b.onclick = () => {
 // ---------- Warudo feedback: a note and screenshots per build, listed newest first
 export async function loadFeedback() {
   S.feedback = S.manifestPath ? (await call("feedback_list")).feedback : [];
+  const VERDICT = { right: ["looks right", "good"], wrong: ["something wrong", "bad"] };
   $("fb-list").innerHTML = S.feedback.map((f) => `<div class="feedback">
     <span class="msg">${esc(f.when.replace("T", " "))} · ${esc(f.vrm.split(/[\\/]/).slice(-2).join("/") || "no .vrm yet")}</span>
+    ${VERDICT[f.verdict] ? `<span class="chip ${VERDICT[f.verdict][1]}">${VERDICT[f.verdict][0]}</span>` : ""}
     <p style="margin:2px 0;white-space:pre-wrap">${esc(f.note)}</p>
+    ${f.checks?.length ? `<p class="msg" style="margin:2px 0">Looked right: ${esc(f.checks.join("; "))}.</p>` : ""}
     ${f.urls.filter(Boolean).map((u) => `<img src="${u}" alt="Warudo screenshot">`).join("")}</div>`).join("");
   app.renderNav();
 }
@@ -105,13 +136,15 @@ $("fb-save").onclick = async () => {
   // the checklist goes with the note: which poses were tried and looked right
   const boxes = [...$("fb-checks").querySelectorAll("label")];
   const ticked = boxes.filter((l) => l.querySelector("input").checked).map((l) => l.textContent.trim());
-  const note = $("fb-note").value.trim() + (ticked.length ? `${$("fb-note").value.trim() ? "\n\n" : ""}Looked right: ${ticked.join("; ")}.` : "");
+  // the ticks and the verdict as their own fields, not sentences in the note: the app reads them back
+  const verdict = document.querySelector('input[name="fb-verdict"]:checked')?.value || null;
   try {
     const images = await Promise.all([...$("fb-shots").files].map(read));
-    await call("feedback", { note, images });
+    await call("feedback", { note: $("fb-note").value.trim(), images, checks: ticked, verdict });
     $("fb-note").value = ""; $("fb-shots").value = ""; boxes.forEach((l) => l.querySelector("input").checked = false);
+    document.querySelector('input[name="fb-verdict"][value=""]').checked = true;
     $("fb-msg").textContent = ""; toast("Note saved with this build.");
-    loadFeedback();
+    loadFeedback(); app.loadProjects?.(S.manifestPath);
   } catch (e) { $("fb-msg").textContent = e.message; $("fb-msg").classList.add("bad"); }
 };
 

@@ -2,14 +2,18 @@
 import { $, S, app, call, say, stepName } from "./core.js";
 import { toast } from "./ui.js";
 
-let polling = false, run = null, ticker = null;
+let polling = false, run = null, ticker = null, waiting = [];
 
+// Resolves when the job ends, to its last report ({result, error, cancelled}), after the open
+// character has been read again; to null when it couldn't start.
 export async function job(route, body = {}) {
-  try { await call(route, body); } catch (e) { toast(e.message, "bad"); $("events").textContent += `\n${e.message}`; return; }
+  try { await call(route, body); } catch (e) { toast(e.message, "bad"); $("events").textContent += `\n${e.message}`; return null; }
   $("events").textContent = "";
   run = plan(route, body);
   showBar(true);
+  const ended = new Promise((done) => waiting.push(done));
   if (!polling) poll(0);
+  return ended;
 }
 app.job = job;
 
@@ -40,6 +44,9 @@ async function poll(since) {
     else if (run) run.done += 1;
   }
   $("busy").textContent = state.running ? `working: ${state.running}` : "idle";
+  // the running step's own words: Blender says what it is at long before the step ends
+  $("run-tail").hidden = !state.tail;
+  if (state.tail) { $("run-tail").textContent = state.tail.split(/\r?\n/).slice(1).join("\n").trimEnd(); $("run-tail").scrollTop = 1e9; }
   if (state.running) {
     run.label ||= state.running;
     showBar(true); paintBar();
@@ -53,7 +60,7 @@ async function poll(since) {
   const took = Math.round((Date.now() - finished.started) / 1000);
   if (state.error) {
     $("events").textContent += `\n${state.error}`;
-    for (const id of ["pieces-msg", "render-msg", "movement-msg", "patch-msg"]) say(id, state.error.split("\n")[0], true);
+    for (const id of ["pieces-msg", "render-msg", "sheet-msg", "movement-msg", "patch-msg"]) say(id, state.error.split("\n")[0], true);
     toast(`${finished.label || "The run"} failed: ${state.error.split("\n")[0]}`, "bad", { ms: 9000 });
   } else if (state.cancelled) toast("Stopped. The step that was running keeps what it last finished; run it again when you like.", "info");
   else toast(`${cap(finished.label || "done")}: finished in ${duration(took)}.`);
@@ -62,6 +69,7 @@ async function poll(since) {
   if (S.manifestPath) await app.openProject(S.manifestPath);
   if (finished.route === "prepare" && !state.error && !state.cancelled) app.prepared?.();
   if (finished.route === "vendor") app.vendored?.();
+  for (const done of waiting.splice(0)) done(state);
 }
 
 const cap = (t) => t[0].toUpperCase() + t.slice(1);
