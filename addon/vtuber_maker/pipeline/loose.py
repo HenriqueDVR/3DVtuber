@@ -23,7 +23,7 @@ most of it. Big pieces (the body, the hair, a coat) are left alone: those are me
 import bmesh
 import numpy as np
 
-from .meshdata import pieces, world_vertices
+from .meshdata import pieces, welded_edges, world_vertices
 
 # A piece counts as a prop when it holds no more than this share of the character's vertices.
 PROP_SHARE = 0.02
@@ -818,3 +818,90 @@ def _write_weights(mesh_obj, weights, touched):
             group.remove(drop)
         for index in keep:
             group.add([index], float(row[index]), "REPLACE")
+
+
+# close_small_holes looks at holes no larger than this (m) across, and brings together border
+# points nearer than HOLE_GAP (model A's pairs: 0.6 to 0.9 mm).
+HOLE_SIZE = 0.04
+HOLE_GAP = 0.0015
+
+
+def find_small_holes(mesh_obj, low=None, high=None, size=HOLE_SIZE, verts=None):
+    """Holes in the surface no larger than `size`: lists of mesh edge indices, one a hole.
+
+    A hole is a closed ring of edges with a face on one side only, UV seams joined first. With
+    `low`/`high` (world space) only holes wholly inside that box. Borders that don't close on
+    themselves (a cloth's edge running out of the box) are not holes. Changes nothing.
+    """
+    mesh = mesh_obj.data
+    verts = world_vertices(mesh_obj) if verts is None else verts
+    weld, a, b = welded_edges(mesh_obj, verts)
+    edge_of_loop = np.empty(len(mesh.loops), dtype=np.int64)
+    mesh.loops.foreach_get("edge_index", edge_of_loop)
+    faces = np.bincount(edge_of_loop, minlength=len(mesh.edges))
+    _, same = np.unique(np.stack([np.minimum(a, b), np.maximum(a, b)], axis=1), axis=0, return_inverse=True)
+    same = same.ravel()
+    lone = np.nonzero((np.bincount(same, weights=faces)[same] == 1) & (faces == 1))[0]
+    labels = np.arange(len(verts))
+    while True:
+        updated = labels.copy()
+        np.minimum.at(updated, a[lone], labels[b[lone]])
+        np.minimum.at(updated, b[lone], labels[a[lone]])
+        updated = updated[updated]
+        if np.array_equal(updated, labels):
+            break
+        labels = updated
+    holes = []
+    for label in np.unique(labels[a[lone]]):
+        edges = lone[labels[a[lone]] == label]
+        ends = np.concatenate([a[edges], b[edges]])
+        points = verts[np.unique(ends)]
+        closed = (np.bincount(ends)[np.unique(ends)] % 2 == 0).all()
+        inside = (low is None or (points >= np.asarray(low)).all()) and (high is None or (points <= np.asarray(high)).all())
+        if closed and inside and np.ptp(points, axis=0).max() <= size:
+            holes.append(edges.tolist())
+    return holes
+
+
+def close_small_holes(mesh_obj, low=None, high=None, size=HOLE_SIZE, gap=HOLE_GAP):
+    """Close the surface's small holes (find_small_holes) that are cracks: border points within
+    `gap` of each other are brought together. Returns how many vertices were moved.
+
+    Model A's T-pose bake of 2026-09-21 left a row of them across the shirt's chest: pairs of
+    vertices 0.9 mm apart where there had been one point, so a sliver 12 mm tall stood open above
+    each pair and a crack ran between the pairs; dark lines in every build made from it. Filling
+    them with faces smeared the texture (the crack is a UV seam, and its ring is far from convex),
+    so the points are moved instead: each group onto its first vertex, in the basis and by the
+    same step in every shape key. No vertex is added or removed and no weight changes. A hole
+    with real area has no such pairs and is left as it is.
+    """
+    mesh = mesh_obj.data
+    verts = world_vertices(mesh_obj)
+    holes = find_small_holes(mesh_obj, low, high, size, verts)
+    if not holes:
+        return 0
+    weld, _, _ = welded_edges(mesh_obj, verts)
+    ends = np.empty(len(mesh.edges) * 2, dtype=np.int64)
+    mesh.edges.foreach_get("vertices", ends)
+    ends = ends.reshape(-1, 2)
+    step = np.zeros((len(verts), 3))
+    for hole in holes:
+        points = np.unique(weld[ends[hole]])
+        near = np.linalg.norm(verts[points][:, None] - verts[points][None], axis=2) < gap
+        group = np.arange(len(points))
+        for _ in range(len(points)):
+            group = np.where(near, group[None, :], len(points)).min(axis=1)
+        for leader in np.unique(group):
+            for point in points[group == leader]:
+                step[weld == point] = verts[points[leader]] - verts[point]
+    moved = np.linalg.norm(step, axis=1) > 0
+    if not moved.any():
+        return 0
+    step = step @ np.linalg.inv(np.array(mesh_obj.matrix_world)[:3, :3]).T
+    blocks = mesh.shape_keys.key_blocks if mesh.shape_keys else []
+    for data in [mesh.vertices] + [block.data for block in blocks]:
+        coords = np.empty(len(verts) * 3, dtype=np.float32)
+        data.foreach_get("co", coords)
+        data.foreach_set("co", (coords.reshape(-1, 3) + step).astype(np.float32).ravel())
+    mesh.update()
+    return int(np.count_nonzero(moved))
