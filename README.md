@@ -12,8 +12,11 @@ from one generated model, in a few minutes, on your own computer.
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Runs offline](https://img.shields.io/badge/runs-offline-2ea44f)
 ![Status: early prototype](https://img.shields.io/badge/status-early%20prototype-orange)
+![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
 [Quick start](#-quick-start) · [What you get](#-what-you-get) · [The app](#-the-guided-app) · [How it works](#-how-it-works) · [For AI agents](#-for-ai-coding-agents)
+
+<img src="docs/img/app-paint.png" alt="The app's Paint page with a test character" width="820">
 
 </div>
 
@@ -45,8 +48,14 @@ The result loads in **Warudo** and **VNyan**. (VSeeFace reads VRM 0.x only, whic
 
 - [Blender](https://www.blender.org/download/) 4.2 or newer (tested: 4.2, 4.5 LTS, 5.2 LTS)
 - The [VRM Add-on for Blender](https://extensions.blender.org/add-ons/vrm/) (Blender > Preferences > Get Extensions > "VRM format")
-- Python 3.10 or newer with Pillow (`pip install pillow`)
+- Python 3.10 or newer, then `pip install -r requirements.txt` (Pillow)
 - Optional: `pip install pywebview` for a desktop window instead of a browser tab
+- Edge or Chrome, for the contact sheets
+- Optional: automatic face marking. The Setup page installs it with one button (Python 3.12 or
+  newer, about 250 MB to download, 1.5 GB on disk)
+
+Developed and tested on **Windows**. macOS and Linux should work (the app looks for Blender and
+the browser in their usual places there, or takes the paths you give it) but are untested.
 
 **Run it**
 
@@ -195,6 +204,8 @@ and renders into one folder for an agent to pick up.
 - **Not for**: creatures, quadrupeds, or several characters in one file.
 - **Runs locally**: nothing is uploaded. Models and builds stay in `samples/` and `out/` on your
   computer.
+- **Licence**: [MIT](LICENSE). The bundled three.js, three-vrm and MediaPipe keep their own
+  licences (`app/gui/vendor/THIRD_PARTY.md`).
 - **Limits**: fingers track less well than a hand-made avatar's; lips barely move (the mouth opens
   a drawn interior); cloth between arm and body can stretch with the arms raised high. The full
   list is at the end of [AVATAR_GUIDE.md](AVATAR_GUIDE.md).

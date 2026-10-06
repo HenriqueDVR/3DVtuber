@@ -73,6 +73,7 @@ T-pose.
 ## Commands
 
 ```bash
+pip install -r requirements.txt                    # Pillow, for the app
 python -m app.server                               # the guided app (or VTuber Maker.bat)
 python -m app run out/MyOC/character.json          # the whole build from a manifest
 python -m app regress out/MyOC/character.json      # rebuild in a scratch folder and compare with its good build

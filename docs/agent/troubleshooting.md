@@ -28,6 +28,9 @@ Suspicious edges have one end weighted to `Head`/`Neck` or to nothing, or sit in
 | Thin straight strips poke out of the hair in the tracking app only | hidden hair faces inside the head joining two strands | the `hair` step deletes them |
 | Hair ties or beads float beside swinging hair | separate hair-coloured pieces weighted to chest or shoulder bones | the `hair` step; or give the piece the role `hair` |
 | Long hair has no bounce, is stretched by the arms, or floats beside the hands | the hair is one surface with the body, so it wasn't found as hair | give it the role `hair`; hair inside a bigger piece by painting it as a part of the piece (Parts page) |
+| A ledge across the hair where its springs start, when the head tilts or nods | on an adopted rig the hair above the chains was still part on the neck (model D: 20% up to the crown) while the chains hang from the head | `hair._on_the_head` puts hair that doesn't hang on the head alone; rerun from `build` |
+| Hair resting on the shoulders is lifted up its chain when the head tilts onto them | the chest's and shoulders' colliders shove it (model D: 8.8 cm in the spring check; 1.6 cm with the head's collider alone) | option `hair_hits_body: false` (Options: "Hair collides with the body" off); rerun from `build` |
+| A sliver of faces stands off a joint when it bends, like a tear | a crack in the generated surface: open edges whose rims are under a millimetre apart, each with its own weights | the `loose` step closes them (`close_small_holes`) before joining surfaces; rerun from `loose` |
 | Hair swings in front of the body when looking up, or flings violently | spring settings | tune stiffness and drag in the tracking app's physics settings |
 | Hair clips into the body | VRM colliders are only spheres and capsules on bones | a few percent of clipping is normal; tune in the tracking app |
 | The strand on top of the head doesn't bounce | no bones on it | option `ahoge` on (default) |
@@ -40,6 +43,8 @@ Suspicious edges have one end weighted to `Head`/`Neck` or to nothing, or sit in
 | A skirt or coat stretches toward the hands | the hands rest on it in the modelled pose | role `fitted_skirt` on that piece |
 | Hat brim flaps like hair, the bottom of a round head stays behind | headwear found as hair | option `rigid_head`; `hat_tip` for a pointed hat |
 | Cape or coat tails hang stiff | no cloth springs | option `cloth`, or role `swing_cloth` on the piece |
+| A cape folds into the body or is squeezed when the arms come down | the adopted rig weighted the whole cape to the arms it is draped over | the build takes hanging cloth off the arms by itself (`cloth.hang_from_torso`); it needs option `cloth` on (automatic when the survey finds the cape) or role `swing_cloth`. `shoulder_cloth` is for a short mantle, not a cape |
+| Legs, arms or boots swing, droop or tear on a character that is one colour all over (a slime) | the body read as hair: it is the hair's colour and one surface with the head | fixed in `parts.find` (fused hair that would take the legs is refused); name the real hair pieces `hair` |
 | A wing, tail or big ear bends with the body | found as body | role `appendage` |
 | `Hips` near the knees or ankles, legs don't bend | a robe, long skirt or hanging panel hides the legs | the build falls back to typical proportions and says so; place the joints on the Joints page |
 | Sleeves fused to the ribs, a web between arm and torso | arms too close to the body in the model | generate the model in a T-pose |
@@ -55,6 +60,8 @@ Suspicious edges have one end weighted to `Head`/`Neck` or to nothing, or sit in
 | Symptom | Cause | Fix |
 |---|---|---|
 | No blink, no face tracking, eyes don't move | no face points | mark them on the Face page, rebuild |
+| The eyes can't be marked: a visor, glasses or a mask covers them | the twelve points include the eyes | Face page, Eye tracking: "eyes are covered" (`eyes: "hidden"`): only the mouth's four points are marked, the mouth tracks, no blink and no eye movement |
+| Only eye tracking, or only mouth tracking, is wanted | they are separate choices | Face page: Eye tracking (`eyes`) and Mouth tracking (`face_tracking`) |
 | Eyes don't follow gaze in the tracking app | the app is turning eye bones the avatar doesn't have | in Warudo set eye movement to blendshapes |
 | The eye step fails: "iris shows over the lids" | the drawn iris is as tall as the eye's opening | `eyes: "slide"` (the app switches by itself when eyes are on automatic) |
 | A character keeps building sliding eyes | the fallback is remembered | set `eyes: "iris"` explicitly |

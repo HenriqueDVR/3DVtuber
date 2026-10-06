@@ -31,8 +31,9 @@ the GPU.
 
 ## Adapt the prompt · Agent
 
-`scripts/retexture/comfy_img2img.py` holds a sample character's description in `POSITIVE`
-and crops of its sheet in `SHEET_CROPS`. Rewrite `POSITIVE` for this character (hair colour and
+`scripts/retexture/comfy_img2img.py` takes the character's look as `--prompt` and, optionally,
+regions of a character sheet as `--crops crops.json`
+(`{"face": [left, top, right, bottom], "front": [...], "side": [...], "back": [...]}`). Rewrite `POSITIVE` for this character (hair colour and
 length, eye colour, outfit pieces, keeping the quality and "flat color, cel shading, clean
 lineart" tags). The sheet argument is required by the script even without IP-Adapter; pass the
 front view image.

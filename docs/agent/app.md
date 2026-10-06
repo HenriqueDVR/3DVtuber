@@ -17,6 +17,7 @@ python -m app setup                                      # Blender, VRM Add-on, 
 python -m app init samples/model.fbx --name MyOC         # writes out/MyOC/character.json
 python -m app prepare out/MyOC/character.json            # survey + piece listing + face patch, whichever is missing
 python -m app face out/MyOC/character.json face.json     # keep face points with the character
+python -m app detector                                   # is the face detector installed? --install puts it in tools/face_detector
 python -m app face-guess out/MyOC/character.json --save  # face points placed by a detector, to check and nudge
 python -m app run out/MyOC/character.json                # the whole chain
 python -m app run out/MyOC/character.json --from build   # or --to STEP, --only STEP
@@ -29,6 +30,8 @@ python -m app joint out/MyOC/character.json hips 0 0 0.9 # override a detected j
 python -m app set out/MyOC/character.json eyes '"iris"'  # any option, value as JSON
 python -m app paint out/MyOC/character.json              # the texture paint kept with the character (--clear drops it)
 python -m app duplicate out/MyOC/character.json MyOC_b   # the character again with its own builds
+python -m app rename out/MyOC/character.json NewName     # its builds stay where they are
+python -m app hide out/MyOC/character.json               # off the app's list (--show puts it back); nothing is deleted
 
 python -m app render out/MyOC/character.json --pose raised   # PNGs of the rig in a pose
 python -m app sheet out/MyOC/character.json              # contact sheets of the finished .vrm
@@ -55,6 +58,13 @@ the Face page; "Save and build" there runs the chain.
 mapped from a front view. The patched copy becomes the manifest's `source`; the model before it
 becomes `reference`. Face points are pixels in that picture. `run` without face points still
 builds, with no blink and no face or eye tracking.
+
+Marking by detector (`face-guess`, the Face page's "Place them for me") needs an optional install:
+`detector --install`, or the Setup page's button, makes a Python of its own in `tools/face_detector`
+with CPU PyTorch and `anime-face-detector` (Python 3.12 or newer on the machine, about 250 MB to
+download, 1.5 GB on disk; the first face downloads 273 MB of weights). It is a download: ask the
+user first. Without it the points are marked by hand. The Stable Diffusion face redraw
+(`docs/agent/retexture.md`) is not set up by the app.
 
 ## The steps
 
@@ -119,6 +129,13 @@ matrices: don't use it. A separate rig file for an unrigged model works too (`in
 Mixamo and Character Creator / AccuRig skeletons are read when named as `rig`, but only tested on
 synthetic rigs. Without a rig the build places and skins a skeleton itself; an A-pose still builds.
 
+Eye tracking (`eyes`) and mouth tracking (`face_tracking`) are separate: either, both or neither.
+`eyes: "hidden"` is for eyes behind a visor, glasses or a mask: the face points are then the mouth's
+four alone (a `face.json` without eye points means the same), and there is no blink.
+
+`hair_hits_body: false` makes the hair's springs collide with the head alone, for hair that rests on the
+shoulders (it is lifted up its chains when the head tilts onto them); long hair wants the default.
+
 With `eyes` left to the survey, modelled eyes get a moving iris and painted eyes sliding patches.
 When the eye step refuses an iris (it would show over the lids), the engine reruns it with sliding
 eyes and remembers that for the character.
@@ -130,6 +147,13 @@ the model, shade / light / recolour modes, both sides at once. The brush is meas
 surface in 3D and spreads over the surface it is on, so it keeps its size, crosses texture seams
 and leaves alone what lies behind.
 
+**Isolate** (H) shows one part alone (Shift+click adds another; "Show all" or H brings the rest
+back): the brush then reaches what another part covers, and only the shown parts take paint.
+
+The view takes the page; **Expand** (or F) gives it the whole window. Undo and redo are Ctrl+Z and
+Ctrl+Y. Paint that isn't saved yet is kept as a draft a few seconds after each stroke
+(`<out>/paint/draft/`) and comes back when the page is opened again.
+
 Paint is kept as one transparent PNG per texture, in the manifest's `paint` folder; the generated
 texture is never changed. `survey` and `build` read a copy of the source with the paint laid over
 it, so saving paint marks `build` onward stale. The source must be a `.glb`, which it is once the
@@ -137,7 +161,10 @@ face patch exists.
 
 The face patch has two pictures: the face, and hair lying over the face on its own copy, so each
 can be painted without the other. A character whose patch was made by an older version shares one
-picture between them: remake the patch on the Face page (the face points stay valid).
+picture between them (`paint` reports `old_patch`, and the Paint page offers the remake): remake
+the patch, on the Paint or the Face page; the face points stay valid and saved paint is kept. A
+patch remade once the face points exist also fills the skin hidden under hair, outside the marked
+eyes and mouth, from the face beside it.
 
 ## Looking at a build
 
