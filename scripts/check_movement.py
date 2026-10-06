@@ -62,6 +62,9 @@ DRAPE = 0.12
 DRAPE_FOLLOWS = 0.3
 DRAPE_SHARE = 0.02
 MIN_TRAVEL = 0.03
+# A piece draped over both shoulders that reaches below this share of the hips' height is a cape,
+# not a mantle: it hangs from the chest and swings, and isn't blended onto the arms.
+CAPE_BELOW_HIPS = 0.75
 # Pieces with these roles are meant to lag behind: their springs swing them.
 SWINGS = ("hair", "swing_cloth", "appendage")
 # A piece whose median vertex is at least this much on spring bones swings, as those roles do.
@@ -285,6 +288,9 @@ def _suggest(row, points, shoulder_x, hips_z, looks=None, named=None):
         side = "Left" if bone.startswith("Left") else "Right"
         # a piece spanning from inside one shoulder joint to inside the other drapes the shoulders
         if points[:, 0].min() < -shoulder_x.get("Right", 0) * .5 and points[:, 0].max() > shoulder_x.get("Left", 0) * .5:
+            if points[:, 2].min() < CAPE_BELOW_HIPS * hips_z:
+                # model D's cape: named a mantle on this advice, its collar's tips went with the arms
+                return "", "a cape hanging from the shoulders: the arms move free under it, as they should"
             return "shoulder_cloth", "drapes over both shoulders but stays when the arms move: a mantle"
         if bone.endswith(("LowerArm", "Hand")):
             taken = behind[0].get("taken_by")

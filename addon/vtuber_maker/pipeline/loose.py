@@ -20,6 +20,8 @@ a whole -- the average over its vertices -- and from then on it moves rigidly wi
 most of it. Big pieces (the body, the hair, a coat) are left alone: those are meant to deform.
 """
 
+import re
+
 import bmesh
 import numpy as np
 
@@ -258,13 +260,27 @@ def split_torn_seams(mesh_obj, armature_obj, verts=None):
     crossing edge joining its two sides, so nothing came apart (172 hair-to-arm edges survived
     on model C's twin-tail). A vertex left holding faces only on the other side takes its weights
     from its neighbours there, so no corner of a cut face is still pulled by the other limb.
+
+    Never between two hair chains or two cloth chains: side by side over one head of hair or one
+    cape they are no chain of each other, and the cut slit model D's hair and cape along every
+    chain boundary (476 of its 628 cut edges), open whenever they swung. Springs beside each other
+    move together, and what is left between them stretches, as cloth does. Appendage chains are
+    still cut apart: a fork's two ends (model C's pair of tails) swing their own ways.
+    Nor between two fingers of one hand: the palm between their knuckles was slit on model D
+    (60 edges, open in Warudo as the fingers moved).
     """
     leader = _leading_bones(mesh_obj, len(mesh_obj.data.vertices))
     names = {group.index: group.name for group in mesh_obj.vertex_groups}
     torn = {}
 
+    def strand(name):
+        match = _STRAND_CHAIN.match(name) or _FINGER.match(name)
+        return match and match.group(1)
+
     def apart(first, second):
         if first < 0 or second < 0 or first == second:
+            return False
+        if strand(names[first]) and strand(names[first]) == strand(names[second]):
             return False
         pair = (min(first, second), max(first, second))
         if pair not in torn:
@@ -309,6 +325,12 @@ def split_torn_seams(mesh_obj, armature_obj, verts=None):
             elif weights[group.index, index] > 0:
                 group.remove([index])
     return len(cut)
+
+
+# The side-by-side chains hair.py and cloth.py lay over one head of hair or one cape.
+_STRAND_CHAIN = re.compile(r"(Hair|Cloth)\d+_\d+$")
+# The fingers of one hand: Left/Right, then the finger and its segment.
+_FINGER = re.compile(r"(Left|Right)(?:Thumb|Index|Middle|Ring|Little)[A-Z][a-z]+$")
 
 
 def rigidify_props(mesh_obj, armature_obj, verts=None):

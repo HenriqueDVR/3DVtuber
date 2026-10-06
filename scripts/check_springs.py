@@ -166,6 +166,9 @@ def shipped_design(arm):
     world = arm.matrix_world
     bones = arm.data.bones
     chains = []
+    bone_of = {c.uuid: c.node.bone_name for c in spring_bone.colliders}
+    groups = {g.uuid: [bone_of[c.collider_uuid] for c in g.colliders if c.collider_uuid in bone_of]
+              for g in spring_bone.collider_groups}
     for spring in spring_bone.springs:
         names = [j.node.bone_name for j in spring.joints if j.node.bone_name in bones]
         if not names:
@@ -174,7 +177,8 @@ def shipped_design(arm):
         points = [world @ bones[names[0]].head_local] + [world @ bones[n].tail_local for n in names]
         chains.append(spring_sim.Chain(np.array([list(p) for p in points]), bones[names[0]].parent.name,
                                        joints[0].stiffness, joints[0].gravity_power, joints[0].drag_force,
-                                       joints[0].hit_radius, names=names, tip_stiffness=joints[-1].stiffness))
+                                       joints[0].hit_radius, names=names, tip_stiffness=joints[-1].stiffness,
+                                       collides_with=_collides_with(spring, groups, len(bone_of))))
     colliders = []
     for c in spring_bone.colliders:
         bone = c.node.bone_name
@@ -187,6 +191,12 @@ def shipped_design(arm):
             colliders.append(spring_sim.Collider(bone, c.shape.capsule.radius, list(frame @ c.shape.capsule.offset),
                                                  list(frame @ c.shape.capsule.tail)))
     return hair_physics.SpringDesign(chains, colliders)
+
+
+def _collides_with(spring, groups, colliders):
+    """The bones whose colliders the spring's groups hold, or None when they hold them all."""
+    bones = [bone for g in spring.collider_groups for bone in groups.get(g.collider_group_uuid, [])]
+    return None if len(bones) >= colliders else tuple(sorted(set(bones)))
 
 
 def _partners(rest, labels, reach):

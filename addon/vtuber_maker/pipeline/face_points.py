@@ -21,6 +21,12 @@ FACE_PATCH_OVER = "face_patch_over"
 HAIR_IN_FRONT = 0.015
 
 
+def over_slots(mesh):
+    """Material slots of what lies over the face: FACE_PATCH_OVER, and FACE_PATCH_OVER2... where
+    pieces lie in front of each other too (a visor over the fringe)."""
+    return {i for i, m in enumerate(mesh.materials) if m is not None and m.name.startswith(FACE_PATCH_OVER)}
+
+
 # The face's skin colour is read from the face patch in a ring around the mouth, between these
 # distances (eye widths): clear of the mouth, short of the eyes.
 SKIN_BAND = (0.4, 0.7)
@@ -38,21 +44,29 @@ class FacePointsError(ValueError):
 
 
 def load(path):
+    """The points of a face.json. The eyes may be left out together (`has_eyes`): a visor or
+    glasses hides them on model D, and the mouth alone is marked."""
     with open(path) as f:
         points = json.load(f)
     for key, names in (("right_eye", ("inner", "outer", "top", "bottom")),
                        ("left_eye", ("inner", "outer", "top", "bottom")),
                        ("mouth", ("left", "right", "top", "bottom"))):
         missing = [n for n in names if n not in points.get(key, {})]
-        if missing:
+        if missing and (key == "mouth" or has_eyes(points)):
             raise FacePointsError(f"{path}: {key} is missing {', '.join(missing)}")
     if not points.get("size"):
         raise FacePointsError(f"{path}: no image size")
     return points
 
 
+def has_eyes(points):
+    """Whether the points mark the eyes at all."""
+    return bool(points.get("right_eye") or points.get("left_eye"))
+
+
 def apply(mesh_obj, features, points):
-    """Return features with eyes and mouth taken from the points (world space, like the rest)."""
+    """Return features with eyes and mouth taken from the points (world space, like the rest).
+    Without eye points the eyes stay where they were found."""
     to_world = _pixel_to_world(mesh_obj, points["size"])
     surface = BVHTree.FromObject(mesh_obj, bpy.context.evaluated_depsgraph_get())
     matrix = mesh_obj.matrix_world
@@ -70,14 +84,15 @@ def apply(mesh_obj, features, points):
 
     features = dict(features)
     sizes = []
-    for key in ("left_eye", "right_eye"):
+    for key in ("left_eye", "right_eye") if has_eyes(points) else ():
         p = {name: to_world(xy) for name, xy in points[key].items()}
         x = (p["inner"][0] + p["outer"][0]) / 2
         z = (p["top"][1] + p["bottom"][1]) / 2
         old = features.get(key)
         features[key] = on_surface(x, z, None if old is None else float(old[1]))
         sizes.append([abs(p["outer"][0] - p["inner"][0]), abs(p["top"][1] - p["bottom"][1])])
-    features["eye_size"] = np.mean(sizes, axis=0)
+    if sizes:
+        features["eye_size"] = np.mean(sizes, axis=0)
 
     m = {name: to_world(xy) for name, xy in points["mouth"].items()}
     old = features.get("mouth")
@@ -116,7 +131,9 @@ def erase_mouth(mesh_obj, points):
     y0, y1 = int(max(cy - half_h - 3, 0)), int(min(cy + half_h + 4, height))
     yy, xx = np.mgrid[y0:y1, x0:x1]
     hole = ((xx - cx) / half_w) ** 2 + ((yy - cy) / half_h) ** 2 < 1.0
-    pixels[y0:y1, x0:x1, :3] = fill_from_border(pixels[y0:y1, x0:x1, :3], hole)
+    # all the way in (fill_across): with the free mouth's wide oval (model D: 280 x 141 px) fill_from_border
+    # left the mean of the box in its middle, a grey disc round the mouth on a face shaded pale
+    pixels[y0:y1, x0:x1, :3] = fill_across(pixels[y0:y1, x0:x1, :3], hole)
     image.pixels.foreach_set(pixels.ravel())
     image.update()
     image.pack()
@@ -213,7 +230,9 @@ def _patch_skin(mesh_obj, points):
     m = points["mouth"]
     cx = (m["left"][0] + m["right"][0]) / 2 * scale_x
     cy = height - (m["top"][1] + m["bottom"][1]) / 2 * scale_y  # image pixels count up from the bottom
-    eye_width = abs(points["left_eye"]["outer"][0] - points["left_eye"]["inner"][0]) * scale_x
+    # an eye is about as wide as a mouth drawn at rest, near enough for where skin is sampled
+    eye = points["left_eye"] if has_eyes(points) else {"outer": m["right"], "inner": m["left"]}
+    eye_width = abs(eye["outer"][0] - eye["inner"][0]) * scale_x
     ys, xs = np.mgrid[0:height, 0:width]
     distance = np.hypot(xs - cx, ys - cy)
     band = (distance > SKIN_BAND[0] * eye_width) & (distance < SKIN_BAND[1] * eye_width)

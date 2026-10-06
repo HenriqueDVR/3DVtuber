@@ -478,12 +478,26 @@ def use_free_mouth(obj):
     return {"box": box, "polygons": moved}
 
 
+# _front_onto_patch takes a polygon facing the front by this (cosine), and one tilted down by
+# FRONT_DOWN only if it faces it by FRONT_DOWN_FACING: scripts/retexture/face_patch.py's MIN_FACING,
+# DOWN and DOWN_FACING.
+FRONT_FACING = 0.45
+FRONT_DOWN = 0.3
+FRONT_DOWN_FACING = 0.85
+
+
 def _front_onto_patch(obj, box, au, av, step=0.0002):
     """Give what shows from the front in world box (x0, z0, x1, z1) the face patch, mapped from the front.
 
     Model A's original mouth is a separate piece in the model's own texture, its drawn lips showing at
     the corners in front of the face patch once the patch's mouth was painted out. The mouth patch
     itself is left alone. Returns how many polygons changed.
+
+    Only polygons lying wholly in the box and facing the front, as the patch itself takes them
+    (FRONT_FACING; tilted down by FRONT_DOWN, FRONT_DOWN_FACING). Any polygon a ray touched was
+    taken once: on model D the box reaches the chin, and 398 triangles under the jaw and on top of
+    the neck, seen edge-on from the front, came onto the patch in the chin's pale colour, in
+    shards among their neighbours' shadow.
     """
     mesh = obj.data
     matrix = np.array(obj.matrix_world)
@@ -497,13 +511,25 @@ def _front_onto_patch(obj, box, au, av, step=0.0002):
     mesh.loop_triangles.foreach_get("polygon_index", polys)
     tree = BVHTree.FromPolygons([Vector(v) for v in verts], tris.reshape(-1, 3).tolist())
     keep = {mesh.materials.find(FACE_PATCH_MATERIAL), mesh.materials.find(MOUTH_PATCH_MATERIAL),
-            mesh.materials.find(face_points.FACE_PATCH_OVER)}
+            *face_points.over_slots(mesh)}
     x0, z0, x1, z1 = box
+    rotation = matrix[:3, :3]
+
+    def fits(poly):
+        corners = verts[list(poly.vertices)]
+        if (corners[:, 0] < x0).any() or (corners[:, 0] > x1).any() or (corners[:, 2] < z0).any() or (corners[:, 2] > z1).any():
+            return False
+        normal = rotation @ np.array(poly.normal)
+        normal /= max(float(np.linalg.norm(normal)), 1e-12)
+        facing = -normal[1]
+        return facing >= FRONT_FACING and not (normal[2] < -FRONT_DOWN and facing < FRONT_DOWN_FACING)
+
     found = set()
     for x in np.arange(x0, x1 + step, step):
         for z in np.arange(z0, z1 + step, step):
             index = tree.ray_cast(Vector((x, -10.0, z)), Vector((0.0, 1.0, 0.0)), 20.0)[2]
-            if index is not None and mesh.polygons[int(polys[index])].material_index not in keep:
+            if index is not None and mesh.polygons[int(polys[index])].material_index not in keep \
+                    and fits(mesh.polygons[int(polys[index])]):
                 found.add(int(polys[index]))
     slot = mesh.materials.find(FACE_PATCH_MATERIAL)
     uv = mesh.uv_layers.active.data

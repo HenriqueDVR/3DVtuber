@@ -45,6 +45,7 @@ SIDE_SHIFT = 0.6        # mouthLeft/Right, in mouth widths
 PUCKER_IN = 0.3         # corners pulled towards the middle, in mouth widths
 JAW_PIVOT_BACK = 0.1    # jaw hinge behind the mouth (m)
 JAW_PIVOT_UP = 0.04     # and above it (m)
+CHIN_BEHIND = 0.3       # the chin lies no further behind the mouth than this share of the way to the hinge
 JAW_WIDTH = (0.03, 0.075)  # jaw moves fully within this distance of the middle, none past the second (m)
 JAW_VOWEL = 1.0         # share of the "aa" vowel mixed into jawOpen
 # Blink: the part of the eye above CLOSE_LINE (0 bottom of the insert, 1 top) closes onto it;
@@ -65,6 +66,7 @@ def main():
     ap.add_argument("--jaw", type=float, default=0.008, help="how far the chin drops on jawOpen (m)")
     ap.add_argument("--mouth-only", action="store_true",
                     help="mouth shapes open only the mouth, from the vowels; the face around it stays still")
+    ap.add_argument("--no-blink", action="store_true", help="the eyes are hidden (a visor, glasses): mouth shapes only")
     ap.add_argument("--renders", type=Path, help="write face close-ups of each shape here")
     ap.add_argument("--blink-tries", type=float, nargs="*", default=[], help="also render these blink amounts")
     args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:])
@@ -76,8 +78,9 @@ def main():
         shapes.add_mouth_from_vowels()
     else:
         shapes.add_mouth(args.jaw)
-    shapes.add_blink("", args.blink if args.blink is not None else (face_rig.PAINTED_BLINK if shapes.painted else 0.4))
-    bind_blink(arm, obj)
+    if not args.no_blink:
+        shapes.add_blink("", args.blink if args.blink is not None else (face_rig.PAINTED_BLINK if shapes.painted else 0.4))
+        bind_blink(arm, obj)
 
     bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath(args.out_blend), copy=True)
     if not vrm_export.skipped():
@@ -176,8 +179,10 @@ class FaceShapes:
         sideways = face_rig._fade(np.abs(self.basis[:, 0] - self.mouth[0]), *JAW_WIDTH)
         jaw = (turned - r) * (below * sideways)[:, None]
         # the chin: the lowest point before the hinge, on the middle. The neck can reach lower behind
-        # the hinge, and rises a little as the jaw turns (model A's T-pose FBX: 2 cm behind it)
-        chin_side = (self.movable > 0) & (self.basis[:, 1] < pivot[1]) & (np.abs(self.basis[:, 0] - self.mouth[0]) < JAW_WIDTH[0])
+        # the hinge, and rises a little as the jaw turns (model A's T-pose FBX: 2 cm behind it); so does
+        # the front of a long neck nearly under it (model D), which is not the chin either
+        chin_side = ((self.movable > 0) & (self.basis[:, 1] < self.mouth[1] + CHIN_BEHIND * JAW_PIVOT_BACK)
+                     & (np.abs(self.basis[:, 0] - self.mouth[0]) < JAW_WIDTH[0]))
         lowest = np.argmin(np.where(chin_side, self.basis[:, 2], np.inf))
         if jaw[lowest, 2] >= 0:
             raise SystemExit("jaw turns the wrong way")

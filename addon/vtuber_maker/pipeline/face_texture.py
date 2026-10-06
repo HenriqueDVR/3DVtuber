@@ -60,9 +60,9 @@ def extend_patch(mesh_obj, head, min_facing=EXTEND_FACING):
     uv = mesh.uv_layers.active.data
     moved = 0
     candidates = []
-    over = mesh.materials.find(face_points.FACE_PATCH_OVER)
+    over = face_points.over_slots(mesh)
     for poly in mesh.polygons:
-        if poly.material_index in (slot, over) or not head[list(poly.vertices)].all():
+        if poly.material_index == slot or poly.material_index in over or not head[list(poly.vertices)].all():
             continue
         facing = -(rotation @ np.array(poly.normal))[1] / max(np.linalg.norm(rotation @ np.array(poly.normal)), 1e-9)
         if facing < min_facing:

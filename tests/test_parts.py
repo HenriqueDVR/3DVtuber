@@ -2,6 +2,7 @@
 
 import math
 import unittest
+from unittest import mock
 
 import bmesh
 import bpy
@@ -11,7 +12,7 @@ from mathutils.bvhtree import BVHTree
 
 from support import FIXTURE_OUT, load_fixture
 from test_build_avatar import read_glb_json
-from vtuber_maker.pipeline import build, face_rig, landmarks, meshdata, parts, rig, vrm_export
+from vtuber_maker.pipeline import build, face_rig, landmarks, meshdata, parts, rig, texture_space, vrm_export
 
 FIXTURE = "synthetic_character_parts"
 
@@ -130,6 +131,37 @@ class FaceFusedWithBody(PartsFixture):
         self.assertFalse(self.fused.hair[self.foot])
         for side in ("left", "right"):
             self.assertFalse(self.fused.hair[self.near(self.truth["parts"][f"{side}_eye"], 0.02)].any())
+
+
+class HairShadedInTwoTones(PartsFixture):
+    """Hair dark in front with pale highlights (model D): well under half of it is the crown's colour."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.load()
+        tip = int(np.argmin(np.linalg.norm(cls.verts - np.asarray(cls.truth["hair"]["back_tip"]), axis=1)))
+        cls.piece = cls.found.labels == cls.found.labels[tip]
+        cls.colours = texture_space.vertex_colors(cls.mesh, texture_space.base_color_image(cls.mesh))
+
+    def found_with(self, share):
+        """The parts with only the top `share` of the hair piece left its own colour."""
+        colours = self.colours.copy()
+        members = np.flatnonzero(self.piece)
+        down = members[np.argsort(-self.verts[members, 2])]
+        colours[down[int(share * len(down)):], :3] = 1.0 - self.found.hair_color[:3]
+        with mock.patch.object(texture_space, "vertex_colors", return_value=colours):
+            return parts.find(self.mesh, self.joints)
+
+    def test_the_piece_is_big_and_hangs_past_the_neck(self):
+        self.assertGreater(self.piece.mean(), parts.SHADED_SIZE)
+        self.assertLess(self.verts[self.piece, 2].min(), self.joints["neck"][2])
+        self.assertTrue(self.found.hair[self.piece].all())
+
+    def test_a_third_of_it_in_the_hair_colour_is_still_hair(self):
+        self.assertTrue(self.found_with(0.33).hair[self.piece].all())
+
+    def test_a_tenth_of_it_in_the_hair_colour_is_not(self):
+        self.assertFalse(self.found_with(0.1).hair[self.piece].any())
 
 
 class SkinParts(PartsFixture):

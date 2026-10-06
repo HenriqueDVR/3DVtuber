@@ -163,6 +163,7 @@ def bind_spring_bones(armature, design):
     spring_bone = armature.data.vrm_addon_extension.spring_bone1
     body = spring_bone.add_collider_group()
     body.vrm_name = "Body"
+    uuids = {}
     for shape in design.colliders:
         collider = spring_bone.add_collider(context, armature)
         collider.node.bone_name = shape.bone
@@ -176,6 +177,19 @@ def bind_spring_bones(armature, design):
             collider.shape.capsule.tail = _in_bone_space(armature, shape.bone, shape.tail)
             collider.shape.capsule.radius = shape.radius
         body.add_collider().collider_uuid = collider.uuid
+        uuids.setdefault(shape.bone, []).append(collider.uuid)
+
+    # a chain that collides with some bones only (hair_physics.design, hair off the body) gets a group of those
+    partial = {}
+    for chain in design.chains:
+        only = getattr(chain, "collides_with", None)
+        if only is not None and only not in partial:
+            group = spring_bone.add_collider_group()
+            group.vrm_name = "+".join(only)
+            for bone in only:
+                for uuid in uuids.get(bone, []):
+                    group.add_collider().collider_uuid = uuid
+            partial[only] = group
 
     for chain in design.chains:
         spring = spring_bone.add_spring()
@@ -188,7 +202,8 @@ def bind_spring_bones(armature, design):
             joint.gravity_power = chain.gravity_power
             joint.drag_force = chain.drag_force
             joint.hit_radius = chain.hit_radius
-        spring.add_collider_group().collider_group_uuid = body.uuid
+        only = getattr(chain, "collides_with", None)
+        spring.add_collider_group().collider_group_uuid = (body if only is None else partial[only]).uuid
 
 
 def use_toon_shading(mesh_obj):

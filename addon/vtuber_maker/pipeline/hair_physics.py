@@ -85,8 +85,14 @@ class ClippingReport(NamedTuple):
         )
 
 
-def design(mesh_obj, armature, chains, joints, cloth_chains=(), tip_chains=(), appendage_chains=()):
-    """Spring chains for the hair, cloth, hat tip and appendage bone chains, plus colliders fitted to the body."""
+def design(mesh_obj, armature, chains, joints, cloth_chains=(), tip_chains=(), appendage_chains=(), hair_hits_body=True):
+    """Spring chains for the hair, cloth, hat tip and appendage bone chains, plus colliders fitted to the body.
+
+    Without `hair_hits_body` the hair's chains collide with the head alone. Hair that lies on the
+    shoulders has nowhere to go when the head tilts onto them: model D's lock was shoved 8.8 cm up
+    its chain by the chest's and the shoulder's colliders (1.6 cm with the head's alone) and stood
+    off as a ledge. The user's choice per character: long hair needs the body to keep it out of the back.
+    """
     bones = armature.data.bones
     springs = []
     kinds = (
@@ -109,6 +115,7 @@ def design(mesh_obj, armature, chains, joints, cloth_chains=(), tip_chains=(), a
                     hit_radius=hit,
                     names=names,
                     tip_stiffness=tip_stiffness,
+                    collides_with=None if hair_hits_body or kind is not chains else (BONE_NAMES["head"],),
                 )
             )
     hair_bones = {name for kind in (chains, cloth_chains, tip_chains, appendage_chains) for names in kind for name in names}

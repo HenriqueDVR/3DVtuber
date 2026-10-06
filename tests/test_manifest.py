@@ -67,6 +67,17 @@ class Manifest(unittest.TestCase):
             self.assertEqual(loaded["options"]["eyes"], "slide")
             self.assertEqual(loaded["options"]["fingers"], manifest.OPTIONS["fingers"])
 
+    def test_hair_hits_body_is_true_or_false(self):
+        data = self.good()
+        self.assertIs(manifest.OPTIONS["hair_hits_body"], True)
+        for value in (True, False):
+            data["options"] = {"hair_hits_body": value}
+            manifest.validate(data)
+        for value in ("head", 0, None):
+            data["options"] = {"hair_hits_body": value}
+            with self.assertRaisesRegex(ValueError, "hair_hits_body"):
+                manifest.validate(data)
+
     def test_chest_amount_is_a_number_in_range(self):
         data = self.good()
         for value in (0.25, 1, 2.0):

@@ -84,6 +84,18 @@ class FacePoints(unittest.TestCase):
             with self.assertRaisesRegex(face_points.FacePointsError, "mouth is missing top"):
                 face_points.load(path)
 
+    def test_eyes_behind_a_visor_are_left_out(self):
+        mouth = {"size": self.points["size"], "mouth": self.points["mouth"], "right_eye": {}, "left_eye": {}}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "face.json"
+            path.write_text(json.dumps(mouth))
+            points = face_points.load(path)
+        found = {"left_eye": np.array([0.05, -0.09, 1.44]), "eye_size": np.array([0.03, 0.01])}
+        features = face_points.apply(self.obj, found, points)
+        np.testing.assert_allclose(features["mouth"], (0.0, FACE_Y, 1.35), atol=1e-4)
+        np.testing.assert_allclose(features["left_eye"], found["left_eye"])
+        np.testing.assert_allclose(features["eye_size"], found["eye_size"])
+
     def test_needs_a_face_patch(self):
         self.obj.data.materials[0].name = "other"
         try:

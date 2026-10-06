@@ -30,6 +30,12 @@ HANGS_BELOW_CENTER = 0.35
 MIN_CHAIN_LENGTH = 0.4
 # Fraction of a chain's length over which weight hands over from the head bone.
 ROOT_BLEND = 0.12
+# And never over fewer of the strand's own edges than this: on a coarse mesh with short chains
+# (model D: chains 23 cm, edges 15-27 mm at their roots, so 2.8 cm of blend) one edge took the whole
+# hand-over, 277 of them in a ring round the head, and the hair below it moved off as a ledge.
+ROOT_EDGES = 5
+# ...up to this share of the chain.
+ROOT_BLEND_MOST = 0.5
 # A bit of hanging hair too small for a chain of its own and this close (m) to a strand's
 # vertex moves with that vertex; further off it keeps its weights. Model C's twin-tail region
 # (a box pick on a mesh fused to her body) left 168 vertices in such bits on Tripo's
@@ -37,12 +43,13 @@ ROOT_BLEND = 0.12
 STRAY_REACH = 0.02
 
 
-def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None):
+def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None, off_arms=False):
     """Add hair bone chains under the head bone and reweight hanging hair onto them.
 
     Run after skinning. `hair_mask` marks the hair vertices when the mesh has separate
     hair parts; without it hair is found by texture color. Returns each chain as a list
-    of bone names, root first.
+    of bone names, root first. `off_arms` (for a rig made elsewhere) puts the hair that doesn't
+    hang on the head alone: see `_on_the_head`.
     """
     verts = world_vertices(mesh_obj)
     head = _Head(verts, joints, features)
@@ -53,6 +60,8 @@ def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None):
     hang_line = head.center[2] - HANGS_BELOW_CENTER * head.radius
     hanging = np.zeros(len(verts), dtype=bool)
     hanging[hair[verts[hair, 2] < hang_line]] = True
+    if off_arms:
+        _on_the_head(mesh_obj, hair[verts[hair, 2] >= hang_line])
 
     edges = np.empty(len(mesh_obj.data.edges) * 2, dtype=np.int64)
     mesh_obj.data.edges.foreach_get("vertices", edges)
@@ -95,8 +104,33 @@ def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None):
         covered = np.zeros(len(verts), dtype=bool)
         for members, _ in strands:
             covered[members] = True
+        if off_arms:
+            # hanging hair in no strand, still up on the head: the ring just under the hang line
+            # (model D: 188 vertices, up to 17% on the arms); _reweight then takes those by a strand
+            _on_the_head(mesh_obj, np.flatnonzero(hanging & ~covered & (verts[:, 2] > joints["head"][2])))
         _reweight(mesh_obj, verts, head, strands, np.flatnonzero(hanging & ~covered))
     return [chain.names for chain in chains]
+
+
+def _on_the_head(mesh_obj, members):
+    """Hair on the head that doesn't hang moves with the head alone: no arm, and no neck.
+
+    Tripo's rig had the top of model D's hair up to 38% on each upper arm, beside hair fully on
+    the head: it tore 9 cm from it with the arms raised. Off the arms it was still 20% on the neck
+    up to the crown (1812 vertices), while the chains below it hang from the head bone: a tilt
+    shared by neck and head, as tracking gives, moved the two apart along the line where the chains
+    start (291 edges stepping 10-30% of weight, 1.5 cm at 30 degrees), a ledge across every lock
+    in Warudo. The face beside it is on the head alone too (rig.weight_head).
+    """
+    groups = mesh_obj.vertex_groups
+    head = groups.get(BONE_NAMES["head"]) or groups.new(name=BONE_NAMES["head"])
+    members = [int(index) for index in members]
+    if not members:
+        return
+    for group in groups:
+        if group.index != head.index:
+            group.remove(members)
+    head.add(members, 1.0, "REPLACE")
 
 
 class _Head:
@@ -199,7 +233,14 @@ def _reweight(mesh_obj, verts, head, strands, strays=()):
     """
     head_group = BONE_NAMES["head"]
     new_weights = {}
+    edges = np.empty(len(mesh_obj.data.edges) * 2, dtype=np.int64)
+    mesh_obj.data.edges.foreach_get("vertices", edges)
+    edge_length = np.linalg.norm(verts[edges[0::2]] - verts[edges[1::2]], axis=1)
     for members, chains in strands:
+        inside = np.zeros(len(verts), dtype=bool)
+        inside[members] = True
+        own = inside[edges[0::2]] & inside[edges[1::2]]
+        step = float(np.median(edge_length[own])) if own.any() else 0.0
         for vertex, angle in zip(members, head.angle(verts[members])):
             shares = [(chain, 1.0 - abs(_angle_between(angle, chain.angle)) / chain.width) for chain in chains]
             shares = [(chain, share) for chain, share in shares if share > 0]
@@ -210,7 +251,8 @@ def _reweight(mesh_obj, verts, head, strands, strays=()):
             for chain, share in shares:
                 share /= total_share
                 along = min(max((chain.root_z - verts[vertex, 2]) / (chain.root_z - chain.tip_z), 0.0), 1.0)
-                head_part = max(0.0, 1.0 - along / ROOT_BLEND)
+                root_blend = min(max(ROOT_BLEND, ROOT_EDGES * step / (chain.root_z - chain.tip_z)), ROOT_BLEND_MOST)
+                head_part = max(0.0, 1.0 - along / root_blend)
                 weights[head_group] = weights.get(head_group, 0.0) + share * head_part
                 position = along * BONES_PER_CHAIN - 0.5
                 lower = int(min(max(math.floor(position), 0), BONES_PER_CHAIN - 1))

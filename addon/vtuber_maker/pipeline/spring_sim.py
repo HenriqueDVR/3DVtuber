@@ -27,6 +27,7 @@ class Chain:
         gravity_dir=(0.0, 0.0, -1.0),
         names=(),
         tip_stiffness=None,
+        collides_with=None,
     ):
         self.points = np.asarray(points, dtype=float)
         self.parent = parent
@@ -37,6 +38,8 @@ class Chain:
         self.gravity_dir = np.asarray(gravity_dir, dtype=float)
         self.names = list(names)
         self.tip_stiffness = stiffness if tip_stiffness is None else tip_stiffness
+        # the bones whose colliders push this chain; None: every collider
+        self.collides_with = None if collides_with is None else tuple(collides_with)
 
 
 class Collider:
@@ -102,6 +105,8 @@ class _ChainState:
             tail = self.tails[j] + inertia + axis * chain.stiffness * dt + chain.gravity_dir * chain.gravity_power * dt
             tail = head + _unit(tail - head) * length
             for collider in colliders:
+                if chain.collides_with is not None and collider.bone not in chain.collides_with:
+                    continue
                 pushed = collider.push_out(tail, chain.hit_radius, pose)
                 if pushed is not None:
                     tail = head + _unit(pushed - head) * length

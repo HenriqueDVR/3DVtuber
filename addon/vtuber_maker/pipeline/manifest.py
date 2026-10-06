@@ -60,13 +60,15 @@ OPTIONS = {
     "skinning": "heat",       # "heat" (bone heat and the arm/body rules), "template" (template_skin.py) or "voxel" (voxel_skin.py, same rules)
     "tpose": "spec",          # "spec" (spec hands, straight fingers), "plain" or "none"
     "repair_shoulder_seams": True,
-    "eyes": None,             # eye tracking: "iris" (moving iris), "slide" (painted patch), "none"; None: from the survey
+    "eyes": None,             # eye tracking: "iris" (moving iris), "slide" (painted patch), "none" (still, they blink),
+                              # "hidden" (behind a visor or glasses: not marked, no blink); None: from the survey
     "slide": [],              # with "slide": [horizontal, vertical] travel in mm
     "mouth_fix": None,        # {"scale": 1.3, "free": true} runs scripts/fix_mouth.py
     "chest": False,           # chest bounce: two spring bones on the chest (pipeline/chest.py)
     "chest_amount": 1.0,      # how much it bounces, 0.25 (barely) to 2 (a lot)
+    "hair_hits_body": True,   # false: hair springs collide with the head alone (hair lying on the shoulders)
 }
-EYES = (None, "none", "iris", "slide")
+EYES = (None, "none", "iris", "slide", "hidden")
 CHEST_AMOUNT = (0.25, 2.0)  # chest.AMOUNT_RANGE (this module stays plain Python)
 FINGERS = ("guides", "auto", "none")
 TPOSE = ("spec", "plain", "none")
@@ -222,8 +224,9 @@ def validate(data):
     for key, allowed in (("eyes", EYES), ("fingers", FINGERS), ("tpose", TPOSE), ("skinning", SKINNING)):
         if options.get(key, OPTIONS[key]) not in allowed:
             problems.append(f"option {key} must be one of {', '.join('null (automatic)' if a is None else a for a in allowed)}")
-    if not isinstance(options.get("chest", OPTIONS["chest"]), bool):
-        problems.append("option chest must be true or false")
+    for key in ("chest", "hair_hits_body"):
+        if not isinstance(options.get(key, OPTIONS[key]), bool):
+            problems.append(f"option {key} must be true or false")
     amount = options.get("chest_amount", OPTIONS["chest_amount"])
     if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not CHEST_AMOUNT[0] <= amount <= CHEST_AMOUNT[1]:
         problems.append(f"option chest_amount must be a number from {CHEST_AMOUNT[0]} to {CHEST_AMOUNT[1]}")

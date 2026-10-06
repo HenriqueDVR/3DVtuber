@@ -8,7 +8,8 @@ from . import (adopt, cloth, face, face_points, face_rig, face_texture, hair, ha
 
 def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=None, face_points_path=None, keep_eyes=False,
                  joints_override=None, rigid_head=False, cloth_physics=False, hat_tip=False, mouth_color=None,
-                 free_mouth=False, pieces=None, pieces_reference=None, rig_path=None, skinning="heat"):
+                 free_mouth=False, pieces=None, pieces_reference=None, rig_path=None, skinning="heat",
+                 hair_hits_body=True):
     """Rig the character, add face expressions and hair physics, and export VRM 1.0.
 
     `objects` are the freshly imported objects. Returns a report of what was found.
@@ -127,7 +128,7 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
     if modelled_face:
         face_rig.set_eyelids_from_inserts(mesh, features, found, closed_eyes_image, lids=not keep_eyes)
     face_rig.add_shape_keys(mesh, features, blink=not keep_eyes)
-    if points is not None:
+    if points is not None and face_points.has_eyes(points):
         face_rig.store_painted_eyes(mesh, features)
     count = len(mesh.data.vertices)
     hats = [p for p in pieces if p["role"] == "hat"]
@@ -154,7 +155,7 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
     else:
         named_hair = roles.of_role(pieces, named, "hair", count)
         hair_mask = found.hair if modelled_face else (named_hair if named_hair.any() else None)
-        chains = hair.build_hair_bones(mesh, armature, joints, features, hair_mask)
+        chains = hair.build_hair_bones(mesh, armature, joints, features, hair_mask, off_arms=adopted is not None)
         head_mask = hair_mask
     swing = roles.of_role(pieces, named, "swing_cloth", count)
     if cloth_physics or swing.any():
@@ -164,6 +165,9 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
             if piece["role"] != "swing_cloth":
                 skip |= roles.pad(named[piece["name"]], count)
         skip &= ~swing  # a swinging region inside a listed piece still swings
+        if adopted is not None:
+            # our own skinning keeps a cape off the arms; a rig made elsewhere may not (model D)
+            cloth.hang_from_torso(mesh, armature, joints, skip=skip, force=swing)
         cloth_chains = cloth.build_cloth_chains(mesh, armature, joints, skip=skip, force=swing,
                                                 detect=cloth_physics)
     else:
@@ -190,7 +194,7 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
     vrm_export.configure(armature, name=name, author=author)
     vrm_export.bind_expressions(armature, mesh)
     vrm_export.bind_spring_bones(armature, hair_physics.design(mesh, armature, chains, joints, cloth_chains, tip_chains,
-                                                               appendage_chains))
+                                                               appendage_chains, hair_hits_body=hair_hits_body))
     vrm_export.use_toon_shading(mesh)
     vrm_export.export(filepath, armature)
     return {

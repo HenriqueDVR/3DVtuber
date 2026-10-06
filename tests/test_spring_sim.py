@@ -70,6 +70,17 @@ class SpringSimulation(unittest.TestCase):
         self.assertLess(distance_to_segment(free, start, end)[0], 0.01)
         self.assertGreater(distance_to_segment(held, start, end)[0], 0.04 + 0.01 - 0.01)
 
+    def test_a_chain_is_pushed_only_by_the_bones_it_collides_with(self):
+        # hair lying on the shoulders, set to collide with the head alone (hair_physics.design)
+        ball = spring_sim.Collider(bone="Chest", radius=0.05, offset=np.array([0.003, 0.0, 0.8]))
+        pose = lambda _frame: {"Head": np.eye(4), "Chest": np.eye(4)}  # noqa: E731
+        settings = {"stiffness": 0.0, "gravity_power": 1.0, "hit_radius": 0.01}
+        free = spring_sim.simulate([strand(HANGING, **settings)], [], pose, frames=120)[-1].positions[0]
+        head_only = spring_sim.simulate([strand(HANGING, collides_with=("Head",), **settings)], [ball], pose, frames=120)[-1].positions[0]
+        chest_too = spring_sim.simulate([strand(HANGING, collides_with=("Head", "Chest"), **settings)], [ball], pose, frames=120)[-1].positions[0]
+        np.testing.assert_allclose(head_only, free)
+        self.assertGreater(np.linalg.norm(chest_too[2] - ball.offset), 0.05)
+
 
 if __name__ == "__main__":
     unittest.main()

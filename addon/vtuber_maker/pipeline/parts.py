@@ -29,6 +29,16 @@ CROWN = 0.1
 FUSED_HAIR = 0.003
 # A stretch of it below the shoulders counts when it lies this close (m) to one that reaches above.
 FUSED_GAP = 0.02
+# Fused hair taking this share of the body's surface below the hips isn't hair: the skin is its colour.
+SKIN_AS_HAIR = 0.3
+# Hair shaded in two tones: a piece this big (share of the vertices) hanging from above the head
+# joint to below the neck is hair with only this share of it within SHADED_DISTANCE of the crown's
+# colour. Model D's hair, dark in front with pale highlights: 19% of the model, 22% within
+# HAIR_COLOR_DISTANCE and 33% within SHADED_DISTANCE; left out, it had no springs at all and kept
+# the rig's arm weights. No other piece of models A, B and D that hangs so is over 2% of its model.
+SHADED_DISTANCE = 0.3
+SHADED_SHARE = 0.25
+SHADED_SIZE = 0.05
 
 
 class MeshParts(NamedTuple):
@@ -121,15 +131,25 @@ def find(mesh_obj, joints):
         np.bincount(labels, minlength=labels.max() + 1), 1
     )
     excluded = set(inserts) | {face}
-    hair_parts = [p for p in ids if share[p] >= HAIR_SHARE and high[p][2] > joints["head"][2] and p not in excluded]
+    size = np.bincount(labels, minlength=labels.max() + 1)
+    shaded = np.bincount(labels, weights=np.linalg.norm(colors - hair_color, axis=1) < SHADED_DISTANCE,
+                         minlength=labels.max() + 1) / np.maximum(size, 1)
+    hair_parts = [p for p in ids if high[p][2] > joints["head"][2] and p not in excluded
+                  and (share[p] >= HAIR_SHARE
+                       or (shaded[p] >= SHADED_SHARE and size[p] >= SHADED_SIZE * len(verts) and low[p][2] < joints["neck"][2]))]
     hair = np.isin(labels, hair_parts)
     face_area = labels == face
     if face >= 0 and low[face][2] < joints["neck"][2] - head_height:
         # the face is one surface with the whole body (model A's T-pose FBX): only its head end is the
         # face, or the head-top clean-up repaints the up-facing arms and the jaw's chin is a foot.
         # Its hair is usually that same surface too, and swings rather than moving with the face
-        hair |= fused_hair(mesh_obj, verts, labels, hair_colored & (labels == face), joints)
-        face_area &= (verts[:, 2] > joints["neck"][2]) & ~hair
+        fused = fused_hair(mesh_obj, verts, labels, hair_colored & (labels == face), joints)
+        legs = face_area & (verts[:, 2] < joints["hips"][2])
+        # a body of the hair's own colour (model D, a slime girl, blue all over): colour can't tell
+        # the hair from the skin, and her legs were taken as hair and swung on its chains
+        if not legs.any() or fused[legs].mean() < SKIN_AS_HAIR:
+            hair |= fused
+        face_area &=(verts[:, 2] > joints["neck"][2]) & ~hair
     return MeshParts(labels, hair, face, eyes, mouth, hair_color, face_area)
 
 

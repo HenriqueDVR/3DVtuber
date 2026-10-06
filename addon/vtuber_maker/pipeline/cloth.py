@@ -33,6 +33,9 @@ MAX_ARM_SHARE = 0.5
 # One robe can be a cape at the back and a sleeve by the wrist, and the piece's average hides
 # it: a sleeve cuff pulled onto a cape's chain tore 22 cm when the arm lifted.
 VERTEX_ARM_SHARE = 0.4
+# Arm weight below the hips this far (fraction of the height) from the arm's bones isn't a sleeve's
+# (hang_from_torso): model D's cape hem is 0.5 from them, a cuff by a hanging hand under 0.1.
+ARM_REACH = 0.15
 # ... and it is at least this fraction of the height long (boots and soles aren't cloth).
 MIN_CLOTH_LENGTH = 0.2
 # Chains hanging less than this fraction of the height below the hips aren't worth swinging.
@@ -103,6 +106,10 @@ def build_cloth_chains(mesh_obj, armature, joints, skip=None, force=None, detect
         hanging = np.nonzero(members & (verts[:, 2] < root_z) & (arm_share < VERTEX_ARM_SHARE))[0]
         if len(hanging) < MIN_CHAIN_VERTICES:
             continue
+        # what would swing must itself stand off the legs: a body that is one surface with its arms
+        # and head has its middle far from the leg bones (model D), and its legs went onto chains
+        if not forced and np.median(leg_distance[hanging]) < OFF_LEGS * height:
+            continue
         mid = _circular_mean(angle[hanging])
         offsets = _angle_between(angle[hanging], mid)
         low, high = float(offsets.min()), float(offsets.max())
@@ -140,6 +147,64 @@ def build_cloth_chains(mesh_obj, armature, joints, skip=None, force=None, detect
             new_weights[int(vertex)] = (chain_weights, min(along / ROOT_BLEND, 1.0))
     _apply(mesh_obj, new_weights)
     return [c.names for c in chains]
+
+
+def hang_from_torso(mesh_obj, armature, joints, skip=None, force=None):
+    """Take hanging cloth an adopted rig gave to the arms back onto the torso; returns how many
+    vertices changed.
+
+    Tripo's rig weighted the whole of model D's cape, collar to hem, to the shoulders and upper
+    arms it is draped over: it folded into the body when the arms came down, and with all its
+    weight on the arms `build_cloth_chains` took it for a sleeve and gave it no chain. A piece
+    counts when it passes that function's tests for hanging cloth (or is named in `force`) and
+    most of what hangs below the hips is on an arm from further than ARM_REACH: a sleeve's cuff
+    below the hips is by the hand. All of the piece's shoulder and arm weight then goes to the
+    torso bone at its height, so it hangs from the chest and the arms move free under it. Run
+    before `build_cloth_chains`, on the rig's own weights; `skip` as there.
+    """
+    from .loose import _blend_skinning
+    from .rig import _torso_weights
+    verts = world_vertices(mesh_obj)
+    n = len(verts)
+    skip = np.zeros(n, dtype=bool) if skip is None else np.asarray(skip, dtype=bool)
+    force = np.zeros(n, dtype=bool) if force is None else np.asarray(force, dtype=bool)
+    height = float(np.ptp(verts[:, 2]))
+    j = {key: np.asarray(value, dtype=float) for key, value in joints.items()}
+    root_z = float(j["hips"][2])
+    knee_z = float((j["left_lower_leg"][2] + j["right_lower_leg"][2]) / 2)
+    leg_distance = np.min([_segment_distance(verts, j[f"{side}_{a}"], j[f"{side}_{b}"])
+                           for side in ("left", "right")
+                           for a, b in (("upper_leg", "lower_leg"), ("lower_leg", "foot"))], axis=0)
+    arm_distance = np.min([_segment_distance(verts, j[f"{side}_{a}"], j[f"{side}_{b}"])
+                           for side in ("left", "right")
+                           for a, b in (("upper_arm", "lower_arm"), ("lower_arm", "hand"))], axis=0)
+    bones = armature.data.bones
+    arm_names = {b.name for b in bones if b.name.startswith(("Left", "Right"))
+                 and not b.name.endswith(("UpperLeg", "LowerLeg", "Foot", "Toes"))}
+    arm_groups = [g.index for g in mesh_obj.vertex_groups if g.name in arm_names]
+    arm_share = _share(mesh_obj, n, arm_names)
+    world = armature.matrix_world
+    torso = [(BONE_NAMES[key], (world @ bones[BONE_NAMES[key]].head_local).z)
+             for key in ("hips", "spine", "chest", "upper_chest") if BONE_NAMES[key] in bones]
+    labels = pieces(mesh_obj, verts)
+    changed = 0
+    for label in np.unique(labels[~skip]):
+        members = (labels == label) & ~skip
+        below = members & (verts[:, 2] < root_z)
+        if not below.any() or arm_share[members].max() <= 0:
+            continue
+        if not force[members].any() and (
+                verts[members, 2].min() > knee_z or np.ptp(verts[members, 2]) < MIN_CLOTH_LENGTH * height
+                or np.median(leg_distance[below]) < OFF_LEGS * height
+                or np.mean((arm_share[below] > VERTEX_ARM_SHARE) & (arm_distance[below] > ARM_REACH * height)) < 0.5):
+            continue
+        for index in np.flatnonzero(members & (arm_share > 0)):
+            target = _torso_weights(mesh_obj.vertex_groups, torso, verts[index, 2])
+            for group in arm_groups:
+                mesh_obj.vertex_groups[group].remove([int(index)])
+            _blend_skinning(mesh_obj, armature, int(index), target, float(arm_share[index]))
+            changed += 1
+    return changed
 
 
 def build_tip_chain(mesh_obj, armature, joints, rigid, face=None):

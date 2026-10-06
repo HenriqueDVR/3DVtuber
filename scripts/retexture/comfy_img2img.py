@@ -5,7 +5,12 @@ Each color_<view>.png is re-drawn at low denoise, guided by ControlNet depth
 Results are written as gen_<view>.png next to the inputs.
 
 Run with ComfyUI's embedded Python (it has Pillow):
-    python comfy_img2img.py views_dir sheet.png [--only head_000,torso_000] [--denoise 0.4] [--seed 7]
+    python comfy_img2img.py views_dir sheet.png --prompt "silver hair, short hair, red eyes, white coat"
+        [--crops crops.json] [--only head_000,torso_000] [--denoise 0.4] [--seed 7]
+
+--prompt says what the character looks like (hair, eyes, outfit). --crops names the regions of the
+character sheet to take as references, {"face": [left, top, right, bottom], "front": ..., "side": ...,
+"back": ...}; without it the whole sheet is the reference for every view.
 """
 import argparse
 import json
@@ -25,19 +30,13 @@ CONTROLNET = "cn_union_promax.safetensors"
 IPADAPTER = "ip-adapter-plus_sdxl_vit-h.safetensors"
 CLIP_VISION = "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors"
 
-# Regions of OCSheet.png (1344x1008 layout), as (left, top, right, bottom).
-SHEET_CROPS = {
-    "face": (660, 88, 900, 350),
-    "front": (20, 110, 245, 760),
-    "side": (235, 110, 430, 760),
-    "back": (425, 110, 625, 760),
-}
+# The references a view can ask for (reference_for); each is a region of the character sheet.
+REFERENCES = ("face", "front", "side", "back")
 
+# The style every view is drawn in; the character's own look comes from --prompt.
 POSITIVE = (
-    "masterpiece, best quality, amazing quality, anime coloring, 1girl, solo, orange hair, long hair, "
-    "blue eyes, black jacket, white shirt, blue necktie, black corset, black shorts, black thighhighs, "
-    "black gloves, black boots, gold trim, flat color, cel shading, clean lineart, sharp details, "
-    "grey background"
+    "masterpiece, best quality, amazing quality, anime coloring, solo, {character}, flat color, cel shading, "
+    "clean lineart, sharp details, grey background"
 )
 NEGATIVE = (
     "lowres, worst quality, low quality, blurry, jpeg artifacts, realistic, photorealistic, 3d render, "
@@ -73,10 +72,13 @@ def view_hint(view):
     return ", ".join(p for p in parts if p)
 
 
+CHARACTER = "1girl"  # replaced by --prompt
+
+
 def workflow(color, depth, ref, seed, denoise, prefix, hint, use_ipadapter, cn_type, steps, extra_neg, ipa_weight, cn_strength=0.6):
     wf = {
         "ckpt": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": CHECKPOINT}},
-        "pos": {"class_type": "CLIPTextEncode", "inputs": {"text": f"{POSITIVE}, {hint}", "clip": ["ckpt", 1]}},
+        "pos": {"class_type": "CLIPTextEncode", "inputs": {"text": f"{POSITIVE.format(character=CHARACTER)}, {hint}", "clip": ["ckpt", 1]}},
         "neg": {"class_type": "CLIPTextEncode", "inputs": {"text": f"{NEGATIVE}, {extra_neg}" if extra_neg else NEGATIVE, "clip": ["ckpt", 1]}},
         "color": {"class_type": "LoadImage", "inputs": {"image": color}},
         "depth": {"class_type": "LoadImage", "inputs": {"image": depth}},
@@ -143,7 +145,11 @@ def main():
     ap.add_argument("--cn-strength", type=float, default=0.6)
     ap.add_argument("--input-prefix", default="color_", help="image to start from, e.g. clay_ for untextured renders")
     ap.add_argument("--extra-negative", default="")
+    ap.add_argument("--prompt", required=True, help="what the character looks like: hair, eyes, outfit")
+    ap.add_argument("--crops", default="", help="JSON file: the sheet's regions to use as references")
     args = ap.parse_args()
+    global CHARACTER
+    CHARACTER = args.prompt
 
     views_dir = os.path.abspath(args.views)
     with open(os.path.join(views_dir, "views.json")) as f:
@@ -155,8 +161,12 @@ def main():
     input_dir = os.path.join(COMFY, "input", "rt")
     os.makedirs(input_dir, exist_ok=True)
     sheet = Image.open(args.sheet).convert("RGB")
-    for key, box in SHEET_CROPS.items():
-        sheet.crop(box).save(os.path.join(input_dir, f"ref_{key}.png"))
+    crops = {}
+    if args.crops:
+        with open(args.crops) as f:
+            crops = json.load(f)
+    for key in REFERENCES:
+        (sheet.crop(tuple(crops[key])) if key in crops else sheet).save(os.path.join(input_dir, f"ref_{key}.png"))
     if args.ref_image:
         path, _, box = args.ref_image.partition(":")
         ref = Image.open(path).convert("RGB")

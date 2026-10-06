@@ -85,6 +85,13 @@ def main():
 def tidy(armature, meshes, join):
     if join:
         for mesh in meshes:
+            # a crack in the generated surface: its two rims under a millimetre apart, so not "touching"
+            # for the join below, each with its own weights. Model D's under the right elbow (6 edges,
+            # 0.8 mm) opened 6 mm with the arm bent and showed in Warudo as a tear. Closed first, the
+            # join makes one surface of it
+            closed = loose.close_small_holes(mesh)
+            if closed:
+                print(f"closed cracks in the surface: {closed} vertices brought together")
             before = len(mesh.data.vertices)
             joined = loose.join_touching_surfaces(mesh, armature)
             # a merged vertex keeps one side's weights, and just occasionally that side had none
