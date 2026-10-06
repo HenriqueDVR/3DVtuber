@@ -19,6 +19,10 @@ export function makeView(host) {
   const sun = new THREE.DirectionalLight(0xffffff, 1.5); sun.position.set(1, 2, 2); scene.add(sun);
   const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 50);
   camera.position.set(0, 0.9, 3.2);
+  // a press of the middle button starts the browser's own scrolling (the page slid up and down
+  // while the view was being moved): the button belongs to the view
+  renderer.domElement.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); });
+  renderer.domElement.addEventListener("auxclick", (e) => e.preventDefault());
   const orbit = new OrbitControls(camera, renderer.domElement);
   orbit.target.set(0, 0.85, 0); orbit.update();
   const view = { renderer, scene, camera, orbit, host, model: null,
@@ -54,7 +58,9 @@ export function makeView(host) {
   cams.innerHTML = Object.keys(CAMS).map((k) => `<button data-cam="${k}">${k}</button>`).join("") + `<button data-cam="fit" title="the whole model in view">Fit</button>`;
   cams.onclick = (e) => { const k = e.target.dataset.cam; if (k) view.look(CAMS[k]); };
   host.append(cams);
-  renderer.setAnimationLoop(() => { if (host.offsetParent) renderer.render(scene, camera); });
+  // drawn while its page shows. Not by offsetParent: that is null for the Paint view over the whole
+  // window (position: fixed), which then stayed black
+  renderer.setAnimationLoop(() => { if (host.clientWidth && host.clientHeight) renderer.render(scene, camera); });
   // a view on a hidden page has no size; it gets one when its page shows
   new ResizeObserver(() => view.resize()).observe(host);
   view.resize();

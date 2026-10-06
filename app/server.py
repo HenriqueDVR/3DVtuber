@@ -13,6 +13,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import threading
 import traceback
@@ -103,9 +104,12 @@ def _args(**kwargs):
 def api(route, query, body):
     m = body.get("manifest") or (query.get("manifest") or [None])[0]
     if route == "projects":
-        return {"projects": [{"manifest": str(p), "name": _name(p), **_summary(p)} for p in _characters()]}
+        return {"projects": [{"manifest": str(p), "name": _name(p), **_summary(p)} for p in _characters()],
+                "hidden": [{"manifest": h, "name": _name(h)} for h in engine.hidden_characters()]}
     if route == "setup":
         return engine.setup()
+    if route == "detector_install":
+        return JOBS.start("installing the face detector", lambda emit: cli.install_detector(on_event=emit))
     if route == "vendor":
         return JOBS.start("keeping a copy for offline use", lambda emit: vendor.fetch(on_event=emit))
     if route in ("use_blender", "forget_blender"):
@@ -208,12 +212,15 @@ def api(route, query, body):
         at = f"manifest={quote(str(Path(m).resolve()))}"
         for picture in state["pictures"]:
             picture["url"] = f"/api/overlay?{at}&name={quote(picture['overlay'])}" if picture["painted"] else None
+            picture["draft_url"] = f"/api/overlay?{at}&name={quote(picture['overlay'])}&draft=1" if picture["draft"] else None
         return dict(state, model=f"/api/model?key=source&{at}" if state["paintable"] else None)
     if route == "paint_save":
         if JOBS.running:
             # a build may be reading the painted copy this would write again
             raise StepFailed(f"busy: {JOBS.running} is still running")
         return cli.save_paint(Path(m), body.get("images") or {})
+    if route == "paint_draft":
+        return cli.save_paint_draft(Path(m), body.get("images") or {})
     if route == "face_patch":
         return JOBS.start("making the face patch", lambda emit: cli.cmd_face_patch(_args(manifest=Path(m))))
     if route == "face_guess":
@@ -226,6 +233,10 @@ def api(route, query, body):
                                  checks=body.get("checks") or [], verdict=body.get("verdict") or None)
     if route == "feedback_list":
         return {"feedback": [dict(f, urls=[_url(Path(f["folder"]) / n) for n in f["screenshots"]]) for f in cli.list_feedback(Path(m))]}
+    if route == "rename":
+        return cli.rename(Path(m), (body.get("name") or "").strip())
+    if route == "hide":
+        return engine.hide_character(Path(body.get("path") or m), hide=not body.get("show"))
     if route == "duplicate":
         return cli.duplicate(Path(m), (body.get("name") or "").strip())
     if route == "approve":
@@ -436,7 +447,10 @@ class Handler(BaseHTTPRequestHandler):
         wanted = Path((query.get("manifest") or [""])[0]).resolve()
         if wanted not in {Path(p).resolve() for p in _characters()}:
             return self.send_error(403)
-        kept = paint.overlays(engine.manifest.path_of(engine.manifest.load(wanted), "paint"))
+        if (query.get("draft") or [""])[0]:
+            kept = paint.overlays(cli._draft_folder(Project(wanted)))
+        else:
+            kept = paint.overlays(engine.manifest.path_of(engine.manifest.load(wanted), "paint"))
         path = kept.get((query.get("name") or [""])[0])
         if path is None:
             return self.send_error(404)
@@ -457,16 +471,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(403)
         if not path.is_file() or path.suffix.lower() not in KINDS:
             return self.send_error(404)
-        raw = path.read_bytes()
+        raw = None
         if path.suffix.lower() == ".html":
             # the pages name three.js and the tracker by their CDN addresses: with a copy kept here, that copy
-            raw = vendor.local(raw.decode("utf-8")).encode("utf-8")
+            raw = vendor.local(path.read_text(encoding="utf-8")).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
-        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Content-Length", str(len(raw) if raw is not None else path.stat().st_size))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(raw)
+        if raw is not None:
+            return self.wfile.write(raw)
+        # a model is tens of megabytes: sent as it is read, not held whole for every viewer that opens
+        with open(path, "rb") as handle:
+            shutil.copyfileobj(handle, self.wfile, 1 << 20)
 
 
 def main():

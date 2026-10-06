@@ -35,6 +35,14 @@ export function renderHome() {
     app.go(p?.surveyed ? "build" : "model");
   });
   $("cards").querySelector("[data-new]").onclick = async () => { await app.openProject(null); app.go("model"); };
+  // characters taken off the list: one click puts one back
+  const hidden = S.hidden || [];
+  $("hidden-list").hidden = !hidden.length;
+  $("hidden-list").innerHTML = hidden.length ? `Off the list: ${hidden.map((h) =>
+    `<button class="act alt small" data-show="${esc(h.manifest)}" title="put it back on the list">${esc(h.name)}</button>`).join(" ")}` : "";
+  $("hidden-list").querySelectorAll("[data-show]").forEach((b) => b.onclick = async () => {
+    try { await call("hide", { path: b.dataset.show, show: true }); await app.loadProjects(S.manifestPath); } catch (e) { toast(e.message, "bad"); }
+  });
 }
 
 // ---------- disk: what the runs take, and freeing what nothing reads any more
@@ -102,6 +110,18 @@ $("create").onclick = async () => {
     await app.loadProjects(made.manifest);
     if ($("create-prepare").checked) job("prepare", {});
   } catch (e) { say("create-msg", e.message, true); }
+};
+$("rename").onclick = async () => {
+  const name = await ask("Rename this character", { text: "Letters, digits, _ and -. Its builds stay where they are; rebuild for the name inside the avatar file.",
+    input: true, value: S.manifest?.name || "", ok: "Rename" });
+  if (!name || name === S.manifest?.name) return;
+  try { await call("rename", { name }); toast(`Renamed to ${name}.`); await app.loadProjects(S.manifestPath); }
+  catch (e) { say("character-msg", e.message, true); }
+};
+$("hide").onclick = async () => {
+  if (!await ask("Take this character off the list", { text: "Nothing is deleted: its model, builds and settings stay on disk, and the Characters page can put it back.", ok: "Take off the list" })) return;
+  try { await call("hide", {}); toast("Off the list. It can be put back from the Characters page."); await app.loadProjects(null); app.go("home"); }
+  catch (e) { say("character-msg", e.message, true); }
 };
 $("duplicate").onclick = async () => {
   const name = await ask("Duplicate this character", { text: "A name for the copy: letters, digits, _ and -. Nothing is built yet in it.",

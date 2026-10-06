@@ -58,6 +58,7 @@
   </header>
   <div class="cue" id="home-notice" hidden style="max-width:860px;margin-bottom:var(--s3)"></div>
   <div class="cards" id="cards"></div>
+  <p class="msg" id="hidden-list" hidden style="margin-top:var(--s2)"></p>
   <div class="card w-lg" id="disk-card" style="margin-top:var(--s4)">
     <div class="title">Disk space <span class="chip" id="disk-chip"></span></div>
     <p class="help">Every build keeps its files, run by run: about 300 MB a run. An old run's model files (.blend, .vrm) can go;
@@ -157,6 +158,13 @@
           with its own builds. Change one thing in the copy (moving iris or sliding eyes, a bigger mouth, chest bounce) and
           build both, instead of writing one choice over the other.</p>
         <div class="row"><button class="act alt" id="duplicate">Duplicate this character…</button><span class="msg" id="duplicate-msg"></span></div>
+      </div>
+      <div class="card">
+        <div class="title">This character</div>
+        <p class="help">A new name shows in the list and inside the avatar file after the next build; its builds stay
+          where they are. Taking it off the list deletes nothing: it can be put back from the Characters page.</p>
+        <div class="row"><button class="act alt" id="rename">Rename…</button>
+          <button class="act alt" id="hide">Take off the list</button><span class="msg" id="character-msg"></span></div>
       </div>
     </div>
   </div>
@@ -258,7 +266,8 @@
       <p class="help">Click the highlighted point on the picture, twelve in all: four per eye (the two corners, the top and
         bottom of the opening, where the lashes meet the white) and four for the mouth. Drag a dot to move it. The 3D view
         shows where each lands on the head: the dots must sit on the eyes and the mouth (a mouth once got marked on the
-        nose). They save by themselves once all twelve are placed.</p>
+        nose). They save by themselves once all twelve are placed. <b>Eyes behind a visor, glasses or a mask:</b> choose
+        "eyes are covered" under Eye tracking in step 3, and only the mouth's four points are asked for.</p>
       <p class="help"><b>A mouth drawn as a line:</b> put the two corner points on the ends of the line, and the top and
         bottom points just above and just below its middle, the same distance from it. Only the corners set how big the
         talking mouth is; the top and bottom only say how high it sits, so there is no need to mark a bigger box. For a
@@ -280,9 +289,15 @@
         <p class="help">Makes the eyes follow where you look in the tracking app (Warudo: set eye movement to "blendshapes").
           Blinking works either way.</p>
         <select id="eyes" aria-label="eye tracking"><option value="">automatic (recommended)</option><option value="iris">moving iris</option>
-          <option value="slide">sliding eye patches</option><option value="none">none: eyes stay still</option></select>
+          <option value="slide">sliding eye patches</option><option value="none">none: eyes stay still</option>
+          <option value="hidden">none: eyes are covered (visor, glasses, mask)</option></select>
         <p class="choice" id="eyes-choice"></p>
         <div class="examples" data-examples="eyes"></div></div>
+      <div class="opt"><b>Mouth tracking</b>
+        <p class="help">Makes the mouth follow yours in the tracking app: the jaw and the mouth's corners, not only the
+          five talking shapes. Eye tracking and mouth tracking are separate: have both, either or neither.</p>
+        <select id="mouth-tracking" aria-label="mouth tracking"><option value="true">on (recommended)</option>
+          <option value="false">off: only the five talking shapes</option></select></div>
       <div class="opt"><b>Mouth</b>
         <p class="help">By default the mouth opens by bending the face around the marked mouth. If it barely opens, looks
           smeared, or the face dents when talking, redraw it.</p>
@@ -305,20 +320,29 @@
 
 <section class="page" id="paint">
   <header class="page-head">
-    <div class="kicker">Optional, any time before a build</div>
     <h2>Paint <span class="chip" id="paint-state"></span></h2>
-    <p class="lead">Fix the texture on the model itself: a smudge by an eye, a seam of the wrong colour, a stray strand painted on
-      the forehead, shading that is missing. <b>Drag on the model</b> to paint; drag beside it, or with the right button, to turn it.</p>
-    <details class="more"><summary>More about this page</summary>
+    <details class="more"><summary>Fix the texture on the model itself: how this page works</summary>
+      <p>For a smudge by an eye, a seam of the wrong colour, a stray strand painted on the forehead, shading that is
+        missing. <b>Drag on the model</b> to paint; drag beside it, or with the right button, to turn it; the middle button
+        moves it; <b>F</b> (or Expand) gives the view the whole window.</p>
       <p>The paint is kept apart from the generated texture and laid over it when the avatar is built, so nothing here is
         final: the eraser brings the original back, and so does Clear. It goes on at the “build” step, so save and rebuild
         from there to see it on the avatar. Pick colours from the model (Alt+click) rather than by eye: a patch in the
-        model's own colour is what makes a fix invisible. Keys: B brush, E eraser, S soften, C clone, F fill, I pick,
+        model's own colour is what makes a fix invisible. <b>Isolate</b> (H) shows one part alone, for places another part covers: the neck behind the hair, the inside of a
+        collar. Keys: B brush, E eraser, S soften, C clone, G fill, I pick, H isolate / show all, F whole window,
         [ and ] brush size, Ctrl+Z undo, Shift+click a straight line from the last stroke.</p></details>
   </header>
-  <div class="split narrow-side">
-    <div class="view sticky" id="paint-view"><div class="hint">drag on the model: paint · drag beside it or right-drag: turn · scroll: zoom · middle-drag: move</div></div>
-    <div class="stack">
+  <div class="cue" id="paint-old" hidden style="max-width:860px;margin-bottom:var(--s3)"><b>This character's face patch is an older kind</b>
+    Hair lying over the face and the face behind it share one picture in it, so paint on one shows on the other. Remaking
+    the patch gives each its own (two Blender runs, about two minutes; the face points stay as they are, and paint already
+    saved is kept).
+    <button class="act alt small" id="paint-remake" data-job style="width:auto">Remake the face patch</button></div>
+  <div class="paint-layout">
+    <div class="view sticky" id="paint-view">
+      <div class="tools"><button id="paint-expand" title="the view over the whole window (F); Esc goes back">Expand</button>
+        <button id="paint-all" class="on" hidden title="bring back the parts put out of the way (H)"></button></div>
+      <div class="hint">drag on the model: paint · drag beside it or right-drag: turn · scroll: zoom · middle-drag: move · F: whole window</div></div>
+    <div class="stack" id="paint-side">
       <div class="card">
         <div class="chips" id="paint-tools"></div>
         <p class="help" id="paint-tool-help"></p>
@@ -340,17 +364,18 @@
         </div>
         <div class="row" style="margin-top:var(--s3)"><button class="act" id="paint-build" data-job disabled>Save and rebuild</button>
           <button class="act alt" id="paint-save" disabled>Save</button>
-          <button class="act alt" id="paint-undo">Undo</button>
+          <button class="act alt" id="paint-undo" title="Ctrl+Z">Undo</button>
+          <button class="act alt" id="paint-redo" title="Ctrl+Y">Redo</button>
           <button class="act alt danger" id="paint-clear" disabled>Clear all paint…</button></div>
         <p class="msg" id="paint-msg"></p>
       </div>
-      <div class="card">
-        <div class="title">The texture</div>
-        <p class="help">Where the paint lands on the picture the model wears. A model has one for the body and, once the face
-          patch is made, one for the face.</p>
+      <details class="card" id="paint-texture">
+        <summary><b>The texture</b> <span class="help">where the paint lands on the pictures the model wears</span></summary>
+        <p class="help">A model has one picture for the body and, once the face patch is made, one for the face and one for
+          the hair lying over it.</p>
         <select id="paint-picture" aria-label="picture"></select>
         <canvas id="paint-preview" class="texture"></canvas>
-      </div>
+      </details>
     </div>
   </div>
 </section>
@@ -523,6 +548,7 @@
   <div class="stack">
     <div class="card w-lg"><div class="title">Checks</div><div id="setup-checks"><p class="msg">checking…</p></div>
       <div class="row" style="margin-top:var(--s3)"><button class="act alt" id="setup-refresh">Check again</button>
+        <button class="act alt" id="setup-detector" data-job hidden title="a Python of its own with PyTorch and the face detector, in the app's tools folder">Install auto face marking…</button>
         <button class="act alt" id="setup-vendor" data-job hidden title="downloads three.js, three-vrm and the face tracker (17 MB, each file checked) into the app's folder">Keep a copy for offline use</button></div></div>
     <div class="card w-lg"><div class="title">Which Blender runs the builds</div>
       <p class="help">Any Blender 4.2 or later with the VRM Add-on ("VRM format" in Blender's Get Extensions). The app runs it in

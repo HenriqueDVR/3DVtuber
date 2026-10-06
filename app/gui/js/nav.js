@@ -56,7 +56,7 @@ export function renderNav() {
     model: steps.survey?.status === "done" ? ["surveyed", "good"] : ["survey", "warn"],
     parts: !S.listing ? ["not listed", "warn"] : [`${m.pieces.length} role${m.pieces.length === 1 ? "" : "s"}`, m.pieces.length ? "info" : ""],
     joints: !S.listing ? ["", ""] : moved ? [`${moved} moved`, "info"] : ["detected", ""],
-    face: m.face ? ["marked", "good"] : facePlaced ? [`${facePlaced}/12`, "warn"] : ["to do", "warn"],
+    face: m.face ? ["marked", "good"] : facePlaced ? [`${facePlaced} placed`, "warn"] : ["to do", "warn"],
     build: st?.verdict?.ready && !pending ? ["ready", "good"] : failed ? [`${failed} failed`, "bad"]
       : pending && nextRun(st) ? [`${pending} to build`, "warn"] : steps.build?.status === "done" ? ["built", "info"] : ["", ""],
     movement: S.movement ? (flagged ? [`${flagged} flagged`, "warn"] : ["clear", "good"]) : ["", ""],

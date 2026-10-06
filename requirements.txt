@@ -1,0 +1,4 @@
+# The app (python -m app.server, python -m app). Blender brings its own Python for the build steps.
+pillow
+# Optional: the app in its own window instead of a browser tab.
+# pywebview

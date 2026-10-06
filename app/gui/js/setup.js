@@ -1,6 +1,6 @@
 // Setup: what the app needs on this computer (engine.setup) and which Blender runs the builds.
 import { $, S, app, call, esc, say } from "./core.js";
-import { toast } from "./ui.js";
+import { ask, toast } from "./ui.js";
 
 const MARK = { ok: ["✓", "done"], warn: ["!", "warn"], bad: ["✗", "failed"] };
 const same = (a, b) => String(a || "").toLowerCase().replaceAll("/", "\\") === String(b || "").toLowerCase().replaceAll("/", "\\");
@@ -33,7 +33,16 @@ function renderSetup() {
   $("setup-auto").hidden = !s.chosen;
   // offered while something the pages need still comes from the internet
   $("setup-vendor").hidden = !s.checks.some((c) => c.name === "Internet" && c.state !== "ok");
+  $("setup-detector").hidden = !s.checks.some((c) => c.name === "Auto face marking" && c.state !== "ok");
 }
+$("setup-detector").onclick = async () => {
+  if (!await ask("Install auto face marking", { text: "Downloads PyTorch and an anime face detector into the app's tools folder: about 250 MB to download, "
+    + "1.5 GB on disk, a few minutes. It needs Python 3.12 or newer on this computer. The first face it marks downloads another 273 MB. "
+    + "Nothing else on the computer is changed; deleting tools\\face_detector removes it.", ok: "Download and install" })) return;
+  const state = await app.job("detector_install", {});
+  await loadSetup();
+  if (state?.result?.python) toast("Installed. \"Place them for me\" on the Face page now works.", "good", { ms: 8000 });
+};
 $("setup-vendor").onclick = () => app.job("vendor", {});
 // the pages already open still name the internet's copy: the kept one is read when a page loads
 app.vendored = async () => {

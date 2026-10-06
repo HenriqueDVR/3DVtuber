@@ -27,25 +27,29 @@ addEventListener("message", async (e) => {
   }
 });
 let pointsTimer = null, pointsSaved = null;
-const POINT_COUNT = 12;
-const placed = (p) => ["right_eye", "left_eye", "mouth"].reduce((n, k) => n + Object.keys(p?.[k] || {}).length, 0);
+// Eyes covered by a visor, glasses or a mask aren't marked: the mouth's four points are all there is.
+const hiddenEyes = () => $("eyes").value === "hidden";
+const features = () => hiddenEyes() ? ["mouth"] : ["right_eye", "left_eye", "mouth"];
+const pointCount = () => 4 * features().length;
+const placed = (p) => features().reduce((n, k) => n + Object.keys(p?.[k] || {}).length, 0);
+const marked = () => ({ ...facePoints, ...(hiddenEyes() ? { right_eye: {}, left_eye: {} } : {}) });
 async function savePoints() {
-  if (placed(facePoints) < POINT_COUNT) return false;
-  if (pointsSaved === JSON.stringify(facePoints)) return true;
-  await call("face_save", { points: facePoints });
-  pointsSaved = JSON.stringify(facePoints);
+  if (placed(facePoints) < pointCount()) return false;
+  if (pointsSaved === JSON.stringify(marked())) return true;
+  await call("face_save", { points: marked() });
+  pointsSaved = JSON.stringify(marked());
   await refreshManifest(); await refreshStatus(); app.renderAll(); showPointsState();
   return "saved";
 }
 function showPointsState() {
-  const n = placed(facePoints), done = n === POINT_COUNT && pointsSaved === JSON.stringify(facePoints);
+  const n = placed(facePoints), done = n === pointCount() && pointsSaved === JSON.stringify(marked());
   S.facePlaced = n;
-  $("points-state").textContent = done ? "saved" : n === POINT_COUNT ? "saving…" : `${n} of ${POINT_COUNT} placed`;
+  $("points-state").textContent = done ? "saved" : n === pointCount() ? "saving…" : `${n} of ${pointCount()} placed`;
   $("points-state").className = `chip ${done ? "done" : n ? "warn" : ""}`;
   app.renderNav();
 }
 function sendFaceImage() {
-  if (markerReady && faceImage) $("marker").contentWindow.postMessage({ type: "face-image", ...faceImage, points: facePoints }, location.origin);
+  if (markerReady && faceImage) $("marker").contentWindow.postMessage({ type: "face-image", ...faceImage, points: facePoints, features: features() }, location.origin);
 }
 
 const PATCH_NEEDED = "Needed once per character. It renders the head from the front and maps that picture onto the face as its own sharp texture; step 2 marks the points on it. Two Blender runs, about two minutes. The model is copied, never changed.";
@@ -133,7 +137,7 @@ function showFacePoints() {
   if (!facePatch || !facePoints?.size) { $("face-checks").innerHTML = facePatch ? `<p class="msg">No points yet.</p>` : ""; return; }
   const at = {}, missing = [];
   const radius = 0.004 * new THREE.Box3().setFromObject(faceView.model).getSize(new THREE.Vector3()).y / 1.6;
-  for (const key of ["right_eye", "left_eye", "mouth"]) {
+  for (const key of features()) {
     for (const [name, [px, py]] of Object.entries(facePoints[key] || {})) {
       const p = onPatch(px, py, facePoints.size);
       if (!p) { missing.push(`${key.replace("_", " ")} ${name}`); continue; }
@@ -166,6 +170,12 @@ $("patch-make").onclick = () => job("face_patch", {});
 // guess is shown on the picture and on the head, to be dragged where it is off.
 $("points-guess").onclick = async () => {
   if (!facePatch) { say("guess-msg", "Make the face patch first (step 1).", true); return; }
+  if (S.setup?.checks.some((c) => c.name === "Auto face marking" && c.state !== "ok")) {
+    // said here, with the way to it, not found out as a failed run
+    $("guess-msg").innerHTML = `The face detector isn't installed. <a href="#setup">Setup</a> installs it with one button; or mark the twelve points by hand below.`;
+    $("guess-msg").classList.add("bad");
+    return;
+  }
   if (placed(facePoints) && !confirm("Replace the points already placed with the detector's guess?")) return;
   say("guess-msg", "Looking for the face…");
   // a job like a build: the detector must not run beside a Blender (memory)
@@ -182,20 +192,22 @@ export function renderFace() {
   if (!S.manifest) return;
   const o = S.manifest.options;
   $("eyes").value = o.eyes ?? "";
+  $("mouth-tracking").value = String(o.face_tracking !== false);
   const fix = o.mouth_fix;
   $("mouth-fix").checked = !!fix; $("mouth-free").checked = !!fix?.free; $("mouth-scale").value = fix?.scale ?? 1;
   $("mouth-free").disabled = $("mouth-scale").disabled = !fix;
-  showEyeChoice();
+  showEyeChoice(); showFeatures();
 }
 // Saves the points and the choices; true when the points went in too.
 async function saveFace() {
   try {
     const points = await savePoints();
     await call("set", { key: "eyes", value: $("eyes").value || null });
+    await call("set", { key: "face_tracking", value: $("mouth-tracking").value === "true" });
     await call("set", { key: "mouth_fix", value: $("mouth-fix").checked ? { free: $("mouth-free").checked, scale: +$("mouth-scale").value } : null });
     await refreshManifest(); await refreshStatus(); app.renderAll();
     if (points) { say("face-msg", ""); return true; }
-    say("face-msg", `Saved the choices, but not the points: ${placed(facePoints)} of ${POINT_COUNT} are placed. Place them all in step 2.`, true);
+    say("face-msg", `Saved the choices, but not the points: ${placed(facePoints)} of ${pointCount()} are placed. Place them all in step 2.`, true);
   } catch (e) { say("face-msg", e.message, true); }
   return false;
 }
@@ -213,7 +225,13 @@ const EYE_CHOICE = {
   iris: () => "The coloured part of the eye (iris and pupil) moves inside the eye white. For models whose eyes are separate pieces.",
   slide: () => "The whole painted eye slides a little across the face. For eyes painted onto the face texture.",
   none: () => "The eyes stay still; blinking still works.",
+  hidden: () => "For eyes behind a visor, glasses or a mask: step 2 asks for the mouth's four points only, and the avatar gets no blink and no eye movement.",
 };
 const showEyeChoice = () => { $("eyes-choice").textContent = EYE_CHOICE[$("eyes").value](); };
-$("eyes").onchange = showEyeChoice;
+// which points step 2 asks for follows the choice at once
+function showFeatures() {
+  showPointsState(); showFacePoints();
+  if (markerReady) $("marker").contentWindow.postMessage({ type: "face-features", features: features() }, location.origin);
+}
+$("eyes").onchange = () => { showEyeChoice(); showFeatures(); };
 $("mouth-fix").onchange = () => { $("mouth-free").disabled = $("mouth-scale").disabled = !$("mouth-fix").checked; };

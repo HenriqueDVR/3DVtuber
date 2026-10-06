@@ -71,21 +71,38 @@ document.addEventListener("click", (e) => {
   lightbox(set.map((i) => [i.src, i.alt]), set.indexOf(img));
 });
 
-// Undo: each change the user makes pushes the call that puts it back.
-const undos = [];
+// Undo: each change the user makes pushes the call that puts it back. A call that hands back
+// another call can be redone with it (a paint stroke does; a saved option doesn't).
+const undos = [], redos = [];
 export function pushUndo(label, run) {
   undos.push({ label, run });
   if (undos.length > 50) undos.shift();
+  redos.length = 0;  // a new change: what was undone before it is gone
 }
 export async function undo() {
   const last = undos.pop();
   if (!last) return toast("Nothing to undo", "info");
-  try { await last.run(); toast(`Undone: ${last.label}`, "info"); } catch (e) { toast(`Couldn't undo: ${e.message}`, "bad"); }
+  try {
+    const again = await last.run();
+    if (typeof again === "function") redos.push({ label: last.label, run: again });
+    toast(`Undone: ${last.label}`, "info", { ms: 1500 });
+  } catch (e) { toast(`Couldn't undo: ${e.message}`, "bad"); }
+}
+export async function redo() {
+  const last = redos.pop();
+  if (!last) return toast("Nothing to redo", "info");
+  try {
+    const back = await last.run();
+    if (typeof back === "function") undos.push({ label: last.label, run: back });
+    toast(`Redone: ${last.label}`, "info", { ms: 1500 });
+  } catch (e) { toast(`Couldn't redo: ${e.message}`, "bad"); }
 }
 // a toast that offers undo for the change it reports
 export const saved = (text) => toast(text, "good", { action: { label: "Undo", run: undo }, ms: 6000 });
 addEventListener("keydown", (e) => {
-  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z" || e.shiftKey) return;
-  if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName) && document.activeElement.type !== "checkbox") return;
-  e.preventDefault(); undo();
+  const key = e.key.toLowerCase();
+  if (!(e.ctrlKey || e.metaKey) || (key !== "z" && key !== "y")) return;
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName) && !["checkbox", "range"].includes(document.activeElement.type)) return;
+  e.preventDefault();
+  if (key === "y" || e.shiftKey) redo(); else undo();
 });

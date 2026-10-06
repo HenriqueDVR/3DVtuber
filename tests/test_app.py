@@ -96,6 +96,14 @@ class Engine(unittest.TestCase):
         self.assertNotIn("--spec-hands", [str(a) for a in args])
         self.assertIn("--keep-finger-pose", [str(a) for a in args])
 
+    def test_hair_collides_with_the_body_until_told_otherwise(self):
+        project = self.project({"options": {}, "triangles": 40000})
+        args, _ = project._arguments("build", self.root / "01_build", None)
+        self.assertNotIn("--hair-head-only", [str(a) for a in args])
+        project = self.project({"options": {}, "triangles": 40000}, hair_hits_body=False)
+        args, _ = project._arguments("build", self.root / "01_build", None)
+        self.assertIn("--hair-head-only", [str(a) for a in args])
+
     def test_chest_bounce_is_off_until_asked_for(self):
         project = self.project({"options": {}, "triangles": 40000})
         self.assertNotIn("chest", self.runs(project))
@@ -243,6 +251,24 @@ class Engine(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mouth is missing bottom"):
             cli.save_face(self.path, points)
 
+    def test_a_face_with_covered_eyes_is_its_mouth_alone(self):
+        # a visor or glasses over the eyes: nothing to mark there, and nothing to blink or move
+        points = {**self.face_points(), "right_eye": {}, "left_eye": {}}
+        saved = cli.save_face(self.path, points)
+        self.assertEqual(set(json.loads(Path(saved["face"]).read_text())), {"image", "size", "mouth"})
+        project = self.project({"options": {}, "triangles": 40000, "face_patch": True}, eyes="iris")
+        self.assertEqual(project.options()["eyes"], "hidden")
+        self.assertIn("face_tracking", self.runs(project))
+        self.assertNotIn("eyes", self.runs(project))
+        del points["mouth"]["top"]
+        with self.assertRaisesRegex(ValueError, "mouth is missing top"):
+            cli.save_face(self.path, points)
+
+    def test_one_eye_marked_is_still_refused(self):
+        points = {**self.face_points(), "left_eye": {}}
+        with self.assertRaisesRegex(ValueError, "left_eye is missing"):
+            cli.save_face(self.path, points)
+
     def finished(self, project, **steps):
         """Records the build as run to the end, plus whatever other step entries a test gives."""
         project.state["steps"]["vrm_check"] = {"status": "done"}
@@ -387,6 +413,31 @@ class Engine(unittest.TestCase):
         self.assertEqual([(r["pose"], r["stretch"], r["stretch_way"], r["squash_way"]) for r in rows["poses"]],
                          [("arms raised", [5.0, 9.0], "worse", ""), ("head turn", [3.0, 3.1], "", "better")])
         self.assertEqual(cli.compare_rows(before, self.root / "missing.json"), {"poses": [], "unweighted": None})
+
+    def test_a_character_is_renamed_where_it_stands_and_hidden_without_deleting(self):
+        project = self.project()
+        out = project.out
+        renamed = cli.rename(self.path, "Other")
+        self.assertEqual((renamed["name"], renamed["was"]), ("Other", "Test"))
+        again = Project(self.path, blender="blender")
+        self.assertEqual((again.name, again.out), ("Other", out))  # the builds stay where they are
+        for bad in ("../x", "a b", ""):
+            with self.assertRaisesRegex(ValueError, "folder name"):
+                cli.rename(self.path, bad)
+        real = engine.REPO
+        engine.REPO = self.root
+        try:
+            (self.root / "out" / "Other").mkdir(parents=True)
+            listed = self.root / "out" / "Other" / "character.json"
+            manifest.save(manifest.load(self.path), listed)
+            self.assertEqual(engine.characters(), [listed])
+            engine.hide_character(listed)
+            self.assertEqual((engine.characters(), engine.hidden_characters()), ([], [str(listed.resolve())]))
+            self.assertTrue(listed.exists())
+            engine.hide_character(listed, hide=False)
+            self.assertEqual(engine.characters(), [listed])
+        finally:
+            engine.REPO = real
 
     def test_a_duplicate_is_the_same_character_with_its_own_builds(self):
         (self.root / "face.json").write_text(json.dumps({"size": [8, 8]}))
@@ -930,6 +981,19 @@ class Engine(unittest.TestCase):
         # the character itself is as it was
         self.assertEqual(Project(self.path).state["steps"]["check"]["json"], str(base))
 
+    def test_a_regression_run_forgets_the_eyes_an_older_run_fell_back_to(self):
+        # the scratch folder outlives the pipeline that refused the iris there
+        project = self.project({"options": {}, "triangles": 40000})
+        real, cli.REPO = cli.REPO, self.root
+        try:
+            first = cli._scratch_copy(project)
+            first.state["eyes_fallback"] = "slide"
+            first._save_state()
+            self.assertNotIn("eyes_fallback", cli._scratch_copy(project).state)
+            self.assertNotIn("eyes_fallback", Project(first.out / "character.json").state)
+        finally:
+            cli.REPO = real
+
     def test_old_runs_give_up_their_models_and_keep_their_reports(self):
         project = self.project()
         runs = project.out / "runs"
@@ -1224,6 +1288,7 @@ class Server(unittest.TestCase):
             self.assertIsNone(jobs.poll()["tail"])
 
     def test_sheets_are_listed_by_run(self):
+        (REPO / "out").mkdir(exist_ok=True)  # served files live under out/, which a fresh clone lacks
         with tempfile.TemporaryDirectory(dir=REPO / "out") as folder:
             renders = Path(folder) / "renders"
             for run in ("20260101-100000", "20260102-100000"):
@@ -1317,7 +1382,7 @@ class Paint(unittest.TestCase):
 
     def test_only_base_colour_pictures_take_paint(self):
         self.assertEqual(cli.paint_state(self.path)["pictures"],
-                         [{"index": 1, "name": "base colour", "overlay": "base_colour.png", "materials": ["skin"], "painted": False}])
+                         [{"index": 1, "name": "base colour", "overlay": "base_colour.png", "materials": ["skin"], "painted": False, "draft": False}])
         with self.assertRaisesRegex(ValueError, "not one of this model's pictures"):
             cli.save_paint(self.path, {"normal.png": self.url(self.png((8, 8), (255, 0, 0, 255)))})
         with self.assertRaisesRegex(ValueError, "not one of this model's pictures"):
@@ -1389,6 +1454,32 @@ class Paint(unittest.TestCase):
         self.assertTrue(cli._patched(self.root / "patched.glb"))
         self.assertFalse(cli._patched(self.root / "model.fbx"))
 
+    def test_unsaved_paint_is_kept_as_a_draft_until_it_is_saved(self):
+        project = Project(self.path, blender="blender")
+        project.state["steps"] = {"build": {"status": "done"}}
+        project._save_state()
+        cli.save_paint_draft(self.path, {"base_colour.png": self.url(self.png((4, 4), (1, 2, 3, 255)))})
+        state = cli.paint_state(self.path)["pictures"][0]
+        self.assertEqual((state["painted"], state["draft"]), (False, True))
+        # a draft is not the character's paint: the build reads the source, and nothing is stale
+        project = Project(self.path, blender="blender")
+        self.assertEqual(project.model(), self.source.resolve())
+        self.assertEqual(project.state["steps"]["build"]["status"], "done")
+        self.assertIsNone(project.data["paint"])
+        cli.save_paint(self.path, {"base_colour.png": self.url(self.png((4, 4), (1, 2, 3, 255)))})
+        state = cli.paint_state(self.path)["pictures"][0]
+        self.assertEqual((state["painted"], state["draft"]), (True, False))
+        self.assertFalse((self.root / "out" / "paint" / "draft").exists())
+
+    def test_an_older_face_patch_is_named(self):
+        self.assertFalse(cli.paint_state(self.path)["old_patch"])  # no patch at all
+        gltf, binary = paint.read_glb(self.source)
+        gltf["materials"].append({"name": "face_patch"})
+        paint.write_glb(self.source, gltf, binary)
+        self.assertTrue(cli.paint_state(self.path)["old_patch"])
+        (self.root / "patch.json").write_text(json.dumps({"version": cli.PATCH_VERSION}))
+        self.assertFalse(cli.paint_state(self.path)["old_patch"])
+
     def test_paint_for_a_picture_the_model_lost_is_left_out(self):
         folder = self.root / "out" / "paint" / "overlays"
         folder.mkdir(parents=True)
@@ -1417,7 +1508,7 @@ class Pages(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as profile:
                 done = subprocess.run([browser, "--headless=new", f"--user-data-dir={profile}", "--no-first-run", "--mute-audio",
-                                       "--enable-unsafe-swiftshader", "--enable-logging=stderr", "--v=0", "--virtual-time-budget=15000",
+                                       "--enable-unsafe-swiftshader", "--enable-logging=stderr", "--v=0", "--virtual-time-budget=40000",
                                        "--dump-dom", f"http://127.0.0.1:{port}/"], capture_output=True, text=True, encoding="utf-8",
                                       errors="replace", timeout=120)
         finally:
@@ -1429,6 +1520,85 @@ class Pages(unittest.TestCase):
         # each is drawn by its module's last lines, or by main.js after every import ran
         for mark in ('data-tool="brush"', "New character", 'class="page on" id="home"', "Open or create a character first"):
             self.assertTrue(mark in page, f"not drawn: {mark}")
+
+
+class Detector(unittest.TestCase):
+    """The face detector's own Python, made by the Setup page's button (face_guess.install)."""
+
+    def setUp(self):
+        from app import face_guess
+        self.guess = face_guess
+        self.folder = tempfile.TemporaryDirectory()
+        self.home = Path(self.folder.name) / "tools" / "face_detector"
+        self.real = face_guess.base_python, face_guess._has_detector
+        face_guess.forget()
+
+    def tearDown(self):
+        self.guess.base_python, self.guess._has_detector = self.real
+        self.guess.forget()
+        self.folder.cleanup()
+
+    def runner(self, codes, seen):
+        class Process:
+            def __init__(self, command, **kwargs):
+                seen.append(command)
+                self.returncode = codes.pop(0)
+                kwargs["stdout"].write("pip said something\n")
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                pass
+
+            def wait(self):
+                pass
+        return Process
+
+    def test_it_makes_its_own_python_and_installs_into_it(self):
+        self.guess.base_python = lambda: "py312"
+        self.guess._has_detector = lambda python: True
+        seen, events = [], []
+        made = self.guess.install(on_event=events.append, home=self.home, run=self.runner([0, 0, 0], seen), free=lambda path: 50 << 30)
+        own = str(self.guess.own_python(self.home))
+        self.assertEqual(made["python"], own)
+        self.assertEqual(seen[0], ["py312", "-m", "venv", str(self.home)])
+        self.assertEqual(seen[1][:5] + seen[1][-2:], [own, "-m", "pip", "install", "torch", "--index-url", self.guess.TORCH_INDEX])
+        self.assertEqual(seen[2], [own, "-m", "pip", "install", self.guess.PACKAGE])
+        self.assertEqual([e["status"] for e in events], ["running", "done"] * 3)
+        self.assertTrue(Path(events[0]["log"]).read_text().count("pip said something") == 3)
+
+    def test_it_says_what_stops_it(self):
+        self.guess.base_python = lambda: None
+        with self.assertRaisesRegex(self.guess.NoDetector, "Python 3.12 or newer"):
+            self.guess.install(home=self.home)
+        self.guess.base_python = lambda: "py312"
+        with self.assertRaisesRegex(self.guess.NoDetector, "GB free"):
+            self.guess.install(home=self.home, free=lambda path: 1 << 30)
+        seen = []
+        with self.assertRaisesRegex(self.guess.NoDetector, "downloading PyTorch.*failed"):
+            self.guess.install(home=self.home, run=self.runner([0, 1], seen), free=lambda path: 50 << 30)
+        self.assertEqual(len(seen), 2)  # the detector isn't tried after PyTorch failed
+        with self.assertRaisesRegex(self.guess.NoDetector, "stopped"):
+            class Slow(self.runner([None], [])):
+                pass
+            self.guess.install(home=self.home, run=Slow, cancelled=lambda: True, free=lambda path: 50 << 30)
+
+    def test_an_older_python_is_passed_over_for_one_the_launcher_lists(self):
+        import os
+        import shutil
+        listed = chr(10).join((" -V:3.14 *        C:/new/python.exe", " -V:3.12          C:/mid/python.exe", " -V:3.10          C:/old/python.exe"))
+        which, is_file = shutil.which, Path.is_file
+        try:
+            # the app on Python 3.10, on Windows, with the launcher's three Pythons
+            self.guess.sys = SimpleNamespace(version_info=(3, 10, 6), executable="old")
+            self.guess.os = SimpleNamespace(name="nt", environ={})
+            shutil.which = lambda name: "py" if name == "py" else None
+            Path.is_file = lambda path: True
+            found = self.guess.base_python(run=lambda *a, **k: SimpleNamespace(stdout=listed))
+        finally:
+            self.guess.sys, self.guess.os, shutil.which, Path.is_file = sys, os, which, is_file
+        self.assertEqual(found, "C:/mid/python.exe")  # the oldest that will do, never the one too old
 
 
 class Vendor(unittest.TestCase):

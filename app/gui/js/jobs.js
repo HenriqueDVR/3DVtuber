@@ -60,7 +60,7 @@ async function poll(since) {
   const took = Math.round((Date.now() - finished.started) / 1000);
   if (state.error) {
     $("events").textContent += `\n${state.error}`;
-    for (const id of ["pieces-msg", "render-msg", "sheet-msg", "movement-msg", "patch-msg"]) say(id, state.error.split("\n")[0], true);
+    for (const id of ["pieces-msg", "render-msg", "sheet-msg", "movement-msg", "patch-msg", "setup-msg"]) say(id, state.error.split("\n")[0], true);
     toast(`${finished.label || "The run"} failed: ${state.error.split("\n")[0]}`, "bad", { ms: 9000 });
   } else if (state.cancelled) toast("Stopped. The step that was running keeps what it last finished; run it again when you like.", "info");
   else toast(`${cap(finished.label || "done")}: finished in ${duration(took)}.`);

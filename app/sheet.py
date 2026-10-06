@@ -23,7 +23,9 @@ REPO = Path(__file__).resolve().parents[1]
 PAGE = REPO / "viewer" / "sheet.html"
 GUI = Path(__file__).resolve().parent / "gui"
 BROWSERS = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe", r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe", r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium")
 # Loading 110 MB of .vrm and drawing 44 shots took about 15 s with a graphics card
 TIMEOUT = 300
 
@@ -41,7 +43,7 @@ def find_browser(given=None):
     for path in (given, os.environ.get("VTUBER_MAKER_BROWSER"), *BROWSERS):
         if path and Path(path).is_file():
             return str(path)
-    for name in ("msedge", "chrome", "chromium", "google-chrome"):
+    for name in ("msedge", "microsoft-edge", "chrome", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
         if shutil.which(name):
             return shutil.which(name)
     raise NoBrowser("no Edge or Chrome found: set VTUBER_MAKER_BROWSER to one")

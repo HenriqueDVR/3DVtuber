@@ -29,6 +29,9 @@ def main(argv=None):
     p.add_argument("--use", metavar="BLENDER", help="run builds with this blender.exe from now on, wherever it is (\"\" to go back to the app picking one)")
     p.add_argument("--forget", metavar="BLENDER", help="take a blender.exe added with --use off the list")
 
+    p = sub.add_parser("detector", help="the face detector behind \"Place them for me\": where it is, or --install it")
+    p.add_argument("--install", action="store_true", help="into tools/face_detector: about 250 MB to download, 1.5 GB on disk")
+
     sub.add_parser("vendor", help="keep a copy of three.js, three-vrm and the face tracker with the app, so it runs offline (17 MB)")
 
     p = sub.add_parser("init", help="start a character manifest for a model")
@@ -108,6 +111,14 @@ def main(argv=None):
     p.add_argument("manifest", type=Path)
     p.add_argument("name")
 
+    p = sub.add_parser("rename", help="give a character another name; its builds stay where they are")
+    p.add_argument("manifest", type=Path)
+    p.add_argument("name")
+
+    p = sub.add_parser("hide", help="take a character off the app's list (--show puts it back); no file is deleted")
+    p.add_argument("manifest", type=Path)
+    p.add_argument("--show", action="store_true")
+
     p = sub.add_parser("paint", help="the texture paint kept with a character (Paint page): what there is, or --clear it")
     p.add_argument("manifest", type=Path)
     p.add_argument("--clear", action="store_true", help="drop all of it: the build reads the generated texture again")
@@ -165,6 +176,24 @@ def cmd_setup(args):
     if args.forget:
         return engine.forget_blender(args.forget)
     return engine.use_blender(args.use) if args.use is not None else engine.setup(args.blender)
+
+
+def install_detector(on_event=None):
+    """The face detector into tools/face_detector (face_guess.install), stoppable from the app."""
+    try:
+        return face_guess.install(on_event=on_event, cancelled=engine.CANCEL.is_set)
+    except face_guess.NoDetector as error:
+        if engine.CANCEL.is_set():
+            raise engine.Cancelled(str(error)) from None
+        raise StepFailed(str(error)) from None
+
+
+def cmd_detector(args):
+    if args.install:
+        events = lambda event: print(json.dumps(event, default=str), file=sys.stderr, flush=True)  # noqa: E731
+        return install_detector(on_event=events)
+    found = face_guess.status()["python"]
+    return {"python": found, "next": "" if found else "python -m app detector --install (about 250 MB to download, 1.5 GB on disk)"}
 
 
 def cmd_vendor(args):
@@ -262,7 +291,12 @@ def _scratch_copy(project):
     manifest.save(data, out / "character.json")
     if (project.out / "pieces.json").exists():
         shutil.copy2(project.out / "pieces.json", out / "pieces.json")
-    return Project(out / "character.json", blender=project._blender)
+    scratch = Project(out / "character.json", blender=project._blender)
+    # the folder is kept between runs, and with it an eye step's refusal by an older pipeline: model A's
+    # T-pose build was rebuilt with sliding eyes for three days after its iris worked, against an iris baseline
+    if scratch.state.pop("eyes_fallback", None):
+        scratch._save_state()
+    return scratch
 
 
 def cmd_disk(args):
@@ -495,6 +529,11 @@ def cmd_face_patch(args):
     # a remake frames the head as the patch before it did: the face points are pixels in that picture,
     # and a survey of the patched model put the frame a millimetre lower (8 px) than the first one
     kept = _framing(folder) if project.data.get("face") else None
+    if kept is None and project.data.get("face") and _patched(manifest.path_of(project.data, "source")):
+        # a copy of a character (`duplicate`) wears the original's patch and has its points and
+        # paint: its first patch of its own is framed as that one was. Framed anew, the mouth of
+        # model D's copy opened at the nose and the paint lay a face part too high
+        kept = _framing(manifest.path_of(project.data, "source").parent)
     if kept is not None:
         head_at = ["--head-at", kept]
     if head_at:
@@ -506,16 +545,41 @@ def cmd_face_patch(args):
         raise StepFailed(f"rendering the head failed (see {folder / 'render_views.log'})\n{output[-2000:]}")
     from PIL import Image
     Image.open(views / "color_head_000.png").convert("RGB").resize((2048, 2048), Image.LANCZOS).save(image)
-    code, output = engine.run_script(project.blender, "retexture/face_patch.py", [before, views, "head_000", image, patched],
+    code, output = engine.run_script(project.blender, "retexture/face_patch.py",
+                                     [before, views, "head_000", image, patched, *_keep(project)],
                                      log=folder / "face_patch.log")
     if code != 0 or not patched.exists():
         raise StepFailed(f"making the face patch failed (see {folder / 'face_patch.log'})\n{output[-2000:]}")
+    (folder / "patch.json").write_text(json.dumps({"version": PATCH_VERSION}), encoding="utf-8")
     data = manifest.load(project.manifest_path)
     data["reference"] = _relative(reference, project.manifest_path)
     data["source"] = _relative(patched, project.manifest_path)
     manifest.save(data, project.manifest_path)
     return {"source": str(patched), "reference": str(reference), "image": str(image),
             "next": "mark the face points on the image, then rerun from survey"}
+
+
+# How far past the marked eye or mouth the picture is left as rendered, as a share of its size.
+KEEP_PAD = (0.35, 0.8)
+
+
+def _keep(project):
+    """`--keep` boxes for face_patch.py: the marked eyes and mouth, with room for lashes and brows,
+    in the picture's own 0..1 (v up). None without face points: the patch is then left unfilled."""
+    face = manifest.path_of(project.data, "face")
+    points = engine._read_json(face, None) if face else None
+    if not points or not points.get("size"):
+        return []
+    width, height = points["size"]
+    boxes = []
+    for part in FACE_KEYS:
+        xy = [points[part][n] for n in FACE_KEYS[part] if isinstance((points.get(part) or {}).get(n), list)]
+        if len(xy) < 2:
+            continue
+        x0, x1, y0, y1 = min(p[0] for p in xy), max(p[0] for p in xy), min(p[1] for p in xy), max(p[1] for p in xy)
+        px, py = KEEP_PAD[0] * (x1 - x0), KEEP_PAD[1] * max(y1 - y0, 0.3 * (x1 - x0))
+        boxes += ["--keep", ",".join(f"{v:.4f}" for v in ((x0 - px) / width, 1 - (y1 + py) / height, (x1 + px) / width, 1 - (y0 - py) / height))]
+    return boxes
 
 
 def _framing(folder):
@@ -578,10 +642,40 @@ def paint_state(manifest_path, blender=None):
     except (paint.NotPaintable, ValueError, KeyError, IndexError) as error:
         return {"paintable": False, "why": str(error), "pictures": []}
     kept = paint.overlays(manifest.path_of(project.data, "paint"))
+    drafts = paint.overlays(_draft_folder(project))
     for picture in found:
         picture["painted"] = picture["overlay"] in kept
+        # paint not saved when the page last closed: newer than what is kept, or with nothing kept
+        draft = drafts.get(picture["overlay"])
+        picture["draft"] = draft is not None and (picture["overlay"] not in kept
+                                                  or draft.stat().st_mtime > kept[picture["overlay"]].stat().st_mtime)
     return {"paintable": bool(found), "why": "" if found else "the model has no texture to paint on", "pictures": found,
-            "orphans": sorted(set(kept) - {p["overlay"] for p in found})}
+            "orphans": sorted(set(kept) - {p["overlay"] for p in found}), "old_patch": _old_patch(source)}
+
+
+# The face patch as scripts/retexture/face_patch.py now makes it: hair lying over the face on its
+# own picture (2). cmd_face_patch notes it beside the patched model.
+PATCH_VERSION = 2
+
+
+def _old_patch(source):
+    """Whether a model wears a face patch from before hair and face had a picture each: paint on
+    the hair there shows on the face behind it, and only a remade patch mends that."""
+    if not _patched(source):
+        return False
+    said = engine._read_json(Path(source).parent / "patch.json", None) or {}
+    return said.get("version", 1) < PATCH_VERSION
+
+
+def _draft_folder(project):
+    return project.out / "paint" / "draft"
+
+
+def save_paint_draft(manifest_path, images, blender=None):
+    """Keep paint the user hasn't saved yet, so a closed window or a crash doesn't lose it. Nothing
+    else changes: the build doesn't read drafts."""
+    project = Project(manifest_path, blender=blender)
+    return {"draft": paint.save(_draft_folder(project), manifest.path_of(project.data, "source"), images)}
 
 
 def save_paint(manifest_path, images, blender=None):
@@ -591,6 +685,7 @@ def save_paint(manifest_path, images, blender=None):
     source = manifest.path_of(project.data, "source")
     folder = manifest.path_of(project.data, "paint") or project.out / "paint" / "overlays"
     kept = paint.save(folder, source, images)
+    shutil.rmtree(_draft_folder(project), ignore_errors=True)  # saved: the draft has nothing more to say
     data = manifest.load(project.manifest_path)
     data["paint"] = _relative(folder, project.manifest_path) if kept else None
     manifest.save(data, project.manifest_path)
@@ -623,7 +718,9 @@ def cmd_face(args):
 
 def save_face(manifest_path, points, blender=None):
     """Check face points and keep them as <out>/face.json, named in the manifest."""
-    for key, names in FACE_KEYS.items():
+    # eyes hidden behind a visor or glasses are left out, both of them: the mouth alone is marked
+    marked = {key: names for key, names in FACE_KEYS.items() if key == "mouth" or engine.marks_eyes(points)}
+    for key, names in marked.items():
         missing = [n for n in names if not isinstance((points.get(key) or {}).get(n), list)]
         if missing:
             raise ValueError(f"{key} is missing {', '.join(missing)}")
@@ -631,7 +728,7 @@ def save_face(manifest_path, points, blender=None):
         raise ValueError("no image size")
     project = Project(manifest_path, blender=blender)
     keep = {"image": points.get("image") or "face_patch.png", "size": points["size"],
-            **{key: {n: [round(float(v), 1) for v in points[key][n]] for n in names} for key, names in FACE_KEYS.items()}}
+            **{key: {n: [round(float(v), 1) for v in points[key][n]] for n in names} for key, names in marked.items()}}
     path = project.out / "face.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(keep, indent=2), encoding="utf-8")
@@ -704,6 +801,34 @@ def duplicate(manifest_path, name):
         if (project.out / extra).exists():
             shutil.copy2(project.out / extra, out / extra)
     return {"manifest": str(path), "name": name, "from": project.name, "next": f"python -m app run {path}"}
+
+
+def rename(manifest_path, name):
+    """Another name for a character: in the app's list and inside the exported file. Its builds stay
+    where they are (the output folder keeps its old name, now written into the manifest)."""
+    if not name or Path(name).name != name or not all(c.isalnum() or c in "_-" for c in name):
+        raise ValueError("the name is a folder name: letters, digits, _ and -")
+    project = Project(manifest_path)
+    if any(_name_of(p) == name for p in engine.characters() if p.resolve() != project.manifest_path):
+        raise ValueError(f"{name} exists already")
+    data = manifest.load(project.manifest_path)
+    if not data.get("out_dir"):
+        data["out_dir"] = _relative(project.out, project.manifest_path)
+    was, data["name"] = data["name"], name
+    manifest.save(data, project.manifest_path)
+    return {"name": name, "was": was, "next": "rebuild from build for the new name to be in the .vrm"}
+
+
+def _name_of(path):
+    return (engine._read_json(path, None) or {}).get("name")
+
+
+def cmd_rename(args):
+    return rename(args.manifest, args.name)
+
+
+def cmd_hide(args):
+    return engine.hide_character(args.manifest, hide=not args.show)
 
 
 def cmd_duplicate(args):
@@ -795,9 +920,9 @@ def cmd_bundle(args):
 
 COMMANDS = {"init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_set, "joint": cmd_joint,
             "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "sheet": cmd_sheet, "movement": cmd_movement, "springs": cmd_springs,
-            "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "paint": cmd_paint, "duplicate": cmd_duplicate, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
+            "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "paint": cmd_paint, "duplicate": cmd_duplicate, "rename": cmd_rename, "hide": cmd_hide, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
             "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup,
-            "regress": cmd_regress, "vendor": cmd_vendor, "warudo": cmd_warudo}
+            "regress": cmd_regress, "vendor": cmd_vendor, "detector": cmd_detector, "warudo": cmd_warudo}
 
 
 def _project(args):

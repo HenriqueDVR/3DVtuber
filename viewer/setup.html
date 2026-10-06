@@ -49,7 +49,7 @@
 // above and below the opening. Curves through inner/top/outer and inner/bottom/outer are drawn.
 // Only the mouth's corners set its size (face_points.apply): top and bottom give the height of its
 // middle, so on a mouth drawn as a line they go just above and just below the line.
-const FEATURES = [
+const ALL_FEATURES = [
   ["right_eye", "Right eye (image left)", ["inner", "outer", "top", "bottom"], "#4ad7ff"],
   ["left_eye", "Left eye (image right)", ["inner", "outer", "top", "bottom"], "#7dff6b"],
   ["mouth", "Mouth", ["left", "right", "top", "bottom"], "#ff6bb5"],
@@ -59,7 +59,13 @@ const LABELS = { inner: "inner corner (nearer the nose)", outer: "outer corner",
                  left: "right corner (image left)", right: "left corner (image right)" };
 const MOUTH_LABELS = { left: "right end of the mouth (image left)", right: "left end of the mouth (image right)",
                        top: "just above the middle of the mouth", bottom: "just below the middle of the mouth" };
-const STEPS = FEATURES.flatMap(([key, title, names, color]) => names.map((name) => ({ key, title, name, color })));
+// Eyes hidden behind a visor or glasses aren't marked: the app then asks for the mouth alone.
+let FEATURES = ALL_FEATURES, STEPS = [];
+function setFeatures(keys) {
+  FEATURES = ALL_FEATURES.filter(([key]) => !keys || keys.includes(key));
+  STEPS = FEATURES.flatMap(([key, title, names, color]) => names.map((name) => ({ key, title, name, color })));
+}
+setFeatures();
 
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -271,7 +277,10 @@ if (embedded) {
   // the app saves the points (automatically once all twelve are placed, and with its Save button)
   for (const id of ["file", "open", "save"]) document.getElementById(id).hidden = true;
   window.addEventListener("message", (e) => {
-    if (e.origin !== location.origin || e.data?.type !== "face-image") return;
+    if (e.origin !== location.origin) return;
+    if (e.data?.type === "face-features") { setFeatures(e.data.features); if (image) refresh(); return; }
+    if (e.data?.type !== "face-image") return;
+    setFeatures(e.data.features);
     const img = new Image();
     img.onload = () => { image = img; imageName = e.data.name || "face_patch.png"; view.fitted = false; hint.hidden = true; fit(); usePoints(e.data.points); };
     img.src = e.data.src;

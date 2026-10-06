@@ -24,7 +24,8 @@ app.refreshStatus = async () => { await refreshStatus(); renderSteps(); renderNa
 const failed = (e) => toast(e.message, "bad");
 
 async function refreshProjects() {
-  S.projects = (await call("projects")).projects;
+  const listed = await call("projects");
+  S.projects = listed.projects; S.hidden = listed.hidden || [];
   $("project").innerHTML = `<option value="">— new character —</option>` +
     S.projects.map((p) => `<option value="${esc(p.manifest)}">${esc(p.name)}</option>`).join("");
   $("project").value = S.manifestPath || "";
@@ -36,7 +37,9 @@ async function loadProjects(select) {
   // a refresh reopens the character that was open: it showed an empty app, as if the work were lost
   let last = null;
   try { last = localStorage.getItem(LAST); } catch {}
-  const pick = select || (last && S.projects.some((p) => p.manifest === last) ? last : null);
+  const asked = new URLSearchParams(location.search).get("character");
+  const named = asked && S.projects.find((p) => p.name === asked)?.manifest;
+  const pick = select || named || (last && S.projects.some((p) => p.manifest === last) ? last : null);
   await openProject(pick);
 }
 app.loadProjects = loadProjects;

@@ -29,7 +29,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import contracts, errors, paint, vendor
+from . import contracts, errors, face_guess, paint, vendor
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
@@ -178,7 +178,14 @@ def find_blender(given=None):
 
 
 def installed_blenders():
-    """Every blender.exe in the usual Windows places: the installer's folder, Steam, the Store."""
+    """Every Blender in the usual places: on Windows the installer's folder, Steam, the Store; on
+    macOS the Applications folders; on Linux the unpacked folders under /opt and the home folder."""
+    if sys.platform == "darwin":
+        apps = [Path("/Applications"), Path.home() / "Applications"]
+        return [p for root in apps if root.is_dir() for p in root.glob("Blender*.app/Contents/MacOS/Blender")]
+    if os.name != "nt":
+        roots = [Path("/opt"), Path.home(), Path.home() / "Applications", Path.home() / ".local" / "share"]
+        return [p for root in roots if root.is_dir() for p in root.glob("blender*/blender") if p.is_file()]
     roots = [WINDOWS_BLENDER, Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Steam" / "steamapps" / "common",
              Path(os.environ.get("LOCALAPPDATA", "")) / "Programs"]
     found = []
@@ -254,6 +261,9 @@ class Project:
             # an iris the eye step refused (taller than the opening: model A's T-pose FBX) slides instead
             if options["eyes"] == "iris" and self.state.get("eyes_fallback"):
                 options["eyes"] = self.state["eyes_fallback"]
+        if self.data.get("face") and not marks_eyes(_read_json(manifest.path_of(self.data, "face"), None)):
+            # only the mouth is marked: there are no eyes to move or to close
+            options["eyes"] = "hidden"
         if options["free_mouth"] is None:
             # a coarse or solid face dents when ARKit shapes bend it, so the mouth moves on its own
             options["free_mouth"] = bool(self.data.get("face") and options["mouth_only"] and survey.get("face_patch"))
@@ -274,7 +284,7 @@ class Project:
             "finger_guides": (o["fingers"] != "guides" and "finger guides off") or (rigged and "the adopted rig has its own fingers"),
             "tpose": o["tpose"] == "none" and "T-pose off",
             "chest": not o["chest"] and "chest bounce off",
-            "eyes": (o["eyes"] == "none" or not face) and "no eye tracking, or no face points",
+            "eyes": (o["eyes"] in ("none", "hidden") or not face) and "no eye tracking, or no face points",
             "mouth": (not o["mouth_fix"] or not face) and "no mouth fix asked for",
             "vrm_check": o["tpose"] == "none" and "no final VRM",
         }
@@ -395,7 +405,8 @@ class Project:
         if ships:
             done = lambda name: steps.get(name, {}).get("status") == "done"  # noqa: E731
             in_file, to_see = shipping_problems(ships, {"tpose": done("tpose"), "eyes": done("eyes"),
-                                                        "blink": done("face_tracking") or done("eyes")})
+                                                        "blink": (done("face_tracking") or done("eyes"))
+                                                        and self.options()["eyes"] != "hidden"})
             issues += [("build", f"exported file: {line}") for line in in_file]
             looks += [("face", line) for line in to_see]
         # the loose step measures itself and undoes a tidy-up that tore the rig: the avatar is safe,
@@ -684,6 +695,8 @@ class Project:
                                              ("hat_tip", "--hat-tip"), ("free_mouth", "--free-mouth")) if o[key]]
             if o["mouth_colour"]:
                 args += ["--mouth-colour", o["mouth_colour"]]
+            if not o["hair_hits_body"]:
+                args.append("--hair-head-only")
             return args, NO_EXPORT
         if name == "movement":
             reference = manifest.path_of(data, "reference") or source
@@ -716,6 +729,8 @@ class Project:
             args.append("--keep-seams")
         if name == "face_tracking" and o["mouth_only"]:
             args.append("--mouth-only")
+        if name == "face_tracking" and o["eyes"] == "hidden":
+            args.append("--no-blink")
         if name == "pieces":
             args += ["--manifest", self.manifest_path]
         if name == "tpose":
@@ -814,7 +829,23 @@ def characters():
     """Every character manifest the app lists: the samples' and one per output folder. Other JSON
     kept beside them isn't one: Name_face.json (face points) showed as a character named Name_face."""
     found = sorted({*REPO.glob("samples/manifests/*.json"), *REPO.glob("out/*/character.json")})
-    return [p for p in found if {"source", "options"} <= set(_read_json(p, None) or ())]
+    hidden = set(hidden_characters())
+    return [p for p in found if {"source", "options"} <= set(_read_json(p, None) or ()) and str(p.resolve()) not in hidden]
+
+
+def hidden_characters():
+    """Manifests the user took off the Characters page (out/settings.json): nothing of theirs is deleted."""
+    return [h for h in _read_json(SETTINGS, {}).get("hidden", []) if Path(h).exists()]
+
+
+def hide_character(manifest_path, hide=True):
+    settings = _read_json(SETTINGS, {})
+    path = str(Path(manifest_path).resolve())
+    hidden = [h for h in settings.get("hidden", []) if h != path and Path(h).exists()]
+    settings["hidden"] = [*hidden, path] if hide else hidden
+    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(SETTINGS, settings)
+    return {"hidden": settings["hidden"]}
 
 
 def run_script(blender, script, args, blend_in=None, log=None, extra=()):
@@ -1070,6 +1101,12 @@ def shipped(path):
             "textures": len(gltf.get("images", [])), "megabytes": round(Path(path).stat().st_size / 2**20, 1)}
 
 
+def marks_eyes(points):
+    """Whether face points mark the eyes (face_points.has_eyes; this module stays plain Python).
+    Points that can't be read count as marking them: the build then says what is wrong."""
+    return points is None or bool(points.get("right_eye") or points.get("left_eye"))
+
+
 def shipping_problems(ships, wanted):
     """([what must be fixed], [what is worth a look]) in the file that ships.
 
@@ -1310,6 +1347,12 @@ def setup(given=None):
              "optional: pip install pywebview")):
         if not _installed(module):
             add(name, state, what, fix)
+    detector = face_guess.status()["python"]
+    if detector:
+        add("Auto face marking", "ok", "the face detector is installed: the Face page's \"Place them for me\" works")
+    else:
+        add("Auto face marking", "warn", "the face detector isn't installed: the eyes and mouth are marked by hand on the Face page",
+            "optional: the button below installs it (about 250 MB to download, 1.5 GB on disk), or python -m app detector --install")
     for note in resource_warnings(REPO / "out"):
         add("Space", "warn", note)
     kept = vendor.status()
