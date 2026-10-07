@@ -30,7 +30,7 @@ GUI = Path(__file__).resolve().parent / "gui"
 # Only these repository folders are served, and only these kinds of file (.mjs, .wasm and .task:
 # the face tracker's, when the app keeps its own copy, see vendor.py).
 SERVED = ("out", "samples", "tools/work", "viewer")
-KINDS = {".glb", ".vrm", ".png", ".jpg", ".jpeg", ".json", ".html", ".js", ".css", ".log", ".mjs", ".wasm", ".task"}
+KINDS = {".glb", ".vrm", ".png", ".jpg", ".jpeg", ".json", ".html", ".js", ".css", ".log", ".mjs", ".wasm", ".task", ".mp3", ".ogg", ".wav"}
 
 mimetypes.add_type("model/gltf-binary", ".glb")
 mimetypes.add_type("model/gltf-binary", ".vrm")
@@ -169,9 +169,11 @@ def api(route, query, body):
         # every character with a finished build, in scratch folders: the A/B a change to the app needs
         return JOBS.start("rebuilding every character", lambda emit: cli.cmd_regress(
             _args(manifests=body.get("manifests") or [], keep=False, on_event=emit)))
+    if route == "portraits":
+        return JOBS.start("portraits", lambda emit: cli.cmd_portraits(_args(manifest=Path(m), on_event=emit)))
     if route == "render":
         return JOBS.start("render", lambda emit: _with_urls(cli.cmd_render(
-            _args(manifest=Path(m), pose=body.get("pose", "raised"), step=body.get("step"), run=body.get("run"), size=700))))
+            _args(manifest=Path(m), pose=body.get("pose", "raised"), step=body.get("step"), run=body.get("run"), size=1400))))
     if route == "renders":
         return {"renders": _renders(Project(m).out / "renders")}
     if route == "sheet":
@@ -278,7 +280,10 @@ def _summary(manifest_path):
         summary = Project(manifest_path).summary()
     except (OSError, ValueError, KeyError):
         return {}
-    return dict(summary, picture=_url(summary["picture"]) if summary["picture"] else None)
+    # the pictures are drawn again by every build under the same names: the address says which drawing it is
+    posed = {name: dict(p, url=f"{_url(p['file'])}?t={int(Path(p['file']).stat().st_mtime)}") for name, p in summary["portraits"].items()}
+    return dict(summary, stills={name: _url(path) for name, path in summary["stills"].items()}, portraits=posed,
+                **{key: _url(summary[key]) if summary[key] else None for key in ("picture", "portrait")})
 
 
 # A render folder is <run>_<step's blend>_<pose> (cli.cmd_render); older ones lack the run.
@@ -406,6 +411,14 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(url.path)
         if path in ("/", "/index.html"):
             return self._file(GUI / "index.html")
+        if path == "/music":
+            # the user's own tune for the arcade look: music.mp3 (or .ogg, .wav) beside the app. None is no error
+            # (the look then plays its own), so no 404 in the page's console
+            found = next((REPO / f"music{kind}" for kind in (".mp3", ".ogg", ".wav") if (REPO / f"music{kind}").is_file()), None)
+            if found is None:
+                self.send_response(204)
+                return self.end_headers()
+            return self._file(found)
         if path.startswith("/gui/"):
             return self._file(GUI / path[5:], root=GUI)
         relative = _served(REPO / path.lstrip("/"))
@@ -496,11 +509,11 @@ def main():
     address = f"http://127.0.0.1:{port}/"
     if server is None:
         # started twice: the first one holds the builds and the one Blender, so show that one
-        print(f"VTuber Maker is already running at {address}", flush=True)
+        print(f"OC2VRM is already running at {address}", flush=True)
         if not args.no_window:
             _show(address)
         return
-    print(f"VTuber Maker at {address}", flush=True)
+    print(f"OC2VRM at {address}", flush=True)
     if args.no_window:
         server.serve_forever()
         return
@@ -553,7 +566,7 @@ def _show(address):
     except ImportError:
         webbrowser.open(address)
         return
-    webview.create_window("VTuber Maker", address, width=1400, height=900)
+    webview.create_window("OC2VRM", address, width=1400, height=900)
     webview.start()
 
 

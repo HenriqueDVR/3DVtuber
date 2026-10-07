@@ -223,7 +223,8 @@ class Engine(unittest.TestCase):
     def test_a_character_card_says_how_far_the_build_got(self):
         project = self.project()
         self.assertEqual(project.summary(), {"surveyed": False, "built": False, "stale": [], "failed": [],
-                                             "finished": None, "approved": False, "picture": None, "waiting": False})
+                                             "finished": None, "approved": False, "picture": None, "portrait": None,
+                                             "stills": {}, "portraits": {}, "waiting": False})
         self.finished(project, eyes={"status": "failed", "finished": "2026-01-02T10:00:00"}, tpose={"status": "stale"})
         pictures = project.out / "renders" / "20260102-100000_09_tpose_raised"
         pictures.mkdir(parents=True)
@@ -233,6 +234,25 @@ class Engine(unittest.TestCase):
         self.assertTrue(summary["built"])
         self.assertEqual((summary["failed"], summary["stale"]), (["eyes"], ["tpose"]))
         self.assertEqual(Path(summary["picture"]).name, "raised_front.png")
+        # the portrait: a front render with the arms down if there is one, and never a contact sheet, however new
+        self.assertEqual(Path(summary["portrait"]).name, "raised_front.png")
+        for folder, name in (("20260101-090000_09_tpose_hang", "hang_front.png"), ("sheets_20260103-100000", "sheet_front.png")):
+            (project.out / "renders" / folder).mkdir()
+            (project.out / "renders" / folder / name).write_bytes(b"")
+        self.assertEqual(Path(project.summary()["portrait"]).name, "hang_front.png")
+        self.assertEqual(sorted(project.summary()["stills"]), ["hang_front", "raised_back", "raised_front"])
+        # a T-pose is the rig's rest, never the character's picture
+        (project.out / "renders" / "20260101-090000_09_tpose_hang" / "hang_front.png").unlink()
+        (project.out / "renders" / "20260104-090000_09_tpose_t-pose").mkdir()
+        (project.out / "renders" / "20260104-090000_09_tpose_t-pose" / "t-pose_front.png").write_bytes(b"")
+        self.assertEqual(Path(project.summary()["portrait"]).name, "raised_front.png")
+        # the posed pictures, once drawn: each with where its head and floor are
+        posed = project.out / "portraits"
+        posed.mkdir()
+        (posed / "stand.png").write_bytes(b"")
+        (posed / "portraits.json").write_text(json.dumps({"blend": "x.blend", "height": 0.64, "face": 0.1, "poses": {
+            "stand": {"file": "stand.png", "head": [0.5, 0.3], "floor": 0.9}, "wave": {"file": "wave.png", "head": [0.5, 0.3], "floor": 0.9}}}))
+        self.assertEqual(project.summary()["portraits"], {"stand": {"file": str(posed / "stand.png"), "head": [0.5, 0.3], "floor": 0.9, "height": 0.64, "face": 0.1}})
 
     def face_points(self):
         eye = {"inner": [10, 20], "outer": [30, 20], "top": [20, 15], "bottom": [20, 25]}
@@ -1505,21 +1525,28 @@ class Pages(unittest.TestCase):
             self.skipTest(str(error))
         served, port = server._listen(0)
         threading.Thread(target=served.serve_forever, daemon=True).start()
+        # in both looks (Setup): the arcade one adds its own screens, the classic one must stay as it was
+        pages = {}
         try:
-            with tempfile.TemporaryDirectory() as profile:
-                done = subprocess.run([browser, "--headless=new", f"--user-data-dir={profile}", "--no-first-run", "--mute-audio",
-                                       "--enable-unsafe-swiftshader", "--enable-logging=stderr", "--v=0", "--virtual-time-budget=40000",
-                                       "--dump-dom", f"http://127.0.0.1:{port}/"], capture_output=True, text=True, encoding="utf-8",
-                                      errors="replace", timeout=120)
+            for look in ("arcade", "classic"):
+                with tempfile.TemporaryDirectory() as profile:
+                    pages[look] = subprocess.run([browser, "--headless=new", f"--user-data-dir={profile}", "--no-first-run", "--mute-audio",
+                                                  "--enable-unsafe-swiftshader", "--enable-logging=stderr", "--v=0", "--virtual-time-budget=40000",
+                                                  "--dump-dom", f"http://127.0.0.1:{port}/?look={look}"], capture_output=True, text=True,
+                                                 encoding="utf-8", errors="replace", timeout=120)
         finally:
             served.shutdown()
             served.server_close()
-        page = done.stdout
-        errors_said = [line for line in done.stderr.splitlines() if "CONSOLE" in line and ("Uncaught" in line or "SyntaxError" in line)]
-        self.assertEqual(errors_said, [])
-        # each is drawn by its module's last lines, or by main.js after every import ran
-        for mark in ('data-tool="brush"', "New character", 'class="page on" id="home"', "Open or create a character first"):
-            self.assertTrue(mark in page, f"not drawn: {mark}")
+        for look, done in pages.items():
+            page = done.stdout
+            errors_said = [line for line in done.stderr.splitlines() if "CONSOLE" in line and ("Uncaught" in line or "SyntaxError" in line)]
+            self.assertEqual(errors_said, [], look)
+            # each is drawn by its module's last lines, or by main.js after every import ran
+            for mark in ('data-tool="brush"', "New character", 'class="page on" id="home"', "Open or create a character first"):
+                self.assertTrue(mark in page, f"not drawn in the {look} look: {mark}")
+            # the arcade look's stage, roster and menus are there in it alone
+            for mark in ('id="a-bg"', 'class="slot new', 'id="menu"', 'id="a-crumbs"'):
+                self.assertEqual(mark in page, look == "arcade", f"{look} look: {mark}")
 
 
 class Detector(unittest.TestCase):

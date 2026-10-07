@@ -13,6 +13,7 @@ export function go(name) {
   if (location.hash.slice(1) !== name) history.replaceState(null, "", `#${name}`);
   $("main").scrollTop = 0;
   onShow[name]?.();
+  app.shown?.(name);
 }
 app.go = go;
 document.querySelectorAll("#steps button").forEach((b) => b.onclick = () => go(b.dataset.go));
@@ -91,5 +92,6 @@ export function renderNav() {
     $("rebuild-run").textContent = `Rebuild from ${stepName(next.from)}`;
     $("rebuild-run").onclick = () => app.job("run", { from: next.from });
   }
+  app.navDrawn?.();
 }
 app.renderNav = renderNav;

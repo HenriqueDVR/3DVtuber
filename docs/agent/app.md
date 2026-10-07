@@ -217,3 +217,46 @@ the tracking app. Ask the user for a screenshot per pose.
 starts a run or writes a file is a POST with the page's own header. A second start shows the app
 already running. The page's three.js and three-vrm are the copies in `app/gui/vendor/`, pinned by
 SHA-256 (`app/vendor.py`), so the app needs no internet connection.
+
+## The look
+
+Two looks, chosen on Setup ("Look") and kept in the browser (`localStorage`; `?look=classic` or
+`?look=arcade` in the address overrides it for one visit):
+
+- **Arcade** (the default): a fighting game's menus. Characters is a character select (a band in
+  the character's colour, a roster), opening one shows a main menu (Set up / Build / Check), a
+  card opens its pages as a list, and the page list along the left becomes a trail along the top.
+  `app/gui/arcade.css` (every rule under `html.arcade`) and `app/gui/js/look.js`.
+- **Classic**: `app.css` alone, the app as it was, the page list down the left side.
+
+The pages are the same in both: `look.js` adds its own screens (`#menu`, `#pages`, the band on
+Build) and reads what the pages already drew (the sidebar's badges, the Characters cards, the run
+bar), called from three hooks (`app.shown`, `app.navDrawn`, `app.homeDrawn`). A new page needs an
+entry in `look.js`'s `GROUPS` and `TITLES` to be reachable in the arcade look. "Less motion" on
+Setup stops the moving background and the effects. The arcade look has sound (`js/sfx.js`:
+made from oscillators, no audio files; the sliders on Setup, all the way left is off): the menus,
+ordinary buttons, a note for each build step that finishes, a fanfare for "Avatar ready", and
+music (low and muffled behind a work page): `music.mp3`, `.ogg` or `.wav` in the repository's
+folder if there is one (the server's `/music`; the user's own file, not part of the repository),
+else a loop the page makes itself. The top bar has a switch for each.
+
+Build in the arcade look shows the band and the steps as tiles; the step table, logs, history,
+result and rig check are the same elements, folded under "Details" (a tile opens its step
+there). The tiles and the band read a running build from the page's Progress lines (`#events`).
+The viewer (`viewer/index.html`) dresses the same when the app embeds it in this look.
+
+The pictures are the character posed: `scripts/render_portraits.py` draws it standing with its arms by
+its sides (`stand`, for character select) and in a gesture for each menu card: a wave
+(`setup`), an arm flexed (`build`), a thumb up (`check`). The poses are made in the script (`POSES`: directions for
+the limbs, the palm's facing, each hand's shape), so they work on a rig bound in a T or an A.
+`<out>/portraits/`: four PNGs and
+`portraits.json`; about five seconds. A build draws them once the `build` step has made the rig
+and again at its end from the finished one; `python -m app portraits <manifest>` or the buttons on
+character select draw them for a character built before. Every picture is framed alike and the
+JSON says where the head and floor are in it, so `look.js` `art()` puts any character in any pose
+on the same spot at the same size, head on the middle line. `summary()` hands them out as
+`portraits`. A character without them shows a plain still render (`portrait`, `stills`), measured
+from the picture; never a T-pose, in either case.
+
+The fonts (Anton, Chakra Petch) come from Google Fonts; offline it falls back to Impact
+and Segoe UI.

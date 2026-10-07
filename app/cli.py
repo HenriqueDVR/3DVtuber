@@ -91,6 +91,9 @@ def main(argv=None):
     p.add_argument("--run", help="render the last .blend of this run folder (a name from `runs`) instead")
     p.add_argument("--size", type=int, default=800)
 
+    p = sub.add_parser("portraits", help="draw the character in the poses the app's menus show it in (after a build they are drawn by themselves)")
+    p.add_argument("manifest", type=Path)
+
     p = sub.add_parser("sheet", help="contact sheets of the finished .vrm as apps draw it: face, body, details (headless Edge or Chrome)")
     p.add_argument("target", type=Path, help="a character manifest (its last .vrm) or a .vrm file")
     p.add_argument("--out", type=Path, help="folder for the PNGs (default: the character's renders/, or beside the .vrm)")
@@ -451,6 +454,17 @@ def cmd_render(args):
     if code != 0:
         raise StepFailed(f"render failed\n{output[-2000:]}")
     return {"blend": str(blend), "run": blend.parent.name, "pose": args.pose, "images": sorted(str(p) for p in out.glob("*.png"))}
+
+
+def cmd_portraits(args):
+    """The character's posed pictures (scripts/render_portraits.py), for one built before the app drew them."""
+    project = _project(args)
+    if project.latest() is None:
+        raise StepFailed("nothing built yet: the pictures need the rig")
+    drawn = project.portraits(on_event=getattr(args, "on_event", None))
+    if not drawn:
+        raise StepFailed(f"the pictures could not be drawn: see {project.out / 'portraits' / 'portraits.log'}")
+    return {"portraits": drawn}
 
 
 def cmd_sheet(args):
@@ -919,7 +933,7 @@ def cmd_bundle(args):
 
 
 COMMANDS = {"init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_set, "joint": cmd_joint,
-            "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "sheet": cmd_sheet, "movement": cmd_movement, "springs": cmd_springs,
+            "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "portraits": cmd_portraits, "sheet": cmd_sheet, "movement": cmd_movement, "springs": cmd_springs,
             "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "paint": cmd_paint, "duplicate": cmd_duplicate, "rename": cmd_rename, "hide": cmd_hide, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
             "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup,
             "regress": cmd_regress, "vendor": cmd_vendor, "detector": cmd_detector, "warudo": cmd_warudo}

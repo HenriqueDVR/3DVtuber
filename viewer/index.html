@@ -22,7 +22,31 @@
   .ends { display: flex; justify-content: space-between; color: #8a8f9c; font-size: 11px; }
   #stage.picking canvas { cursor: crosshair; }
   #cam { width: 100%; border-radius: 4px; transform: scaleX(-1); margin-top: 4px; }
+  /* Inside the app in its arcade look (the script below): the app's colours, type and square edges */
+  .arcade, .arcade body { background: #060709; color: #f2f4f8; font: 500 13px/1.45 "Chakra Petch", "Segoe UI", system-ui, sans-serif; }
+  .arcade aside { background: #0d0f14; border-left: 1.5px solid #3df2d8; scrollbar-color: #2a2e38 transparent; }
+  .arcade h2 { font: italic 400 17px/1.2 Anton, Impact, sans-serif; text-transform: uppercase; letter-spacing: .05em; color: #fff; margin: 18px 0 6px; padding-top: 10px; border-top: 1px solid #2a2e38; }
+  .arcade button { background: #11131a; border: 1.5px solid #2a2e38; border-radius: 0; font: 600 11.5px "Chakra Petch", sans-serif; text-transform: uppercase; letter-spacing: .06em; padding: 6px 8px;
+    box-shadow: 3px 3px 0 #000; transition: translate .08s, box-shadow .08s, border-color .12s; }
+  .arcade button:hover { border-color: #fff; } .arcade button:active { translate: 3px 3px; box-shadow: 0 0 0 #000; }
+  .arcade button[aria-pressed="true"] { background: #3df2d8; border-color: #3df2d8; color: #000; }
+  .arcade select, .arcade pre { background: #0b0c10; border: 1.5px solid #2a2e38; border-radius: 0; font-family: inherit; } .arcade pre { font: 11px/1.45 "Cascadia Mono", Consolas, monospace; }
+  .arcade select:focus-visible, .arcade button:focus-visible { outline: 0; border-color: #3df2d8; }
+  .arcade input[type=range], .arcade input[type=checkbox] { accent-color: #3df2d8; }
+  .arcade .note, .arcade .ends, .arcade #hint { color: #9096a3; } .arcade .ramp, .arcade #cam { border-radius: 0; }
+  .arcade .row { text-transform: uppercase; font-size: 10.5px; font-weight: 600; letter-spacing: .05em; }
+  .arcade input[type=file] { font: inherit; color: #9096a3; max-width: 100%; }
+  .arcade input[type=file]::file-selector-button { background: #11131a; color: #f2f4f8; border: 1.5px solid #2a2e38; font: 600 11px "Chakra Petch", sans-serif; text-transform: uppercase; letter-spacing: .06em; padding: 4px 10px; cursor: pointer; }
 </style>
+<script>
+// Opened by the app in its arcade look (Setup): dress the same. On its own, or in the classic look, as it was.
+var ARCADE = false;
+try { ARCADE = parent !== window && parent.document.documentElement.classList.contains("arcade"); } catch (e) {}
+if (ARCADE) {
+  document.documentElement.classList.add("arcade");
+  document.head.insertAdjacentHTML("beforeend", '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Chakra+Petch:wght@500;600;700&display=swap">');
+}
+</script>
 <script type="importmap">
 {
   "imports": {
@@ -85,12 +109,12 @@ renderer.setPixelRatio(window.devicePixelRatio);
 stage.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x202329);
+scene.background = new THREE.Color(ARCADE ? 0x090a0e : 0x202329);
 scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
 const sun = new THREE.DirectionalLight(0xffffff, 1.5);
 sun.position.set(1, 2, 3);
 scene.add(sun);
-scene.add(new THREE.GridHelper(4, 16, 0x555a66, 0x3a3e47));
+scene.add(ARCADE ? new THREE.GridHelper(4, 16, 0x3df2d8, 0x1b2a52) : new THREE.GridHelper(4, 16, 0x555a66, 0x3a3e47));
 
 const camera = new THREE.PerspectiveCamera(30, 1, 0.01, 50);
 camera.position.set(0, 1.2, 3.5);

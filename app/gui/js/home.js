@@ -43,6 +43,7 @@ export function renderHome() {
   $("hidden-list").querySelectorAll("[data-show]").forEach((b) => b.onclick = async () => {
     try { await call("hide", { path: b.dataset.show, show: true }); await app.loadProjects(S.manifestPath); } catch (e) { toast(e.message, "bad"); }
   });
+  app.homeDrawn?.();
 }
 
 // ---------- disk: what the runs take, and freeing what nothing reads any more

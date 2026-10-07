@@ -121,7 +121,7 @@ function ended(how, label) {
   document.title = `${how === "finished" ? "✓" : how === "failed" ? "✗" : "■"} ${title}`;
   addEventListener("focus", () => { document.title = title; }, { once: true });
   if (!notify) return;
-  try { if (Notification.permission === "granted") new Notification("VTuber Maker", { body: `${cap(label || "the run")} ${how}.` }); } catch {}
+  try { if (Notification.permission === "granted") new Notification("OC2VRM", { body: `${cap(label || "the run")} ${how}.` }); } catch {}
   chime(how === "finished");
 }
 function chime(good) {

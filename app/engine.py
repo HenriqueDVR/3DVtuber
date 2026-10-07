@@ -534,12 +534,63 @@ class Project:
         statuses = {name: e.get("status") for name, e in steps.items()}
         renders = sorted((p for p in (self.out / "renders").glob("*") if p.is_dir()), key=lambda p: p.stat().st_mtime)
         pictures = sorted(renders[-1].glob("*.png"), key=lambda p: ("front" not in p.stem, p.name)) if renders else []
+        # a still render from the front, arms down before arms out before the rest, the newest of its kind: the
+        # figure alone on a clear ground, where a contact sheet is a grid
+        # (never the T-pose: that is the rig's rest, not a picture of the character)
+        fronts = [p for folder in renders if not folder.name.startswith("sheets") for p in folder.glob("*front*.png")
+                  if not p.stem.startswith("t-pose")]
+        # every still there is, by pose and view ("hang_back"), the newest of each: the app's menus show the
+        # character in more than one pose
+        stills = {p.stem: str(p) for folder in renders if not folder.name.startswith("sheets")
+                  for p in folder.glob("*.png") if p.stem.rpartition("_")[2] in ("front", "back", "left", "right")}
         return {"surveyed": statuses.get("survey") == "done", "built": statuses.get("vrm_check") == "done",
                 "stale": sorted(n for n, s in statuses.items() if s == "stale"),
                 "failed": sorted(n for n, s in statuses.items() if s == "failed"),
                 "finished": max((e.get("finished") or "" for e in steps.values()), default="") or None,
                 "approved": self.approved() is not None, "picture": str(pictures[0]) if pictures else None,
+                "portrait": str(min(fronts, key=lambda p: (next((i for i, pose in enumerate(("hang", "rest"))
+                                                                 if p.stem.startswith(pose)), 2), -p.stat().st_mtime)))
+                if fronts else None, "stills": stills, "portraits": self.portrait_set(),
                 "waiting": self.looked_at() is False}
+
+    # ----- the character's pictures
+
+    def portrait_set(self):
+        """The posed pictures drawn so far, by pose: the file, where the middle of the face and the floor
+        are in it (shares of the picture, from its top left), and how tall the character and how wide
+        its face are (shares of its side)."""
+        folder = self.out / "portraits"
+        drawn = _read_json(folder / "portraits.json", None) or {}
+        return {name: {"file": str(folder / p["file"]), "head": p["head"], "floor": p["floor"], "height": drawn["height"],
+                       "face": drawn.get("face")}
+                for name, p in drawn.get("poses", {}).items() if (folder / p["file"]).exists()}
+
+    def portraits(self, blend=None, on_event=None, locked=False):
+        """Draw the character in the poses the app's menus show it in (scripts/render_portraits.py), from
+        `blend` or the newest .blend there is. Returns the set, or None when there is no rig yet or
+        Blender failed: these are pictures, and a build never fails for want of them. `locked`: called
+        from inside a run, which holds the one-Blender-at-a-time lock already."""
+        emit = on_event or (lambda event: None)
+        blend = blend or self.latest()
+        if blend is None:
+            return None
+        folder = self.out / "portraits"
+        folder.mkdir(parents=True, exist_ok=True)
+        emit({"step": "portraits", "status": "running", "log": str(folder / "portraits.log")})
+        started = time.time()
+        try:
+            args, log = ["render_portraits.py", folder, "--size", 1400], folder / "portraits.log"
+            code = _blender(self.blender, blend, args, log, []) if locked else run_script(self.blender, args[0], args[1:], blend_in=blend, log=log)[0]
+        except Exception as error:  # noqa: BLE001: whatever stops a picture must not stop a build
+            code = str(error)
+        if code != 0:
+            emit({"step": "portraits", "status": "skipped", "reason": "the character's pictures could not be drawn"})
+            return None
+        emit({"step": "portraits", "status": "done", "seconds": round(time.time() - started)})
+        return self.portrait_set()
+
+    def _portraits_from(self):
+        return (_read_json(self.out / "portraits" / "portraits.json", None) or {}).get("blend")
 
     # ----- running
 
@@ -602,6 +653,13 @@ class Project:
                         entry["log"] = str(log)
                 self._record(name, entry)
                 emit({"step": name, **entry})
+                # a new character gets its pictures as soon as it has a rig to pose
+                if name == "build" and entry.get("status") == "done" and not self.portrait_set():
+                    self.portraits(on_event=emit, locked=True)
+            # ... and every build that changed the rig ends by drawing them again from the finished one
+            newest = self.latest()
+            if newest is not None and not CANCEL.is_set() and str(newest) != self._portraits_from():
+                self.portraits(newest, on_event=emit, locked=True)
         return self.status()
 
     def _run_step(self, name, index, folder):

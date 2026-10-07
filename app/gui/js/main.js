@@ -1,6 +1,7 @@
 // The app: opening a character and drawing every page from it.
 import { $, S, app, call, esc, refreshStatus } from "./core.js";
 import { toast } from "./ui.js";
+import "./look.js";
 import { go, renderNav } from "./nav.js";
 import { resume } from "./jobs.js";
 import { renderHome, renderSurvey } from "./home.js";
