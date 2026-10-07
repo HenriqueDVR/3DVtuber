@@ -9,6 +9,8 @@ let polling = false, run = null, ticker = null, waiting = [];
 export async function job(route, body = {}) {
   try { await call(route, body); } catch (e) { toast(e.message, "bad"); $("events").textContent += `\n${e.message}`; return null; }
   $("events").textContent = "";
+  // the last run's failure isn't this one's
+  for (const id of new Set(Object.values(SAYS))) say(id, "");
   run = plan(route, body);
   showBar(true);
   const ended = new Promise((done) => waiting.push(done));
@@ -16,6 +18,12 @@ export async function job(route, body = {}) {
   return ended;
 }
 app.job = job;
+
+// Where a failed job says so: beside the button that started it. Every job's failure was once written
+// on every page, and a face detector that found no face stood in red on Movement after a pose test.
+const SAYS = { list_pieces: "pieces-msg", render: "render-msg", sheet: "sheet-msg", movement: "movement-msg", springs: "movement-msg",
+  face_patch: "patch-msg", detector_install: "setup-msg", vendor: "setup-msg", install_blender: "setup-msg", install_addon: "setup-msg",
+  install_package: "setup-msg", update: "setup-msg" };
 
 // The steps a build will go through and how long each took last time: the bar's step count and ETA.
 function plan(route, body) {
@@ -60,7 +68,7 @@ async function poll(since) {
   const took = Math.round((Date.now() - finished.started) / 1000);
   if (state.error) {
     $("events").textContent += `\n${state.error}`;
-    for (const id of ["pieces-msg", "render-msg", "sheet-msg", "movement-msg", "patch-msg", "setup-msg"]) say(id, state.error.split("\n")[0], true);
+    if (SAYS[finished.route]) say(SAYS[finished.route], state.error.split("\n")[0], true);
     toast(`${finished.label || "The run"} failed: ${state.error.split("\n")[0]}`, "bad", { ms: 9000 });
   } else if (state.cancelled) toast("Stopped. The step that was running keeps what it last finished; run it again when you like.", "info");
   else toast(`${cap(finished.label || "done")}: finished in ${duration(took)}.`);
@@ -79,13 +87,13 @@ function showBar(on) {
   $("runbar").hidden = !on;
   // one run at a time: every button that starts one waits
   document.querySelectorAll("[data-job]").forEach((b) => b.disabled = on);
-  clearInterval(ticker);
-  if (on) ticker = setInterval(paintBar, 1000);
-  $("run-stop").disabled = false; $("run-stop").textContent = "Stop";
+  // called at every poll: a ticker started anew each time never ticked evenly, and the clock jumped
+  if (!on) { clearInterval(ticker); ticker = null; $("run-stop").disabled = false; $("run-stop").textContent = "Stop"; }
+  else ticker ||= setInterval(paintBar, 250);
 }
 function paintBar() {
   if (!run) return;
-  const elapsed = Math.round((Date.now() - run.started) / 1000);
+  const elapsed = Math.floor((Date.now() - run.started) / 1000);
   $("run-label").textContent = cap(run.label || run.route);
   const total = run.steps.length;
   $("run-step").textContent = run.current ? `${stepName(run.current)}${total ? ` · step ${Math.min(run.done + 1, total)} of ${total}` : ""}` : "";
