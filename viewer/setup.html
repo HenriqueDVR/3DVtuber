@@ -83,8 +83,11 @@ function fit() {
   const r = stage.getBoundingClientRect();
   canvas.width = r.width * devicePixelRatio;
   canvas.height = r.height * devicePixelRatio;
-  // not while hidden: inside the app the page loads on a hidden tab, and a fit at size 0 stuck at scale 0
-  if (image && !view.fitted && canvas.width > 0 && canvas.height > 0) {
+  // not while hidden: inside the app the page loads on a hidden tab, and a fit at size 0 stuck at scale 0.
+  // And again whenever the box changes size, until the user zooms or pans (`moved`): fitted once, to
+  // whatever the box measured as its page slid in, the picture stayed a speck in a corner and read
+  // as "the face patch didn't load".
+  if (image && (!view.fitted || !view.moved) && canvas.width > 0 && canvas.height > 0) {
     view.scale = Math.min(canvas.width / image.width, canvas.height / image.height);
     view.x = (canvas.width - image.width * view.scale) / 2;
     view.y = (canvas.height - image.height * view.scale) / 2;
@@ -109,6 +112,42 @@ function parabola(p0, p1, p2) {
   const b = (x2 * x2 * (y0 - y1) + x1 * x1 * (y2 - y0) + x0 * x0 * (y1 - y2)) / d;
   const c = (x1 * x2 * (x1 - x2) * y0 + x2 * x0 * (x2 - x0) * y1 + x0 * x1 * (x0 - x1) * y2) / d;
   return (x) => a * x * x + b * x + c;
+}
+
+// The redrawn mouth, about as the build will make it (the app's Face page sends its size): wide
+// open saying "a", and the closed line of a free mouth. face_rig.py's own numbers: an opening is a
+// rounded shape (MOUTH_SHAPES "aa": 0.42 mouth widths to each side, 0.72 tall) hanging from the mouth
+// line, its top MOUTH_TOP_LIFT (0.02) above it, every opening times the size; a free mouth rests as a
+// line 0.8 of the marked width. An estimate: the width is the marked corners' (the build never makes
+// it narrower than a share of the eyes), and the face's curve isn't in it.
+let mouthSize = null;
+function drawMouth(lw) {
+  const [l, r, t, b] = ["left", "right", "top", "bottom"].map((n) => points[`mouth.${n}`]);
+  if (!mouthSize || !l || !r) return;
+  const width = Math.abs(r[0] - l[0]), x = (l[0] + r[0]) / 2, line = t && b ? (t[1] + b[1]) / 2 : (l[1] + r[1]) / 2;
+  const outline = (halfWidth, top, height, roundTop, roundBottom) => {
+    ctx.beginPath();
+    for (let i = 0; i <= 72; i++) {
+      const a = i / 72 * Math.PI * 2, cos = Math.cos(a), sin = Math.sin(a), round = sin < 0 ? roundTop : roundBottom;
+      const [sx, sy] = toScreen([x + halfWidth * Math.sign(cos) * Math.abs(cos) ** (2 / round),
+        top + height / 2 + height / 2 * Math.sign(sin) * Math.abs(sin) ** (2 / round)]);
+      i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy);
+    }
+    ctx.closePath();
+  };
+  ctx.save();
+  ctx.lineWidth = lw; ctx.strokeStyle = "#fff"; ctx.setLineDash([6 * devicePixelRatio, 4 * devicePixelRatio]);
+  const tall = 0.72 * width * mouthSize.scale;
+  outline(0.42 * width * mouthSize.scale, line - 0.02 * width, tall, 3.5, 2.2);
+  ctx.fillStyle = "rgba(255, 107, 181, .28)"; ctx.fill(); ctx.stroke();
+  if (mouthSize.free) { ctx.setLineDash([]); outline(0.4 * width, line - 0.035 * width, 0.07 * width, 3.5, 2.2); ctx.stroke(); }
+  ctx.setLineDash([]);
+  const [tx, ty] = toScreen([x, line - 0.02 * width + tall]);
+  ctx.font = `${11 * devicePixelRatio}px sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "top";
+  ctx.lineWidth = 3 * devicePixelRatio; ctx.strokeStyle = "#000"; ctx.fillStyle = "#fff";
+  const text = `open mouth, size × ${mouthSize.scale}`;
+  ctx.strokeText(text, tx, ty + 6 * devicePixelRatio); ctx.fillText(text, tx, ty + 6 * devicePixelRatio);
+  ctx.restore();
 }
 
 function draw() {
@@ -136,6 +175,7 @@ function draw() {
       ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.stroke();
     }
   }
+  drawMouth(lw);
   const next = current();
   for (const step of STEPS) {
     const p = points[id(step)];
@@ -196,6 +236,7 @@ canvas.addEventListener("pointerdown", (e) => {
 });
 canvas.addEventListener("pointermove", (e) => {
   if (panning) {
+    view.moved = true;
     view.x += (e.clientX - panning[0]) * devicePixelRatio;
     view.y += (e.clientY - panning[1]) * devicePixelRatio;
     panning = [e.clientX, e.clientY];
@@ -222,6 +263,7 @@ canvas.addEventListener("wheel", (e) => {
   const r = canvas.getBoundingClientRect();
   const sx = (e.clientX - r.left) * devicePixelRatio, sy = (e.clientY - r.top) * devicePixelRatio;
   const factor = Math.exp(-e.deltaY * 0.0015);
+  view.moved = true;
   view.x = sx - (sx - view.x) * factor;
   view.y = sy - (sy - view.y) * factor;
   view.scale *= factor;
@@ -230,7 +272,7 @@ canvas.addEventListener("wheel", (e) => {
 
 function loadImage(src, name) {
   const img = new Image();
-  img.onload = () => { image = img; imageName = name; view.fitted = false; hint.hidden = true; fit(); refresh(); };
+  img.onload = () => { image = img; imageName = name; view.fitted = view.moved = false; hint.hidden = true; fit(); refresh(); };
   img.onerror = () => { hint.hidden = false; hint.textContent = `Couldn't load ${name}`; };
   img.src = src;
 }
@@ -279,16 +321,21 @@ if (embedded) {
   window.addEventListener("message", (e) => {
     if (e.origin !== location.origin) return;
     if (e.data?.type === "face-features") { setFeatures(e.data.features); if (image) refresh(); return; }
+    if (e.data?.type === "face-mouth") { mouthSize = e.data.mouth; draw(); return; }
+    // the app's Face page came up: measured now, whatever the browser did or didn't say of its size
+    if (e.data?.type === "face-fit") { fit(); return; }
     if (e.data?.type !== "face-image") return;
     setFeatures(e.data.features);
     const img = new Image();
-    img.onload = () => { image = img; imageName = e.data.name || "face_patch.png"; view.fitted = false; hint.hidden = true; fit(); usePoints(e.data.points); };
+    img.onload = () => { image = img; imageName = e.data.name || "face_patch.png"; view.fitted = view.moved = false; hint.hidden = true; fit(); usePoints(e.data.points); };
     img.src = e.data.src;
   });
   parent.postMessage({ type: "face-marker-ready" }, location.origin);
 }
 
 window.addEventListener("resize", fit);
+// the box itself, not only the window: a page of the app coming out of hiding resizes no window
+new ResizeObserver(fit).observe(stage);
 const param = new URLSearchParams(location.search).get("image");
 if (param) loadImage(param, param.split("/").pop());
 fit();

@@ -5,6 +5,7 @@ import { $, S, app, call, say, refreshManifest, refreshStatus } from "./core.js"
 import { makeView } from "./views.js";
 import { saved, toast } from "./ui.js";
 import { job } from "./jobs.js";
+import { onShow } from "./nav.js";
 
 // The marker (viewer/setup.html, embedded) marks pixels on the face patch texture. Here the same
 // pixels are found on the 3D model through the patch's UVs, so a point on the wrong feature shows.
@@ -12,12 +13,13 @@ const faceView = makeView($("face-view"));
 const faceDots = new THREE.Group(); faceView.scene.add(faceDots);
 const FEATURE_COLOUR = { right_eye: 0x4ad7ff, left_eye: 0x7dff6b, mouth: 0xff6bb5 };
 let facePatch = null, faceImage = null, facePoints = null, markerReady = false, patchFit = null;
-$("marker").src = "/viewer/setup.html?embed=1";
+// (a new address each time: a reloaded page was handed the frame it had before, an older marker)
+$("marker").src = `/viewer/setup.html?embed=1&t=${Date.now()}`;
 
 addEventListener("message", async (e) => {
   if (e.origin !== location.origin) return;
   const { type, data } = e.data || {};
-  if (type === "face-marker-ready") { markerReady = true; sendFaceImage(); }
+  if (type === "face-marker-ready") { markerReady = true; sendFaceImage(); fitMarker(); }
   if (type === "face-points-draft") {
     facePoints = data; showFacePoints(); showPointsState();
     // saved as soon as all twelve are placed: a separate save inside the marker was easy to miss,
@@ -56,13 +58,31 @@ function showPointsState() {
 }
 function sendFaceImage() {
   if (markerReady && faceImage) $("marker").contentWindow.postMessage({ type: "face-image", ...faceImage, points: facePoints, features: features() }, location.origin);
+  sendMouth();
+}
+// The page comes up: the marker measures its box and fits the picture to it. It was handed the picture
+// while the page was hidden (no size to fit to), and waited for the browser to tell it of a new size,
+// which a page coming out of hiding doesn't always do: an empty box, "the face patch didn't load".
+// (again after the arcade look's page has slid in)
+const fitMarker = () => markerReady && $("marker").contentWindow.postMessage({ type: "face-fit" }, location.origin);
+onShow.face = () => { for (const ms of [0, 350, 1000]) setTimeout(fitMarker, ms); };
+// The open mouth's outline on the picture, as big as the size asks for: seen here, not after a build.
+function sendMouth() {
+  if (!markerReady) return;
+  const mouth = $("mouth-fix").checked ? { scale: +$("mouth-scale").value || 1, free: $("mouth-free").checked } : null;
+  $("marker").contentWindow.postMessage({ type: "face-mouth", mouth }, location.origin);
 }
 
 const PATCH_NEEDED = "Needed once per character. It renders the head from the front and maps that picture onto the face as its own sharp texture; step 2 marks the points on it. Two Blender runs, about two minutes. The model is copied, never changed.";
+// (one load counts, the last: a character picked while the one before was still loading was read
+// twice at once, the two crossing each other's patch and picture)
+let loading = 0;
 export async function loadFace() {
+  const mine = ++loading;
   faceView.clear(); faceDots.clear(); facePatch = faceImage = patchFit = null; $("face-checks").innerHTML = "";
   if (!S.manifestPath) return;
   const face = await call("face");
+  if (mine !== loading) return;
   facePoints = face.points; pointsSaved = face.points ? written(face.points) : null; showPointsState();
   if (!face.model) {
     $("patch-make").textContent = "Make a face patch";
@@ -70,6 +90,8 @@ export async function loadFace() {
     return;
   }
   const gltf = await new GLTFLoader().loadAsync(face.model);
+  if (mine !== loading) return;
+  faceView.clear();
   faceView.model = gltf.scene; faceView.scene.add(gltf.scene); gltf.scene.updateMatrixWorld(true);
   gltf.scene.traverse((o) => { if (o.isMesh && o.material?.name === "face_patch") facePatch = o; });
   const box = new THREE.Box3().setFromObject(gltf.scene), size = box.getSize(new THREE.Vector3());
@@ -84,6 +106,7 @@ export async function loadFace() {
   canvas.width = image.width; canvas.height = image.height;
   canvas.getContext("2d").drawImage(image, 0, 0);
   const blob = await new Promise((done) => canvas.toBlob(done, "image/png"));
+  if (mine !== loading) return;
   faceImage = { src: URL.createObjectURL(blob), name: "face_patch.png" };
   sendFaceImage(); showFacePoints();
 }
@@ -202,7 +225,7 @@ export function renderFace() {
   const fix = o.mouth_fix;
   $("mouth-fix").checked = !!fix; $("mouth-free").checked = !!fix?.free; $("mouth-scale").value = fix?.scale ?? 1;
   $("mouth-free").disabled = $("mouth-scale").disabled = !fix;
-  showEyeChoice(); showFeatures();
+  showEyeChoice(); showFeatures(); sendMouth();
 }
 // The choices, kept as each is made (as the Options page keeps its own). Kept only by the Save
 // buttons, a choice was put back to the saved one whenever the page was drawn again (after the
@@ -250,5 +273,7 @@ function showFeatures() {
 }
 // (the eyes' choice first, then the points it leaves to keep: with the eyes covered the mouth's four are all)
 $("eyes").onchange = async () => { showEyeChoice(); await keepChoices(); showFeatures(); savePoints().catch((e) => say("face-msg", e.message, true)); };
-$("mouth-fix").onchange = () => { $("mouth-free").disabled = $("mouth-scale").disabled = !$("mouth-fix").checked; keepChoices(); };
-for (const id of ["mouth-tracking", "mouth-free", "mouth-scale"]) $(id).onchange = keepChoices;
+$("mouth-fix").onchange = () => { $("mouth-free").disabled = $("mouth-scale").disabled = !$("mouth-fix").checked; sendMouth(); keepChoices(); };
+for (const id of ["mouth-tracking", "mouth-free", "mouth-scale"]) $(id).onchange = () => { sendMouth(); keepChoices(); };
+// (the outline follows the number as it is typed; it is saved when the field is left)
+$("mouth-scale").oninput = sendMouth;

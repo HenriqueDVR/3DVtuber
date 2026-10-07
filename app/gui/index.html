@@ -322,7 +322,9 @@ try {
           <p class="help">Also paints the model's own mouth out of the texture and draws the whole mouth on a separate patch
             that moves on its own, so talking never bends the face. Best for simple or chibi faces, and when the face dents.</p>
           <label class="inline">size × <input id="mouth-scale" type="number" step="0.05" min="0.5" max="2" value="1" style="width:70px"></label>
-          <span class="help">how big the drawn mouth is against the marked one (1.3 = 30% bigger)</span></div>
+          <span class="help">how big the drawn mouth is against the marked one (1.3 = 30% bigger). The dashed outline on
+            the picture in step 2 is the mouth wide open at this size, and follows the number as you change it: an
+            estimate to choose the size by, without building.</span></div>
         <div class="examples" data-examples="mouth"></div></div>
       <div class="row" style="margin-top:var(--s3)"><button class="act" id="face-build" data-job>Save and build</button>
         <span class="help">the points and every choice on this page save as you make them; the build is what puts them on the avatar</span></div>
@@ -620,6 +622,9 @@ try {
           <input type="range" id="look-sound" min="0" max="1" step="0.05" value="0.5" style="width:120px"></label>
         <label class="inline" id="look-music-row" title="the tune behind the menus, low and muffled behind a work page; all the way left is off">music
           <input type="range" id="look-music" min="0" max="1" step="0.05" value="0.3" style="width:120px"></label></div>
+      <div class="row" style="margin-top:var(--s3)"><label class="inline">open the app in
+        <select id="open-in" aria-label="open the app in"><option value="window">its own window</option><option value="browser">your browser</option></select></label>
+        <span class="msg" id="open-in-msg"></span></div>
     </div>
   </div>
 </section>
