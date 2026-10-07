@@ -68,8 +68,8 @@ python -m app.server
 On Windows, double-click `OC2VRM.bat` instead: on a new computer it offers to install Python and
 the one package the app needs. The app then opens on **Get set up**, which can fetch Blender and
 the VRM Add-on for itself, asking first; after that everything runs on your computer. On macOS
-double-click `OC2VRM.command`, on Linux run `sh oc2vrm.sh` (neither has been run by the author
-yet). Trying the app for someone else?
+double-click `OC2VRM.command`, on Linux run `sh oc2vrm.sh` (Linux was run in a container, start to
+finished avatar; macOS has not been run yet). Trying the app for someone else?
 See [docs/TESTERS.md](docs/TESTERS.md).
 
 **Make an avatar**

@@ -1,9 +1,11 @@
 # Testing OC2VRM
 
 Thank you for trying it. This page gets the app running on your computer and says what kind of
-feedback helps. Windows is what it was made and tested on. **macOS and Linux have never been run**:
-the steps below are written from how the app works, so the first thing worth reporting there is
-whether they got you to a running app.
+feedback helps. Windows is what it was made and tested on. **Linux** has been run once, in a bare
+Debian container without a screen: the launcher, the app, fetching Blender and the add-on, a whole
+build of a test character and the test suite all worked; a real desktop has not been tried.
+**macOS has never been run**: its steps are written from how the app works, so the first thing worth
+reporting there is whether they got you to a running app.
 
 ## 1. Get it running
 
@@ -39,7 +41,9 @@ models and avatars stay on your computer.
 ### Linux
 
 1. Python 3.10 or newer with pip and tkinter: `sudo apt install python3 python3-pip python3-tk git`
-   (Fedora: `python3-tkinter`; Arch: `python python-pip tk`).
+   (Fedora: `python3-tkinter`; Arch: `python python-pip tk`). On a very bare system Blender also
+   wants the usual desktop libraries (Debian: `libx11-6 libxi6 libxxf86vm1 libxfixes3 libxrender1
+   libgl1 libegl1 libxkbcommon0 libsm6 libice6`); a normal desktop has them.
 2. Download or clone this repository, then `sh oc2vrm.sh`. It offers to install Pillow (where the
    system refuses pip, it names the system package instead).
 3. The app opens in your browser on **Get set up**. On a 64-bit Intel/AMD computer
