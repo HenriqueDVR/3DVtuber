@@ -84,6 +84,7 @@ if (ARCADE) {
   </div>
   <h2>Face tracking test</h2>
   <button id="webcam" aria-pressed="false">Try with your webcam</button>
+  <label class="row" id="camera-row" hidden><span>camera</span><select id="camera" aria-label="camera"></select></label>
   <label class="note"><input type="checkbox" id="mirror" checked> like a mirror (your left is its right)</label>
   <label class="row"><span>strength</span><input type="range" id="gain" min="1" max="2.5" step="0.05" value="1.5"><span id="gain-readout">1.50</span></label>
   <video id="cam" muted playsinline hidden></video>
@@ -295,12 +296,34 @@ async function loadTracker(runningMode) {
   catch { return await FaceLandmarker.createFromOptions(files, options("CPU")); }
 }
 
+// Which camera: the browser's first is often not the one (a virtual camera, a capture card, a laptop's
+// own beside the good one). The cameras have names only once one was allowed, so the list is drawn
+// after the first start; the choice is kept for the next visit.
+const CAMERA = "vtuber-maker-camera", cameraList = document.getElementById("camera");
+let cameraId = null;
+try { cameraId = localStorage.getItem(CAMERA); } catch {}
+async function listCameras(using) {
+  const found = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput" && d.deviceId);
+  cameraList.replaceChildren(...found.map((d, i) => new Option(d.label || `camera ${i + 1}`, d.deviceId)));
+  if (found.some((d) => d.deviceId === using)) cameraList.value = using;
+  document.getElementById("camera-row").hidden = found.length < 2;
+}
+cameraList.addEventListener("change", async () => {
+  cameraId = cameraList.value;
+  try { localStorage.setItem(CAMERA, cameraId); } catch {}
+  if (webcam.on) { stopWebcam(); await startWebcam(); }
+});
+
 async function startWebcam() {
   const note = document.getElementById("cam-note");
   note.textContent = "Loading the face tracker…";
   try {
     webcam.landmarker ||= await loadTracker("VIDEO");
-    webcam.video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+    const size = { width: 640, height: 480 };
+    // the camera chosen last time may be unplugged today: then whichever there is
+    webcam.video.srcObject = await navigator.mediaDevices.getUserMedia({ video: cameraId ? { ...size, deviceId: { exact: cameraId } } : size })
+      .catch((error) => { if (!cameraId || error.name !== "OverconstrainedError") throw error; return navigator.mediaDevices.getUserMedia({ video: size }); });
+    listCameras(webcam.video.srcObject.getVideoTracks()[0]?.getSettings().deviceId).catch(() => {});
     await webcam.video.play();
     webcam.video.hidden = false; webcam.on = true;
     note.textContent = "Tracking. Blink, talk, look around, turn your head. Shapes the avatar lacks are listed under Summary.";
