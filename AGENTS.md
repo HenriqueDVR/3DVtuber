@@ -4,7 +4,7 @@ Guidance for an AI coding agent (Claude Code or similar) working in this reposit
 
 ## What this is
 
-VTuber Maker: a Blender add-on (4.2 and later) plus command-line scripts and a guided desktop app
+OC2VRM: a Blender add-on (4.2 and later) plus command-line scripts and a guided desktop app
 that turn an image-to-3D humanoid model (Tripo P2 and similar) into a **VRM 1.0** avatar: body
 rig, blink and mouth expressions, hair and cloth spring bones, optional fingers, MToon materials,
 T-pose bake. Targets Warudo and VNyan. VRM 0.x (VSeeFace) is not exported.
@@ -74,7 +74,7 @@ T-pose.
 
 ```bash
 pip install -r requirements.txt                    # Pillow, for the app
-python -m app.server                               # the guided app (or VTuber Maker.bat)
+python -m app.server                               # the guided app (or OC2VRM.bat)
 python -m app run out/MyOC/character.json          # the whole build from a manifest
 python -m app regress out/MyOC/character.json      # rebuild in a scratch folder and compare with its good build
 python -m unittest tests.test_app                  # the app's tests, plain Python, seconds

@@ -1,4 +1,4 @@
-"""VTuber Maker: turn an AI-generated character mesh into a VRM avatar."""
+"""OC2VRM: turn an AI-generated character mesh into a VRM avatar."""
 
 import bpy
 from bpy.props import FloatProperty, StringProperty
@@ -43,7 +43,7 @@ class VTUBER_MAKER_OT_make_vrm(bpy.types.Operator, ExportHelper):
 
 
 class VTUBER_MAKER_PT_panel(bpy.types.Panel):
-    bl_label = "VTuber Maker"
+    bl_label = "OC2VRM"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "VTuber"

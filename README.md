@@ -1,6 +1,6 @@
 <div align="center">
 
-# VTuber Maker
+# OC2VRM
 
 **Turn an image-to-3D character into a ready-to-stream VRM avatar.**
 
@@ -65,7 +65,7 @@ cd 3DVtuber
 python -m app.server
 ```
 
-On Windows, double-click `VTuber Maker.bat` instead.
+On Windows, double-click `OC2VRM.bat` instead.
 
 **Make an avatar**
 

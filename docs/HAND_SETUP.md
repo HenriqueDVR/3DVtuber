@@ -8,7 +8,7 @@ It previews the actual skinned mesh. It does not separate fused fingers or inven
 
 Build the extension (see the README, "Inside Blender, as an add-on"). In Blender: **Edit >
 Preferences > Get Extensions > menu > Install from Disk**, choose the zip in `dist/`, and enable
-VTuber Maker. If an older version is installed, replace it and restart Blender.
+OC2VRM. If an older version is installed, replace it and restart Blender.
 
 1. Open a **copy** of your rigged avatar: the last `.blend` of a build (`<out>/runs/<run>/`).
 2. Save As a new filename. Keep the original.

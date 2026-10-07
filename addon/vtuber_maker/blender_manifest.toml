@@ -2,9 +2,9 @@ schema_version = "1.0.0"
 
 id = "vtuber_maker"
 version = "0.1.0"
-name = "VTuber Maker"
+name = "OC2VRM"
 tagline = "Turn an image-to-3D character into a VTuber-ready VRM avatar"
-maintainer = "VTuber Maker authors"
+maintainer = "OC2VRM authors"
 type = "add-on"
 
 blender_version_min = "4.2.0"

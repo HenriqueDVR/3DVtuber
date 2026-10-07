@@ -1,1 +1,1 @@
-"""VTuber Maker app: the guided build, its engine and command line (plain Python, drives Blender)."""
+"""OC2VRM app: the guided build, its engine and command line (plain Python, drives Blender)."""
