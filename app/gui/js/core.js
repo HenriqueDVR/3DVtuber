@@ -15,7 +15,13 @@ export async function call(route, body) {
   const options = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-VTuber-Maker": "1" },
     body: JSON.stringify({ manifest: S.manifestPath, ...body }) };
   const q = body === undefined && S.manifestPath ? `${route.includes("?") ? "&" : "?"}manifest=${encodeURIComponent(S.manifestPath)}` : "";
-  const response = await fetch(`/api/${route}${q}`, options);
+  let response;
+  try { response = await fetch(`/api/${route}${q}`, options); }
+  catch {
+    // the browser's own words here are "Failed to fetch": the app's server isn't there to answer
+    throw new Error("The app isn't answering. Its black window (OC2VRM.bat) must stay open while you use this page: "
+      + "if it was closed, start OC2VRM.bat again and reload this page.");
+  }
   const data = await response.json();
   if (data.error) throw new Error(data.error);
   return data;

@@ -38,7 +38,18 @@ if errorlevel 1 (
   echo.
 )
 
+rem The app asks to be started again (exit code 75) after it has updated itself. A new launcher is
+rem waiting as OC2VRM.bat.new then: a script can't be written over while it runs, so it is taken
+rem here, in one line, and started in place of this one.
+set OC2VRM_LAUNCHER=1
+:run
 "%PY%" -m app.server %*
+if errorlevel 76 goto ended
+if not errorlevel 75 goto ended
+set OC2VRM_RESTARTED=1
+if exist "%~f0.new" (move /y "%~f0.new" "%~f0" >nul & "%~f0" %* & exit /b)
+goto run
+:ended
 if errorlevel 1 pause
 exit /b
 

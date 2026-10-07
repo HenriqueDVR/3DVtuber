@@ -553,55 +553,28 @@ try {
   </div>
 </section>
 
-<section class="page" id="start">
+<section class="page" id="setup">
   <header class="page-head">
-    <div class="kicker">First start</div>
-    <h2>Get set up <span class="chip" id="start-chip"></span></h2>
+    <h2>Setup <span class="chip" id="setup-chip"></span></h2>
     <p class="lead">What the app needs on this computer, in order. Each line says what it found; a button gets what is
-      missing. Nothing is downloaded until you press its button.</p>
+      missing. Nothing is downloaded until you press its button. A red line stops builds; a yellow one is worth knowing.</p>
   </header>
   <div class="stack">
     <div class="card w-lg"><div class="title">1 · Needed to build an avatar</div>
       <div id="start-needed"><p class="msg">checking…</p></div>
-      <div class="row" style="margin-top:var(--s3)"><button class="act alt" id="start-refresh">Check again</button>
-        <button class="act alt" id="start-blender" title="pick which Blender runs the builds, or add one installed somewhere unusual">I already have Blender…</button></div>
+      <div class="row" style="margin-top:var(--s3)"><button class="act alt" id="setup-refresh">Check again</button>
+        <button class="act" id="start-go" hidden>All set: make an avatar</button></div>
       <p class="help">Blender is the free 3D program that does the work in the background; you never have to open it.
         <b>Get it for me</b> fetches a copy the app keeps for itself, with the add-on. If you install Blender yourself
-        instead, press <b>Check again</b> afterwards.</p>
+        instead, press <b>Check again</b> afterwards, or pick it in the list below.</p>
     </div>
     <div class="card w-lg"><div class="title">2 · Good to have</div>
       <div id="start-extras"></div>
+      <div class="row" style="margin-top:var(--s3)">
+        <button class="act alt" id="setup-detector" data-job hidden title="a Python of its own with PyTorch and the face detector, in the app's tools folder">Install auto face marking…</button>
+        <button class="act alt" id="setup-vendor" data-job hidden title="downloads three.js, three-vrm and the face tracker (17 MB, each file checked) into the app's folder">Keep a copy for offline use</button></div>
       <p class="help" id="start-warudo" style="margin-top:var(--s3)"></p>
     </div>
-    <div class="card w-lg"><div class="title">3 · What you need to bring</div>
-      <p class="help">A 3D model of your character. The tested way: generate it in <b>Tripo</b> standing in a
-        <b>T-pose</b> (arms straight out), press <b>Rig</b>, pick "VRM 1.0 humanoid" and export as <b>FBX</b>. A plain
-        <code>.glb</code> or <code>.obj</code> works too, and a finished <code>.vrm</code> (VRM 1.0) is improved as it is.</p>
-      <div class="row"><button class="act" id="start-go">Start: make an avatar</button>
-        <button class="act alt" id="start-skip">Not now</button></div>
-    </div>
-    <div class="card w-lg"><div class="title">Testing the app?</div>
-      <p class="help">Thank you. What helps most: build one character from start to finish, load the <code>.vrm</code> in
-        your tracking app (Warudo, VNyan), and say what looked wrong and in which pose. When something breaks or looks
-        off, open <b>Stuck?</b>, write what you saw and press the button: it gathers the settings, logs and pictures of
-        that character into one folder. Send that folder (zipped) with the line below. The 3D model file itself is
-        <b>not</b> in it; rendered pictures of the character and any screenshots you attached are.</p>
-      <p class="msg" id="start-version"></p>
-    </div>
-  </div>
-</section>
-
-<section class="page" id="setup">
-  <header class="page-head">
-    <h2>Setup <span class="chip" id="setup-chip"></span></h2>
-    <p class="lead">What the app needs on this computer and what it found. A red line stops builds; a yellow one is worth knowing.</p>
-  </header>
-  <div class="stack">
-    <div class="card w-lg"><div class="title">Checks</div><div id="setup-checks"><p class="msg">checking…</p></div>
-      <div class="row" style="margin-top:var(--s3)"><button class="act alt" id="setup-refresh">Check again</button>
-        <button class="act alt" id="setup-start" title="the first-start page: what is needed, in order, with a button for each">Get set up, step by step</button>
-        <button class="act alt" id="setup-detector" data-job hidden title="a Python of its own with PyTorch and the face detector, in the app's tools folder">Install auto face marking…</button>
-        <button class="act alt" id="setup-vendor" data-job hidden title="downloads three.js, three-vrm and the face tracker (17 MB, each file checked) into the app's folder">Keep a copy for offline use</button></div></div>
     <div class="card w-lg"><div class="title">Which Blender runs the builds</div>
       <p class="help">Any Blender 4.2 or later with the VRM Add-on ("VRM format" in Blender's Get Extensions). The app runs it in
         the background with only that add-on switched on, whatever else is installed in it, so your own Blender setup is
@@ -615,6 +588,26 @@ try {
         <button class="act alt" id="setup-add">Add and use it</button></div>
       <p class="help">Pick the <code>blender.exe</code> inside that Blender's folder. It is asked for its version (4.2 or later),
         added to the list above and used for builds from then on.</p>
+    </div>
+    <div class="card w-lg"><div class="title">What you need to bring</div>
+      <p class="help">A 3D model of your character. The tested way: generate it in <b>Tripo</b> standing in a
+        <b>T-pose</b> (arms straight out), press <b>Rig</b>, pick "VRM 1.0 humanoid" and export as <b>FBX</b>. A plain
+        <code>.glb</code> or <code>.obj</code> works too, and a finished <code>.vrm</code> (VRM 1.0) is improved as it is.</p>
+    </div>
+    <div class="card w-lg"><div class="title">This app <span class="chip" id="update-chip"></span></div>
+      <p class="help" id="update-text">checking for a newer version…</p>
+      <div class="row"><button class="act" id="update-run" data-job hidden>Update</button>
+        <button class="act alt" id="update-check">Check for an update</button><span class="msg" id="update-msg"></span></div>
+      <p class="help">An update is the app's own code, about 8 MB. Your characters, their builds and Blender are not
+        touched or downloaded again. The app starts again by itself afterwards.</p>
+    </div>
+    <div class="card w-lg"><div class="title">Testing the app?</div>
+      <p class="help">Thank you. What helps most: build one character from start to finish, load the <code>.vrm</code> in
+        your tracking app (Warudo, VNyan), and say what looked wrong and in which pose. When something breaks or looks
+        off, open <b>Stuck?</b>, write what you saw and press the button: it gathers the settings, logs and pictures of
+        that character into one folder. Send that folder (zipped) with the line below. The 3D model file itself is
+        <b>not</b> in it; rendered pictures of the character and any screenshots you attached are.</p>
+      <p class="msg" id="start-version"></p>
     </div>
     <div class="card w-lg"><div class="title">Look</div>
       <p class="help">How the app itself is drawn; nothing about a character changes. <b>Arcade</b> is a fighting game's menus:

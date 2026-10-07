@@ -11,7 +11,7 @@ from types import SimpleNamespace
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from app import cli, engine, errors, paint, server, vendor  # noqa: E402
+from app import cli, engine, errors, paint, server, update, vendor  # noqa: E402
 from app.engine import Project, manifest  # noqa: E402
 
 
@@ -1602,6 +1602,164 @@ class FirstRun(unittest.TestCase):
         self.assertEqual((done["installed"], done["log"].strip(), [e["status"] for e in events]), ("installing nothing", "fine", ["running", "done"]))
 
 
+class Updates(unittest.TestCase):
+    """The Update button: the app's own code replaced from the published zip, the user's things left alone."""
+
+    OLD, NEW = "a" * 40, "b" * 40
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.app = Path(self.folder.name)
+        self.real = update.REPO, update.CONFIG, update.VERSION
+        update.REPO, update.CONFIG, update.VERSION = self.app, self.app / "update.json", self.app / ".oc2vrm_version.json"
+        self.real_number, update.NUMBER = update.NUMBER, self.app / "VERSION"
+        update.NUMBER.write_text("1\n")
+        for name, text in {"app/server.py": "old server", "app/engine.py": "engine", "app/gone.py": "dropped by the next version",
+                           "OC2VRM.bat": "old launcher", "out/Mine/character.json": "my character", "tools/blender/blender.exe": "blender",
+                           "music.mp3": "my tune"}.items():
+            (self.app / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.app / name).write_text(text)
+        update.CONFIG.write_text(json.dumps({"repo": "Owner/Name", "ref": "testers", "token": "key"}))
+        update.VERSION.write_text(json.dumps({"commit": self.OLD, "files": ["app/server.py", "app/engine.py", "app/gone.py", "OC2VRM.bat"]}))
+        self.asked = []
+
+    def tearDown(self):
+        update.REPO, update.CONFIG, update.VERSION = self.real
+        update.NUMBER = self.real_number
+        self.folder.cleanup()
+
+    def github(self, files=None, latest=None, fail=None):
+        """A stand-in for api.github.com: the newest commit of the branch, and that commit's zip."""
+        import io
+        import urllib.error
+        import zipfile
+        files = files if files is not None else {"app/server.py": "new server", "app/engine.py": "engine", "app/new.py": "added",
+                                                 "OC2VRM.bat": "new launcher", "out/Mine/character.json": "not theirs to write",
+                                                 "update.json": "nor this", "README.md": "read me"}
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w") as archive:
+            for name, text in files.items():
+                archive.writestr(f"Owner-Name-bbbbbbb/{name}", text)
+
+        def open_url(request, timeout=None):
+            self.asked.append((request.full_url, request.get_header("Authorization")))
+            if fail:
+                raise urllib.error.HTTPError(request.full_url, fail, "no", {}, None)
+            if "/contents/VERSION" in request.full_url:
+                return io.BytesIO(b"2\n")
+            return io.BytesIO((latest or self.NEW).encode() if "/commits/" in request.full_url else data.getvalue())
+        return open_url
+
+    def test_a_newer_version_is_seen_and_asked_for_with_the_key(self):
+        found = update.check(self.github())
+        self.assertEqual((found["configured"], found["current"], found["latest"], found["available"], found["how"]),
+                         (True, "aaaaaaa", "bbbbbbb", True, "zip"))
+        self.assertEqual(self.asked[0], ("https://api.github.com/repos/Owner/Name/commits/testers", "Bearer key"))
+        # the version people say: this copy's own number, and the published one's
+        self.assertEqual((found["version"], found["latest_version"]), ("v1", "v2"))
+        self.assertFalse(update.check(self.github(latest=self.OLD))["available"])
+        self.assertIn("the key in update.json was refused", update.check(self.github(fail=401))["error"])
+        update.CONFIG.unlink()
+        asked = len(self.asked)
+        self.assertEqual((update.check(self.github())["configured"], len(self.asked)), (False, asked))  # no file, nothing asked
+
+    def test_the_code_is_replaced_and_the_users_things_are_left_alone(self):
+        events = []
+        done = update.apply(on_event=events.append, open_url=self.github())
+        self.assertEqual((done["updated"], done["was"], done["now"], done["restart"]), (True, "aaaaaaa", "bbbbbbb", True))
+        read = lambda name: (self.app / name).read_text()  # noqa: E731
+        self.assertEqual((read("app/server.py"), read("app/new.py"), read("README.md")), ("new server", "added", "read me"))
+        # the user's own: a character, Blender, the key's file, a tune
+        self.assertEqual((read("out/Mine/character.json"), read("tools/blender/blender.exe"), read("music.mp3")),
+                         ("my character", "blender", "my tune"))
+        self.assertEqual(json.loads(read("update.json"))["token"], "key")
+        # a launcher isn't written over while it may be running: the new one waits beside it
+        self.assertEqual((read("OC2VRM.bat"), read("OC2VRM.bat.new")), ("old launcher", "new launcher"))
+        # what the last version brought and this one doesn't is gone, and kept in the backup with what was replaced
+        self.assertFalse((self.app / "app" / "gone.py").exists())
+        backup = Path(done["backup"])
+        self.assertEqual(((backup / "app" / "server.py").read_text(), (backup / "app" / "gone.py").read_text()),
+                         ("old server", "dropped by the next version"))
+        self.assertEqual((done["files"], done["removed"]), (4, 1))  # engine.py was the same and wasn't touched
+        self.assertEqual(update.current()["commit"], self.NEW)
+        self.assertEqual(engine.app_version() if update.REPO == engine.REPO else update.current()["short"], "bbbbbbb")
+        # again: nothing to do
+        self.assertEqual(update.apply(open_url=self.github())["updated"], False)
+
+    def test_a_zip_that_is_not_the_app_changes_nothing(self):
+        with self.assertRaisesRegex(update.UpdateFailed, "isn't this app"):
+            update.apply(open_url=self.github(files={"README.md": "something else"}))
+        self.assertEqual((self.app / "app" / "server.py").read_text(), "old server")
+        self.assertEqual(update.current()["commit"], self.OLD)
+        with self.assertRaisesRegex(update.UpdateFailed, "wasn't found with this key"):
+            update.apply(open_url=self.github(fail=404))
+
+    def test_the_testers_zip_holds_the_committed_files_and_says_which_commit(self):
+        import shutil
+        import zipfile
+        update.REPO, update.CONFIG, update.VERSION = self.real
+        if not shutil.which("git") or not (update.REPO / ".git").exists():
+            self.skipTest("not a git checkout")
+        packed = update.pack(self.app / "dist")
+        with zipfile.ZipFile(packed["zip"]) as archive:
+            names = set(archive.namelist())
+            version = json.loads(archive.read("OC2VRM/.oc2vrm_version.json"))
+        self.assertTrue({"OC2VRM/OC2VRM.bat", "OC2VRM/app/server.py", "OC2VRM/requirements.txt"} <= names)
+        self.assertEqual(version["commit"][:7], packed["commit"])
+        self.assertIn("app/server.py", version["files"])
+        self.assertFalse(any(n.startswith(("OC2VRM/out/", "OC2VRM/tools/", "OC2VRM/samples/")) for n in names))
+
+
+class ServerAnswers(unittest.TestCase):
+    """A request that goes wrong is answered with why, and kept: the page once said only "Failed to fetch"."""
+
+    def setUp(self):
+        import threading
+        self.folder = tempfile.TemporaryDirectory()
+        self.real = server.ERROR_LOG, server.api
+        server.ERROR_LOG = Path(self.folder.name) / "app_errors.log"
+        self.served, self.port = server._listen(0)
+        threading.Thread(target=self.served.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.served.shutdown()
+        self.served.server_close()
+        server.ERROR_LOG, server.api = self.real
+        self.folder.cleanup()
+
+    def get(self, route):
+        import urllib.error
+        import urllib.request
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/{route}", timeout=20) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            return error.code, json.load(error)
+
+    def test_an_unexpected_failure_is_said_and_written_down(self):
+        def broken(route, query, body):
+            raise RuntimeError("the disk went away")
+        server.api = broken
+        code, said = self.get("projects")
+        self.assertEqual(code, 500)
+        self.assertIn("RuntimeError: the disk went away", said["error"])
+        log = server.ERROR_LOG.read_text(encoding="utf-8")
+        self.assertIn("projects", log)
+        self.assertIn("Traceback", log)
+
+    def test_one_character_that_cannot_be_read_does_not_empty_the_list(self):
+        real = server.Project
+        try:
+            class Broken:
+                def __init__(self, path):
+                    raise TypeError("a state file nobody expected")
+            server.Project = Broken
+            self.assertEqual(server._summary(Path(self.folder.name) / "character.json"), {})
+            self.assertIn("a state file nobody expected", server.ERROR_LOG.read_text(encoding="utf-8"))
+        finally:
+            server.Project = real
+
+
 class Server(unittest.TestCase):
     def test_serves_only_model_and_output_files_inside_the_repository(self):
         inside = REPO / "viewer" / "index.html"
@@ -1890,10 +2048,10 @@ class Pages(unittest.TestCase):
             self.skipTest(str(error))
         served, port = server._listen(0)
         threading.Thread(target=served.serve_forever, daemon=True).start()
-        # a computer that has been through "Get set up", whatever this one has: the app then opens on Characters
-        folder = tempfile.TemporaryDirectory()
-        real_settings, engine.SETTINGS = engine.SETTINGS, Path(folder.name) / "settings.json"
-        engine.SETTINGS.write_text(json.dumps({**engine._read_json(real_settings, {}), "welcomed": True}))
+        # a computer with everything a build needs, whatever this one has: the app then opens on Characters
+        real_setup = engine.setup
+        ready = lambda given=None: {**real_setup(given), "ready": True, "checks": [c for c in real_setup(given)["checks"] if c["state"] != "bad"]}  # noqa: E731
+        engine.setup = ready
 
         def open_page(look):
             with tempfile.TemporaryDirectory() as profile:
@@ -1906,16 +2064,17 @@ class Pages(unittest.TestCase):
         try:
             for look in ("arcade", "classic"):
                 pages[look] = open_page(look)
-            # ... and one that hasn't starts on "Get set up", with its lines drawn
-            engine.SETTINGS.write_text(json.dumps({**engine._read_json(real_settings, {}), "welcomed": False}))
+            # ... and one without a Blender opens on Setup, with the line and its button drawn
+            missing = {"name": "Blender", "state": "bad", "text": "Blender 4.2 or later wasn't found", "fix": "", "action": "get_blender"}
+            engine.setup = lambda given=None: {**ready(given), "ready": False,
+                                               "checks": [missing, *(c for c in ready(given)["checks"] if c["name"] != "Blender")]}
             first = open_page("classic")
         finally:
             served.shutdown()
             served.server_close()
-            engine.SETTINGS = real_settings
-            folder.cleanup()
+            engine.setup = real_setup
         self.assertEqual([line for line in first.stderr.splitlines() if "CONSOLE" in line and "Uncaught" in line], [])
-        for mark in ('class="page on" id="start"', "Blender 4.2 or later", "App version"):
+        for mark in ('class="page on" id="setup"', "Blender 4.2 or later wasn't found", "Get Blender", "App version"):
             self.assertTrue(mark in first.stdout, f"first start: {mark}")
         self.assertNotIn('class="page on" id="home"', first.stdout)
         for look, done in pages.items():

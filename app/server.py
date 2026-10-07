@@ -19,12 +19,13 @@ import sys
 import threading
 import traceback
 import webbrowser
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import cli, engine, paint, vendor
+from . import cli, engine, paint, update, vendor
 from .engine import REPO, Cancelled, Project, StepFailed
 
 GUI = Path(__file__).resolve().parent / "gui"
@@ -42,7 +43,7 @@ mimetypes.add_type("application/wasm", ".wasm")  # a browser only compiles wasm 
 # The calls a GET may make: they only read. Everything else starts a run or changes a file and
 # needs the POST with the page's header, which another site open in the browser can't send
 # (an <img src=".../api/prune?manifest=..."> could otherwise delete a character's old runs).
-READ_ONLY = {"projects", "setup", "disk", "status", "manifest", "pieces", "renders", "sheets", "runs", "feedback_list",
+READ_ONLY = {"projects", "setup", "update_check", "disk", "status", "manifest", "pieces", "renders", "sheets", "runs", "feedback_list",
              "face", "movement_result", "springs_result", "events", "paint"}
 # How much of the running step's log the Progress pane shows.
 LOG_TAIL = 1500
@@ -123,6 +124,24 @@ def api(route, query, body):
         return JOBS.start(f"installing {body['name']}", lambda emit: engine.install_package(body["name"], on_event=emit))
     if route == "welcome":
         return engine.welcome(body.get("done", True))
+    # the Setup page's Update button: is a newer version published, get it, start again with it
+    if route == "update_check":
+        return update.check()
+    if route == "update":
+        def work(emit):
+            try:
+                return update.apply(on_event=emit)
+            except update.UpdateFailed as error:
+                raise StepFailed(str(error)) from None
+        return JOBS.start("updating the app", work)
+    if route == "restart":
+        if JOBS.running:
+            raise StepFailed(f"busy: {JOBS.running} is still running")
+        # only a launcher starts the app again (OC2VRM.bat, oc2vrm.sh): without one the user does
+        if not os.environ.get("OC2VRM_LAUNCHER"):
+            return {"restarting": False}
+        threading.Timer(0.5, lambda: os._exit(update.RESTART)).start()
+        return {"restarting": True}
     if route in ("use_blender", "forget_blender"):
         if JOBS.running:
             raise StepFailed(f"busy: {JOBS.running} is still running")
@@ -285,16 +304,33 @@ def _disk():
             "prunable": sum(c["prunable"] for c in characters), "other": max(0, total - inside)}
 
 
+# Where a request's unexpected failure is written down, newest last: what to send with a report.
+ERROR_LOG = REPO / "out" / "app_errors.log"
+
+
+def _log_error(what, text):
+    try:
+        ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(ERROR_LOG, "a", encoding="utf-8") as log:
+            log.write(f"--- {datetime.now().isoformat(timespec='seconds')} {what}\n{text}\n")
+    except OSError:
+        pass
+
+
 def _summary(manifest_path):
-    """A character card's facts; a manifest that can't be read still lists, without them."""
+    """A character card's facts; a character that can't be read still lists, without them: one
+    broken folder must not empty the whole Characters page."""
     try:
         summary = Project(manifest_path).summary()
+        # the pictures are drawn again by every build under the same names: the address says which drawing it is
+        posed = {name: dict(p, url=f"{_url(p['file'])}?t={int(Path(p['file']).stat().st_mtime)}") for name, p in summary["portraits"].items()}
+        return dict(summary, stills={name: _url(path) for name, path in summary["stills"].items()}, portraits=posed,
+                    **{key: _url(summary[key]) if summary[key] else None for key in ("picture", "portrait")})
     except (OSError, ValueError, KeyError):
         return {}
-    # the pictures are drawn again by every build under the same names: the address says which drawing it is
-    posed = {name: dict(p, url=f"{_url(p['file'])}?t={int(Path(p['file']).stat().st_mtime)}") for name, p in summary["portraits"].items()}
-    return dict(summary, stills={name: _url(path) for name, path in summary["stills"].items()}, portraits=posed,
-                **{key: _url(summary[key]) if summary[key] else None for key in ("picture", "portrait")})
+    except Exception:  # noqa: BLE001
+        _log_error(f"character {manifest_path}", traceback.format_exc())
+        return {}
 
 
 # A render folder is <run>_<step's blend>_<pose> (cli.cmd_render); older ones lack the run.
@@ -475,6 +511,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(api(route, query, body))
         except (StepFailed, ValueError, FileNotFoundError, KeyError) as error:
             self._json({"error": str(error)}, 400)
+        except ConnectionError:
+            pass  # the page left before the answer was written (closed, or reloaded): nobody to tell
+        except Exception as error:  # noqa: BLE001 -- said to the page and kept, not lost with the connection
+            # anything else used to end the request with no answer: the page said "Failed to fetch",
+            # listed no characters, and nothing anywhere said why
+            _log_error(route, traceback.format_exc())
+            self._json({"error": f"the app tripped over its own feet in \"{route}\" ({type(error).__name__}: {error}). "
+                                 f"The details are in {ERROR_LOG}"}, 500)
 
     def _model(self, query):
         """A listed character's source or reference model, wherever it lives on disk."""
@@ -553,7 +597,9 @@ def main():
     try:
         import webview  # noqa: F401
     except ImportError:
-        webbrowser.open(address)
+        # started again after an update: the page is still open in the browser and reloads itself
+        if not os.environ.get("OC2VRM_RESTARTED"):
+            webbrowser.open(address)
         server.serve_forever()
         return
     threading.Thread(target=server.serve_forever, daemon=True).start()

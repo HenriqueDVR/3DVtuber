@@ -32,7 +32,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from . import contracts, errors, face_guess, paint, vendor
+from . import contracts, errors, face_guess, paint, update, vendor
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
@@ -1602,13 +1602,13 @@ def setup(given=None):
 
 
 def app_version():
-    """The app's commit, short, with "+" when tracked files differ from it; "" without git. What a
-    tester quotes so a report can be traced to the code that made it."""
+    """The app's version as people say it and its commit, "v1 (6473e9a)", with "+" when tracked files
+    differ from that commit; "" when it can't be told. A git checkout says so itself, a packed copy (testers') reads the file its zip or its last
+    update wrote (update.current). What a tester quotes so a report can be traced to its code."""
     try:
-        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO, capture_output=True, text=True, timeout=20).stdout.strip()
-        changed = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=REPO,
-                                 capture_output=True, text=True, timeout=20).stdout.strip()
-        return commit + ("+" if commit and changed else "")
+        here = update.current()
+        code = here["short"] + ("+" if here["short"] and here["changed"] else "")
+        return f"{here['version']} ({code})" if here["version"] and code else here["version"] or code
     except Exception:  # noqa: BLE001 -- a label, never a reason to stop
         return ""
 

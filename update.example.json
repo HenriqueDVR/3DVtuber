@@ -1,0 +1,5 @@
+{
+  "repo": "Owner/Name",
+  "ref": "testers",
+  "token": "a read-only key for that one repository: never commit the real file"
+}

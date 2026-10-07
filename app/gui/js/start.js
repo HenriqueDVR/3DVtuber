@@ -1,6 +1,6 @@
-// Get set up: the first thing a new computer sees. What the app needs, in order, each with the button
-// that gets it; then where to begin. Drawn from the same checks as Setup (engine.setup).
-import { $, S, app, call, esc } from "./core.js";
+// The Setup page's checks: what the app needs, in order, each with the button that gets it. A computer
+// that lacks something a build needs opens on Setup (main.js); one that has it all never sees it unasked.
+import { $, S, app, esc } from "./core.js";
 import { ask, toast } from "./ui.js";
 import { loadSetup } from "./setup.js";
 
@@ -46,10 +46,8 @@ export function renderStart() {
     : `<p class="done">Nothing more to add.</p>`;
   $("start-warudo").innerHTML = s.warudo ? `<b class="done">✓ Warudo found</b><br>Finished avatars can be sent straight into its character list from the Build page.<br><span class="msg">${esc(s.warudo)}</span>`
     : `<b class="warn">! Warudo not found</b><br>Not needed to build. The Build page's “Send to Warudo” asks for its Characters folder the first time; VNyan and other apps load the .vrm file from wherever you keep it.`;
-  $("start-chip").textContent = s.ready ? "ready" : `${s.checks.filter((c) => c.state === "bad").length} to do`;
-  $("start-chip").className = `chip ${s.ready ? "good" : "bad"}`;
-  $("start-go").disabled = !s.ready;
-  $("start-go").title = s.ready ? "" : "the red lines above come first: a build can't run without them";
+  // offered once everything needed is there and no character is open yet: the way on from a first start
+  $("start-go").hidden = !s.ready || !!S.manifest;
   $("start-version").textContent = `App version ${s.app || "unknown"} · Python ${s.python} · ${s.version ? `Blender ${s.version}` : "no Blender"}`;
   document.querySelectorAll("[data-start]").forEach((b) => b.onclick = () => act(all[+b.dataset.start][0]));
 }
@@ -61,7 +59,7 @@ async function act(check) {
     toast("Install Blender from the page that opened (the LTS release is the tested one), then press “Check again”.", "good", { ms: 15000 });
     return;
   }
-  if (check.name === "Auto face marking") { app.go("setup"); return; }
+  if (check.name === "Auto face marking") { $("setup-detector").click(); return; }
   if (check.action === "vendor") { await app.job("vendor", {}); await loadSetup(); return; }
   const [title, text, ok] = CONFIRM[check.action] || [];
   if (!title || !await ask(title, { text, ok })) return;
@@ -72,15 +70,5 @@ async function act(check) {
   if (state?.result?.installed || state?.result?.ready) toast("Installed.", "good");
 }
 
-$("start-refresh").onclick = async () => { await loadSetup(); toast("Checked again."); };
-$("start-blender").onclick = () => app.go("setup");
-$("start-go").onclick = async () => {
-  try { await call("welcome", { done: true }); if (S.setup) S.setup.welcomed = true; } catch (e) { toast(e.message, "bad"); }
-  app.go(S.manifest ? "home" : "model");
-};
-$("start-skip").onclick = async () => {
-  try { await call("welcome", { done: true }); if (S.setup) S.setup.welcomed = true; } catch (e) { toast(e.message, "bad"); }
-  app.go("home");
-};
-$("setup-start").onclick = () => app.go("start");
+$("start-go").onclick = () => app.go("model");
 app.renderStart = renderStart;

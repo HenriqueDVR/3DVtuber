@@ -55,7 +55,7 @@ export function renderNav() {
   const moved = Object.keys(m?.joints || {}).length;
   const facePlaced = S.facePlaced ?? 0;
   // Setup says so only when something stops builds: a missing Blender or VRM Add-on
-  const setup = S.setup && !S.setup.ready ? ["to fix", "bad"] : ["", ""];
+  const setup = S.setup && !S.setup.ready ? ["to fix", "bad"] : S.update?.available ? ["update", "warn"] : ["", ""];
   const badges = !m ? { home: [S.projects.length || "", ""], setup } : {
     home: [S.projects.length, ""], setup,
     model: st?.improving ? ["a finished avatar", "info"] : steps.survey?.status === "done" ? ["surveyed", "good"] : ["survey", "warn"],

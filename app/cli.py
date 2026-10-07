@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import engine, face_guess, paint, sheet, vendor
+from . import engine, face_guess, paint, sheet, update, vendor
 from .engine import REPO, Project, StepFailed, manifest
 
 
@@ -32,6 +32,10 @@ def main(argv=None):
     p = sub.add_parser("detector", help="the face detector behind \"Place them for me\": where it is, or --install it")
     p.add_argument("--install", action="store_true", help="into tools/face_detector: about 250 MB to download, 1.5 GB on disk")
 
+    p = sub.add_parser("update", help="is a newer version of the app published (update.json says where)? --apply gets it")
+    p.add_argument("--apply", action="store_true", help="download it and put it in place (about 8 MB; out/ and tools/ are not touched)")
+    p = sub.add_parser("pack", help="the zip a tester starts from: the committed files, their version, and update.json when there is one")
+    p.add_argument("--out", type=Path, help="folder for the zip (default: dist/)")
     sub.add_parser("vendor", help="keep a copy of three.js, three-vrm and the face tracker with the app, so it runs offline (17 MB)")
 
     p = sub.add_parser("init", help="start a character manifest for a model")
@@ -197,6 +201,17 @@ def cmd_detector(args):
         return install_detector(on_event=events)
     found = face_guess.status()["python"]
     return {"python": found, "next": "" if found else "python -m app detector --install (about 250 MB to download, 1.5 GB on disk)"}
+
+
+def cmd_update(args):
+    if not args.apply:
+        return update.check()
+    events = lambda event: print(json.dumps(event, default=str), file=sys.stderr, flush=True)  # noqa: E731
+    return update.apply(on_event=events)
+
+
+def cmd_pack(args):
+    return update.pack(args.out)
 
 
 def cmd_vendor(args):
@@ -943,7 +958,7 @@ COMMANDS = {"init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_s
             "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "portraits": cmd_portraits, "sheet": cmd_sheet, "movement": cmd_movement, "springs": cmd_springs,
             "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "paint": cmd_paint, "duplicate": cmd_duplicate, "rename": cmd_rename, "hide": cmd_hide, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
             "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup,
-            "regress": cmd_regress, "vendor": cmd_vendor, "detector": cmd_detector, "warudo": cmd_warudo}
+            "regress": cmd_regress, "vendor": cmd_vendor, "update": cmd_update, "pack": cmd_pack, "detector": cmd_detector, "warudo": cmd_warudo}
 
 
 def _project(args):

@@ -88,8 +88,16 @@ document.querySelectorAll("[data-examples]").forEach((host) => {
     `<figure><img src="${src}" alt="${esc(text)}" loading="lazy" onerror="this.closest('figure').remove()"><figcaption>${esc(text)}</figcaption></figure>`).join("");
 });
 
-go(location.hash.slice(1) || "home");
-// a computer the app hasn't been set up on starts at "Get set up", unless a link named another page
-loadProjects().then(resume).then(loadSetup).then(() => {
-  if (S.setup && !S.setup.welcomed && ["", "home"].includes(location.hash.slice(1))) go("start");
-}).catch(failed);
+// A computer that lacks something a build needs (no Blender, no add-on) opens on Setup, where a button
+// gets each; one that has it all opens on Characters and never sees Setup unasked. Asked before the
+// first page shows: shown first, Characters flashed for a second before Setup took its place.
+const asked = location.hash.slice(1);
+if (asked && asked !== "home") {
+  go(asked);
+  loadProjects().then(resume).then(loadSetup).catch(failed);
+} else {
+  loadSetup().catch(failed).then(() => {
+    go(S.setup && !S.setup.ready ? "setup" : "home");
+    return loadProjects().then(resume);
+  }).catch(failed);
+}

@@ -61,4 +61,13 @@ if ! "$PY" -c 'import tkinter' >/dev/null 2>&1; then
   echo
 fi
 
-exec "$PY" -m app.server "$@"
+# The app asks to be started again (exit code 75) after it has updated itself. A new launcher is
+# waiting as oc2vrm.sh.new then: a script can't be written over while it runs, so it is taken here.
+export OC2VRM_LAUNCHER=1
+while :; do
+  "$PY" -m app.server "$@"
+  code=$?
+  [ "$code" -eq 75 ] || exit "$code"
+  export OC2VRM_RESTARTED=1
+  if [ -f "$0.new" ]; then mv "$0.new" "$0" && chmod +x "$0"; exec sh "$0" "$@"; fi
+done
