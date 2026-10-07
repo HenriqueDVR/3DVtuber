@@ -18,6 +18,8 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
+from . import trust
+
 FOLDER = Path(__file__).resolve().parent / "gui" / "vendor"
 SERVED = "/gui/vendor/"
 NPM = "https://cdn.jsdelivr.net/npm/"
@@ -68,7 +70,7 @@ def local(page):
     return page
 
 
-def fetch(on_event=None, open_url=urllib.request.urlopen):
+def fetch(on_event=None, open_url=trust.open_url):
     """Download every pinned file not kept yet; returns `status()` with what was fetched.
 
     Each goes to a .part file, is hashed as it arrives and only takes its name once the hash is

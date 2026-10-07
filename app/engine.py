@@ -32,7 +32,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from . import contracts, errors, face_guess, paint, update, vendor
+from . import contracts, errors, face_guess, paint, trust, update, vendor
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
@@ -1697,7 +1697,7 @@ def _unpack(archive, folder):
         packed.extractall(folder)
 
 
-def install_blender(on_event=None, open_url=urllib.request.urlopen, source=None, addon=True):
+def install_blender(on_event=None, open_url=trust.open_url, source=None, addon=True):
     """Fetch Blender into tools/blender (BLENDER_BUILDS), choose it for the builds and, with `addon`,
     have it install the VRM Add-on: everything a new computer lacks, at one press. Returns setup().
 
