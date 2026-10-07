@@ -23,6 +23,8 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
+from . import trust
+
 REPO = Path(__file__).resolve().parents[1]
 CONFIG = REPO / "update.json"
 # What a copy without git is: the commit it was made from and the files that came with it (so a
@@ -106,7 +108,7 @@ def _ask(settings, what, accept, open_url):
         raise UpdateFailed(f"couldn't reach the update: no connection to GitHub ({getattr(error, 'reason', error)})") from None
 
 
-def check(open_url=urllib.request.urlopen):
+def check(open_url=trust.open_url):
     """{"configured", "current", "latest", "available", "how"}: whether a newer version is published.
     Never raises: {"error": why} when the published version can't be asked for."""
     settings, here = config(), current()
@@ -136,7 +138,7 @@ def _guarded(name):
     return bool(parts) and ".." not in parts and not Path(name).is_absolute() and parts[0] not in KEPT and name not in KEPT_FILES
 
 
-def apply(on_event=None, open_url=urllib.request.urlopen):
+def apply(on_event=None, open_url=trust.open_url):
     """Fetch the published version and put it in place. Returns {"updated", "was", "now", "files",
     "removed", "restart"}; the app has to be started again to run the new code. Raises UpdateFailed."""
     emit = on_event or (lambda event: None)
@@ -213,8 +215,9 @@ def apply(on_event=None, open_url=urllib.request.urlopen):
 
 def pack(out_dir=None, name="OC2VRM"):
     """The zip a tester starts from: the committed files of this checkout, the version file that
-    says which commit they are, and update.json (with its key) when there is one beside the app.
-    Returns {"zip", "commit", "files", "megabytes", "with_key"}. Needs git."""
+    says which commit they are, and update.json (with its key) and the arcade look's song (music.mp3,
+    .ogg or .wav: the owner's file, not committed) when they are beside the app.
+    Returns {"zip", "commit", "files", "megabytes", "with_key", "music"}. Needs git."""
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, check=True).stdout.strip()
     listed = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True).stdout.split("\n")
     listed = sorted(n for n in listed if n)
@@ -229,5 +232,9 @@ def pack(out_dir=None, name="OC2VRM"):
                                                                "when": datetime.now().isoformat(timespec="seconds"), "files": listed}))
         if settings is not None:
             archive.writestr(f"{name}/{CONFIG.name}", json.dumps(settings, indent=2))
+        # the one the server plays (/music): the first of the three there is; stored, a song doesn't deflate
+        music = next((REPO / n for n in KEPT_FILES if n.startswith("music.") and (REPO / n).is_file()), None)
+        if music:
+            archive.write(music, f"{name}/{music.name}", zipfile.ZIP_STORED)
     return {"zip": str(target), "commit": commit[:7], "files": len(listed), "megabytes": round(target.stat().st_size / 2**20, 1),
-            "with_key": bool(settings and settings.get("token"))}
+            "with_key": bool(settings and settings.get("token")), "music": music.name if music else ""}

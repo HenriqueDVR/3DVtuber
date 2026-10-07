@@ -1594,6 +1594,35 @@ class FirstRun(unittest.TestCase):
     def test_the_addon_is_installed_by_blender_itself(self):
         self.assertEqual(engine.addon_command("b.exe"), ["b.exe", "--online-mode", "--command", "extension", "install", "--sync", "--enable", "vrm"])
 
+    def test_a_certificate_refused_on_windows_is_asked_for_again_against_the_roots(self):
+        # blender.org's good certificate was refused for an expired intermediate Windows had kept
+        import ssl
+        import urllib.error
+        import urllib.request
+        from app import trust
+
+        def refused(why):
+            def first(request, timeout=None):
+                raise urllib.error.URLError(why)
+            return first
+        real, real_system, again = urllib.request.urlopen, trust.sys.platform, []
+        urllib.request.urlopen = lambda request, timeout=None, context=None: again.append((request, timeout, context)) or "answer"
+        try:
+            trust.sys.platform = "win32"
+            if hasattr(ssl, "enum_certificates"):
+                self.assertEqual(trust.open_url("https://x", timeout=5, first=refused(ssl.SSLCertVerificationError("expired"))), "answer")
+                self.assertEqual(again[0][:2], ("https://x", 5))
+                self.assertEqual((again[0][2].verify_mode, again[0][2].check_hostname), (ssl.CERT_REQUIRED, True))
+            # no connection, or a refusal on a system whose list is roots already, is no reason to ask again
+            with self.assertRaises(urllib.error.URLError):
+                trust.open_url("https://x", first=refused(OSError("no route")))
+            trust.sys.platform = "linux"
+            with self.assertRaises(urllib.error.URLError):
+                trust.open_url("https://x", first=refused(ssl.SSLCertVerificationError("expired")))
+            self.assertEqual(len(again), 1 if hasattr(ssl, "enum_certificates") else 0)
+        finally:
+            urllib.request.urlopen, trust.sys.platform = real, real_system
+
     def test_a_failed_install_says_what_the_command_said(self):
         with self.assertRaisesRegex(engine.StepFailed, "installing nothing failed \\(exit code 3\\)(.|\\n)*no such thing"):
             engine.install([sys.executable, "-c", "import sys; print('no such thing'); sys.exit(3)"], "installing nothing")
@@ -1708,6 +1737,9 @@ class Updates(unittest.TestCase):
         self.assertEqual(version["commit"][:7], packed["commit"])
         self.assertIn("app/server.py", version["files"])
         self.assertFalse(any(n.startswith(("OC2VRM/out/", "OC2VRM/tools/", "OC2VRM/samples/")) for n in names))
+        # the owner's song goes with it when there is one beside the app, though it is never committed
+        self.assertEqual(packed["music"], next((n for n in ("music.mp3", "music.ogg", "music.wav") if (update.REPO / n).is_file()), ""))
+        self.assertEqual(f"OC2VRM/{packed['music']}" in names, bool(packed["music"]))
 
 
 class ServerAnswers(unittest.TestCase):
@@ -2050,8 +2082,11 @@ class Pages(unittest.TestCase):
         threading.Thread(target=served.serve_forever, daemon=True).start()
         # a computer with everything a build needs, whatever this one has: the app then opens on Characters
         real_setup = engine.setup
-        ready = lambda given=None: {**real_setup(given), "ready": True, "checks": [c for c in real_setup(given)["checks"] if c["state"] != "bad"]}  # noqa: E731
+        ready = lambda given=None: {**real_setup(given), "ready": True, "welcomed": True, "checks": [c for c in real_setup(given)["checks"] if c["state"] != "bad"]}  # noqa: E731
         engine.setup = ready
+        # (the page says a first start was seen: not written into this computer's settings)
+        real_welcome, welcomes = engine.welcome, []
+        engine.welcome = lambda done=True: welcomes.append(done) or {"welcomed": bool(done)}
 
         def open_page(look):
             with tempfile.TemporaryDirectory() as profile:
@@ -2069,10 +2104,19 @@ class Pages(unittest.TestCase):
             engine.setup = lambda given=None: {**ready(given), "ready": False,
                                                "checks": [missing, *(c for c in ready(given)["checks"] if c["name"] != "Blender")]}
             first = open_page("classic")
+            # ... and one with everything, started for the first time, opens on Setup once and says so
+            before = len(welcomes)
+            engine.setup = lambda given=None: {**ready(given), "welcomed": False}
+            new = open_page("classic")
+            greeted = welcomes[before:]
         finally:
             served.shutdown()
             served.server_close()
-            engine.setup = real_setup
+            engine.setup, engine.welcome = real_setup, real_welcome
+        self.assertEqual(welcomes[:before], [], "a first start said by a page that wasn't one")
+        self.assertEqual(greeted, [True])
+        self.assertIn('class="page on" id="setup"', new.stdout)
+        self.assertNotIn('id="start-go" hidden', new.stdout)
         self.assertEqual([line for line in first.stderr.splitlines() if "CONSOLE" in line and "Uncaught" in line], [])
         for mark in ('class="page on" id="setup"', "Blender 4.2 or later wasn't found", "Get Blender", "App version"):
             self.assertTrue(mark in first.stdout, f"first start: {mark}")

@@ -259,14 +259,16 @@ SHA-256 (`app/vendor.py`), so the app needs no internet connection.
 ## First start
 
 A computer that lacks something a build needs opens on **Setup** (`main.js`; its check rows are
-`gui/js/start.js`); one that has it all opens on Characters. The rows are drawn from `engine.setup()`: a check that a button can fix carries
+`gui/js/start.js`); one that has it all opens on Setup once, its first start (`welcomed` false), and on Characters after. The rows are drawn from `engine.setup()`: a check that a button can fix carries
 `action` (`install_blender`, Windows and Linux x64: `engine.install_blender` downloads the build in
 `engine.BLENDER_BUILDS` from blender.org into `tools/blender`, checks its pinned SHA-256, unpacks it
 as a portable copy, chooses it and installs the add-on in it; `get_blender` elsewhere (macOS) opens
 blender.org; `install_addon` has
 the chosen Blender install the VRM Add-on from its extensions site, `engine.addon_command`;
 `install:<package>` pip-installs one of `engine.PACKAGES`; `vendor` keeps the pages' libraries).
-Each install is a download: it runs only when the user presses its button and confirms. `welcome`
+Each install is a download: it runs only when the user presses its button and confirms. The app's
+own downloads go through `app/trust.py` (`open_url`): a certificate Python refuses on Windows for an
+expired intermediate kept in Windows' store is checked once more against the roots alone. `welcome`
 (POST) remembers the page was finished (`out/settings.json`, `welcomed`). `OC2VRM.bat` offers
 Python (winget) and Pillow before the app starts; `oc2vrm.sh` (Linux, macOS; `OC2VRM.command` for
 Finder) says how to get Python and offers Pillow. A new Blender LTS means new `BLENDER_ZIP` and
@@ -283,7 +285,7 @@ branch testers follow) and `token`, a fine-grained key the owner makes with read
 this one repository's contents.
 
 ```bash
-python -m app pack                 # dist/OC2VRM-<commit>.zip: the committed files, their version, update.json
+python -m app pack                 # dist/OC2VRM-<commit>.zip: the committed files, their version, update.json, music.* if there
 python -m app update               # is a newer commit published on that branch?
 python -m app update --apply       # get it (the Setup page's Update button)
 ```
