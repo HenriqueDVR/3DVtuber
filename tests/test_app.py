@@ -1487,6 +1487,43 @@ class FirstRun(unittest.TestCase):
         finally:
             engine.REPO, engine.blender_version, engine.free_disk = real
 
+    def test_a_blender_whose_folder_names_no_version_is_asked(self):
+        # macOS: /Applications/Blender.app/Contents/MacOS/Blender. By its folder alone it was never found
+        real = engine.blender_version, engine.installed_blenders, engine.portable_blenders, engine.vrm_addon_version
+        mac = Path(self.folder.name) / "Blender.app" / "Contents" / "MacOS" / "Blender"
+        mac.parent.mkdir(parents=True)
+        mac.write_text("")
+        asked = []
+        try:
+            engine.blender_version = lambda path: asked.append(str(path)) or "5.2.2"
+            engine.installed_blenders, engine.portable_blenders = lambda: [mac], lambda: []
+            engine.vrm_addon_version = lambda path, version: "4.7.2"
+            self.assertEqual(engine._folder_version(mac), (5, 2, 2))
+            self.assertEqual(engine._folder_version(Path("/opt/blender-4.5.3-linux-x64/blender")), (4, 5, 3))
+            self.assertEqual(len(asked), 1)  # a folder that names its version isn't asked
+            listed = [b for b in engine.known_blenders() if Path(b["path"]) == mac]
+            self.assertEqual([(b["version"], b["series"], b["tested"]) for b in listed], [("5.2.2", "5.2", True)])
+        finally:
+            engine.blender_version, engine.installed_blenders, engine.portable_blenders, engine.vrm_addon_version = real
+
+    def test_on_a_mac_browse_asks_the_systems_own_dialog(self):
+        # Tk off the first thread takes Python down on macOS, and the server answers on another
+        real = server.sys, server.subprocess.run
+        ran = []
+
+        def run(command, **kwargs):
+            ran.append(command)
+            return SimpleNamespace(stdout="/Users/t/model.fbx" + chr(10), returncode=0)
+        try:
+            server.sys, server.subprocess.run = SimpleNamespace(platform="darwin"), run
+            self.assertEqual(server._browse("model"), "/Users/t/model.fbx")
+            self.assertEqual(ran[0][:2], ["osascript", "-e"])
+            self.assertIn('choose file with prompt "Choose the model"', ran[0][2])
+            server.subprocess.run = lambda command, **kwargs: SimpleNamespace(stdout="", returncode=1)  # Cancel
+            self.assertIsNone(server._browse("rig"))
+        finally:
+            server.sys, server.subprocess.run = real
+
     def test_which_computers_the_app_fetches_blender_for(self):
         self.assertIs(engine.blender_build("win32", "AMD64"), engine.BLENDER_ZIP)
         self.assertIs(engine.blender_build("linux", "x86_64"), engine.BLENDER_TAR)

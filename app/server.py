@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import traceback
 import webbrowser
@@ -352,13 +353,35 @@ BROWSE = {"model": ("Model", "*.fbx *.glb *.gltf *.obj *.vrm"), "rig": ("Tripo r
 BROWSE_FROM = {"blender": engine.WINDOWS_BLENDER.parent}
 
 
+def _browse_mac(title, start):
+    """macOS's own open-file dialog, through osascript. Tk may only be used from a program's first
+    thread there, and the server answers on another: a Tk dialog from here takes Python down."""
+    script = (f'POSIX path of (choose file with prompt "Choose the {title.lower()}" '
+              f'default location POSIX file "{start}")')
+    done = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    return done.stdout.strip() or None  # pressing Cancel is an error to osascript: nothing chosen
+
+
 def _browse(kind):
     """A native open-file dialog, from the server: a web page can't learn a file's real path."""
-    import tkinter
-    from tkinter import filedialog
+    if sys.platform == "darwin":
+        title, _ = BROWSE.get(kind, BROWSE["model"])
+        start = BROWSE_FROM.get(kind, REPO / "samples")
+        return _browse_mac(title, start if start.is_dir() else Path.home())
+    # a Linux Python without python3-tk, or a computer with no screen: said to the page, where the
+    # path can be typed. Unsaid, the request died in the server and the button did nothing
+    try:
+        import tkinter
+        from tkinter import filedialog
+    except ImportError:
+        raise ValueError("this Python has no file dialog (tkinter): type the path instead. "
+                         "Linux: install python3-tk and start the app again") from None
     title, pattern = BROWSE.get(kind, BROWSE["model"])
     start = BROWSE_FROM.get(kind, REPO / "samples")
-    root = tkinter.Tk()
+    try:
+        root = tkinter.Tk()
+    except tkinter.TclError as error:
+        raise ValueError(f"no file dialog can open here ({error}): type the path instead") from None
     root.withdraw()
     root.attributes("-topmost", True)  # over the app's window, not behind it
     try:

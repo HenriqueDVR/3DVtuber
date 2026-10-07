@@ -211,8 +211,12 @@ def installed_blenders():
 
 
 def _folder_version(path):
-    # "Blender 4.2", "blender-4.5.3-windows-x64": the folder names the series, which is what matters
+    # "Blender 4.2", "blender-4.5.3-windows-x64": the folder names the series, which is what matters.
+    # A folder that names none is asked: macOS keeps every Blender in Blender.app/Contents/MacOS, and
+    # read by its folder alone no Blender was ever found on a Mac
     found = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", Path(path).parent.name)
+    if not found:
+        found = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", blender_version(path) or "")
     return tuple(int(g or 0) for g in found.groups()) if found else None
 
 
@@ -1489,7 +1493,8 @@ def known_blenders():
         # a found one is named by its folder ("4.2", "5.2.2"): asking each Blender itself takes
         # seconds. An added one may sit in any folder, so it is asked, once
         named = re.search(r"\d+\.\d+(?:\.\d+)?", Path(path).parent.name)
-        version = (None if missing else blender_version(path)) if added else named.group(0) if named else None
+        # ... as is one whose folder names no version (macOS: Blender.app/Contents/MacOS)
+        version = (None if missing else blender_version(path)) if added or not named else named.group(0)
         if not added and numbers(version) + (0, 0) < MIN_BLENDER:
             continue
         series = ".".join(version.split(".")[:2]) if version else None
@@ -1775,7 +1780,14 @@ def install_vrm_addon(given=None, on_event=None):
 
 
 def _installed(module):
-    """Whether the Python running the app has this package."""
+    """Whether the Python running the app has this package. tkinter is imported to find out: a
+    Linux Python without python3-tk still has the tkinter folder, and only importing it fails."""
+    if module == "tkinter":
+        try:
+            import tkinter  # noqa: F401
+        except ImportError:
+            return False
+        return True
     return importlib.util.find_spec(module) is not None
 
 
