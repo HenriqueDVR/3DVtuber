@@ -56,6 +56,9 @@ Face page is next (a button in the message; the page isn't changed under the use
 build" there runs the chain. Every choice on the Face page is saved as it is made, the eyes'
 choice sits above the points it decides (covered eyes: the mouth's four only), and the redrawn
 free mouth is the default (`mouth_fix`, `manifest.OPTIONS`).
+The marker draws the open mouth's outline at the chosen size (an estimate from `face_rig.MOUTH_SHAPES`,
+`setup.html` `drawMouth`). Setup's "open the app in" (`engine.open_in`, `settings.json`) chooses
+the app's own window or the browser, from the next start.
 
 `prepare` makes the **face patch**: a copy of the model whose face has its own sharp texture,
 mapped from a front view. The patched copy becomes the manifest's `source`; the model before it

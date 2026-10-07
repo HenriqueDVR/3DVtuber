@@ -1403,6 +1403,24 @@ class FirstRun(unittest.TestCase):
         engine.SETTINGS = self.real_settings
         self.folder.cleanup()
 
+    def test_the_app_opens_where_the_setup_page_says(self):
+        real = engine._installed
+        try:
+            engine._installed = lambda module: True
+            self.assertEqual(engine.open_in(), {"open_in": "window", "can_window": True})
+            self.assertTrue(server._own_window())
+            self.assertEqual(engine.open_in("browser")["open_in"], "browser")
+            self.assertEqual(engine.setup()["open_in"], "browser")
+            self.assertFalse(server._own_window())
+            engine.open_in("window")
+            # its own window is pywebview's: without it the browser opens, whatever is chosen
+            engine._installed = lambda module: module != "webview"
+            self.assertFalse(server._own_window())
+            with self.assertRaisesRegex(ValueError, "its own window"):
+                engine.open_in("a tab")
+        finally:
+            engine._installed = real
+
     def test_the_first_start_is_remembered_once_it_is_done(self):
         self.assertFalse(engine.setup()["welcomed"])
         self.assertEqual(engine.welcome(), {"welcomed": True})

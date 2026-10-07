@@ -1603,6 +1603,7 @@ def setup(given=None):
             "checks": checks, "ready": not any(c["state"] == "bad" for c in checks),
             # for the first-run page: whether it was finished, and what a tester quotes in a report
             "welcomed": bool(_read_json(SETTINGS, {}).get("welcomed")), "python": platform.python_version(),
+            **open_in(),
             "warudo": str(warudo_folder() or ""), "app": app_version()}
 
 
@@ -1616,6 +1617,20 @@ def app_version():
         return f"{here['version']} ({code})" if here["version"] and code else here["version"] or code
     except Exception:  # noqa: BLE001 -- a label, never a reason to stop
         return ""
+
+
+def open_in(choice=None):
+    """Where the app opens: "window" (its own, with pywebview; the default) or "browser". With a
+    `choice`, keeps it for the next start. {"open_in", "can_window"}: without pywebview the browser
+    is what opens, whatever is chosen."""
+    settings = _read_json(SETTINGS, {})
+    if choice is not None:
+        if choice not in ("window", "browser"):
+            raise ValueError("the app opens in its own window (window) or in the browser (browser)")
+        settings["open_in"] = choice
+        SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        _write_json(SETTINGS, settings)
+    return {"open_in": "browser" if settings.get("open_in") == "browser" else "window", "can_window": _installed("webview")}
 
 
 def welcome(done=True):

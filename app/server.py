@@ -124,6 +124,8 @@ def api(route, query, body):
         return JOBS.start(f"installing {body['name']}", lambda emit: engine.install_package(body["name"], on_event=emit))
     if route == "welcome":
         return engine.welcome(body.get("done", True))
+    if route == "open_in":
+        return engine.open_in(body.get("value"))
     # the Setup page's Update button: is a newer version published, get it, start again with it
     if route == "update_check":
         return update.check()
@@ -594,9 +596,7 @@ def main():
     if args.no_window:
         server.serve_forever()
         return
-    try:
-        import webview  # noqa: F401
-    except ImportError:
+    if not _own_window():
         # started again after an update: the page is still open in the browser and reloads itself
         if not os.environ.get("OC2VRM_RESTARTED"):
             webbrowser.open(address)
@@ -638,13 +638,19 @@ def _ours(port):
         return False
 
 
+def _own_window():
+    """Whether the app opens in its own window: pywebview is there and the Setup page's choice
+    ("open the app in") isn't the browser."""
+    choice = engine.open_in()
+    return choice["open_in"] == "window" and choice["can_window"]
+
+
 def _show(address):
     """The page in a pywebview window (back once it is closed), else in the browser."""
-    try:
-        import webview
-    except ImportError:
+    if not _own_window():
         webbrowser.open(address)
         return
+    import webview
     webview.create_window("OC2VRM", address, width=1400, height=900)
     webview.start()
 

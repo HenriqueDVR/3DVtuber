@@ -12,8 +12,17 @@ export async function loadSetup() {
   app.renderAll();
 }
 
+// Where the app opens, from its next start: its own window (pywebview) or a tab of the browser.
+$("open-in").onchange = async () => {
+  try { Object.assign(S.setup, await call("open_in", { value: $("open-in").value })); renderSetup(); }
+  catch (e) { say("open-in-msg", e.message, true); }
+};
+
 function renderSetup() {
   const s = S.setup, bad = s.checks.filter((c) => c.state === "bad").length;
+  $("open-in").value = s.open_in;
+  say("open-in-msg", s.open_in === "window" && !s.can_window ? "from the next start, once pywebview is installed (“Own window” above: Install it); until then it opens in your browser"
+    : "counts from the next start");
   $("setup-chip").textContent = bad ? `${bad} to fix` : "ready";
   $("setup-chip").className = `chip ${bad ? "bad" : "good"}`;
   // found by the app (installed, or a portable copy in tools\blender) or added by hand below
