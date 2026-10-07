@@ -36,6 +36,10 @@ LOOK_SHAPE_KEYS = {
 # Where the eyes look from, kept on the armature for the export (world, Blender axes).
 LOOK_AT_PROPERTY = "vtuber_maker_look_at"
 
+# On the armature of a .vrm taken in as it was (improve.py): {the pipeline's bone name: the name the
+# file had}, as JSON. The export gives the joints their own names back.
+BONE_NAMES_PROPERTY = "vtuber_maker_bone_names"
+
 # MToon shadows: the texture darkened with a slight cool tint, like cel-shaded anime art.
 SHADE_TINT = (0.78, 0.74, 0.86)
 UNTEXTURED_SHADE = 0.75
@@ -255,6 +259,17 @@ def export(filepath, armature):
         origin = (origin.x, origin.z, -origin.y)
     normalize_bones(filepath, look_at_origin=origin)
     verify(filepath, armature)
+    if armature.get(BONE_NAMES_PROPERTY):
+        rename_nodes(filepath, json.loads(armature[BONE_NAMES_PROPERTY]))
+
+
+def rename_nodes(filepath, names):
+    """Rename a written .vrm's nodes ({name now: name wanted}). The humanoid, springs and skins
+    name joints by number, so nothing else in the file changes."""
+    gltf, binary = _read_glb(filepath)
+    for node in gltf["nodes"]:
+        node["name"] = names.get(node.get("name"), node.get("name"))
+    _write_glb(filepath, gltf, binary)
 
 
 def verify(filepath, armature):
@@ -264,7 +279,8 @@ def verify(filepath, armature):
     The .blend can be right and the file wrong: the add-on's "Auto" pose replaced the baked rest
     pose in every export until 2026-09-22, and a session of finger variants all tracked alike
     before anyone looked in the file. Joints are matched to bones by name; assumes the armature
-    is in the rest pose the file was exported with (it is, straight after `export`).
+    is in the rest pose the file was exported with (it is, straight after `export`). A joint a
+    node constraint is on or reads may rest turned (`normalize_bones` says which and why).
     """
     gltf, _ = _read_glb(filepath)
     nodes = gltf["nodes"]
@@ -277,9 +293,13 @@ def verify(filepath, armature):
         return worlds[i]
 
     turned, moved = [], []
+    held = constraint_nodes(nodes)
     for joint in sorted({j for skin in gltf.get("skins", []) for j in skin["joints"]}):
         name = nodes[joint].get("name")
-        if not np.allclose(_node_matrix(nodes[joint])[:3, :3], np.eye(3), atol=1e-6):
+        # a joint under one a constraint holds turned is turned back against it, and rests on the
+        # model's axes as any other does
+        if (joint not in held and not np.allclose(_node_matrix(nodes[joint])[:3, :3], np.eye(3), atol=1e-6)
+                and not np.allclose(world(joint)[:3, :3], np.eye(3), atol=1e-5)):
             turned.append(name)
         bone = armature.data.bones.get(name)
         if bone is None:
@@ -306,13 +326,16 @@ def normalize_bones(filepath, look_at_origin=None):
     they were the model's (a VRoid hand, with no node rotations, tracks cleanly), so on ours
     every finger twisted, the middle ones bunched and the little finger splayed (2026-09-22).
     Joints keep their world positions, the skin's inverse bind matrices are rebuilt so the mesh
-    is untouched, and spring-bone collider offsets (joint-local) are carried over. Refuses a file
-    with node constraints, whose axes are joint-local too.
+    is untouched, and spring-bone collider offsets (joint-local) are carried over.
+
+    Node constraints (a .vrm taken in from elsewhere: twist and aim helpers) name axes in the
+    joint's own frame. A roll axis is renamed to the model axis it lies along; where that can't
+    say the same thing (an aim joint, whose axis must point at its source at rest; a roll axis off
+    every model axis; a rotation copied between two frames that differ) the joints keep the frames
+    they had (`_held_by_constraints`).
     """
     gltf, binary = _read_glb(filepath)
     nodes = gltf["nodes"]
-    if any("VRMC_node_constraint" in n.get("extensions", {}) for n in nodes):
-        raise ValueError("node constraints would need their axes rewritten; not normalizing")
     parent = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
     old = [None] * len(nodes)
 
@@ -324,6 +347,7 @@ def normalize_bones(filepath, look_at_origin=None):
     for i in range(len(nodes)):
         world(i)
     joints = {j for skin in gltf.get("skins", []) for j in skin["joints"]}
+    joints -= _held_by_constraints(nodes, old, joints)
     new = [np.eye(4) for _ in nodes]
     for i in range(len(nodes)):
         if i in joints:
@@ -355,6 +379,65 @@ def normalize_bones(filepath, look_at_origin=None):
                     shape[key] = move(collider["node"], shape[key])
     _place_look_at(gltf.get("extensions", {}).get("VRMC_vrm"), new, look_at_origin)
     _write_glb(filepath, gltf, binary)
+
+
+# A roll axis this close (cosine: 5 degrees) to a model axis is renamed to it. VRoid names its
+# twist axes by the model axis nearest the limb in the same way, T-posed arms a degree off level.
+ROLL_ALONG = 0.9962
+
+
+def _constraints(nodes):
+    """(node, kind, its settings) for every VRMC_node_constraint in the file."""
+    for i, node in enumerate(nodes):
+        constraint = node.get("extensions", {}).get("VRMC_node_constraint", {}).get("constraint", {})
+        for kind in ("roll", "aim", "rotation"):
+            if kind in constraint:
+                yield i, kind, constraint[kind]
+
+
+def constraint_nodes(nodes):
+    """Nodes a node constraint is on or reads from: the ones that may rest turned in a file."""
+    return {n for i, _, c in _constraints(nodes) for n in (i, c.get("source")) if n is not None}
+
+
+def _held_by_constraints(nodes, worlds, joints):
+    """The joints that must keep their rest frame for the file's node constraints to mean what
+    they did, with the roll axes of the others renamed to the model's axes (changes `nodes`).
+
+    `worlds`: each node's world matrix as written. Aim: the joint's own axis points at its source
+    at rest, so its frame stays. Roll: the axis is the same letter in both joints' frames; when
+    both lie along one model axis it takes that axis's name, else both keep their frames. Rotation
+    names no axis and copies a turn from one frame into the other: the same thing with both frames
+    the model's only when they were equal before.
+    """
+    def along(i, letter):
+        axis = worlds[i][:3, "XYZ".index(letter)]
+        axis = axis / np.linalg.norm(axis)
+        return int(np.argmax(np.abs(axis))), float(np.max(np.abs(axis)))
+
+    found = list(_constraints(nodes))
+    held = {i for i, kind, _ in found if kind == "aim"}
+    for i, kind, c in found:
+        source = c.get("source")
+        if kind == "roll":
+            (a, near_a), (b, near_b) = along(i, c["rollAxis"]), along(source, c["rollAxis"])
+            if a != b or min(near_a, near_b) < ROLL_ALONG:
+                held |= {i, source}
+        elif kind == "rotation" and not np.allclose(worlds[i][:3, :3], worlds[source][:3, :3], atol=1e-3):
+            held |= {i, source}
+    # both ends of a roll or a rotation in the model's frame, or both as they were
+    free = lambda n: n in joints and n not in held
+    grew = True
+    while grew:
+        grew = False
+        for i, kind, c in found:
+            if kind != "aim" and free(i) != free(c["source"]):
+                held |= {i, c["source"]}
+                grew = True
+    for i, kind, c in found:
+        if kind == "roll" and free(i):
+            c["rollAxis"] = "XYZ"[along(i, c["rollAxis"])[0]]
+    return held & joints
 
 
 def _place_look_at(vrm, worlds, origin):

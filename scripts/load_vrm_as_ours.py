@@ -15,8 +15,7 @@ import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 
-from vtuber_maker.pipeline import fingers, vrm_export  # noqa: E402
-from vtuber_maker.pipeline.rig import BONE_NAMES  # noqa: E402
+from vtuber_maker.pipeline import improve, vrm_export  # noqa: E402
 
 split = sys.argv.index("--")
 path = sys.argv.pop(split + 1)
@@ -24,19 +23,7 @@ vrm_export.ensure_vrm_addon()
 bpy.ops.wm.read_homefile(use_empty=True)
 assert bpy.ops.import_scene.vrm(filepath=str(Path(path).resolve())) == {"FINISHED"}
 armature = next(o for o in bpy.data.objects if o.type == "ARMATURE")
-human_bones = armature.data.vrm_addon_extension.vrm1.humanoid.human_bones
-ours = dict(BONE_NAMES)
-for side in ("left", "right"):
-    for finger in fingers.FINGERS:
-        for key, segment in zip(fingers.humanoid_keys(side, finger), fingers._segments(finger)):
-            ours[key] = fingers.bone_name(side, finger, segment)
-renamed = 0
-for key, name in ours.items():
-    bone = getattr(human_bones, key, None)
-    current = bone.node.bone_name if bone is not None else ""
-    if current and current != name and current in armature.data.bones:
-        armature.data.bones[current].name = name
-        renamed += 1
+renamed = improve.rename_bones(armature)
 # check_avatar.py takes the mesh parented to the armature
 for obj in bpy.data.objects:
     if obj.type == "MESH" and obj.find_armature() == armature and obj.parent != armature:

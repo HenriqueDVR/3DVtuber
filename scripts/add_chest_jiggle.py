@@ -15,7 +15,16 @@ import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 
-from vtuber_maker.pipeline import chest, vrm_export  # noqa: E402
+from vtuber_maker.pipeline import chest, improve, vrm_export  # noqa: E402
+from vtuber_maker.pipeline.rig import BONE_NAMES  # noqa: E402
+
+
+def _on_chest(mesh):
+    """How many of a mesh's vertices the chest bones hold: of a body in several meshes (a .vrm
+    taken in: face, body, hair), the one with the chest on it."""
+    groups = {mesh.vertex_groups[BONE_NAMES[key]].index for key in ("chest", "upper_chest")
+              if BONE_NAMES[key] in mesh.vertex_groups}
+    return sum(any(g.group in groups and g.weight > 0.3 for g in v.groups) for v in mesh.data.vertices)
 
 
 def main():
@@ -29,7 +38,8 @@ def main():
     ap.add_argument("--height", type=float, default=1.6)
     args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:])
     arm = next(o for o in bpy.data.objects if o.type == "ARMATURE")
-    mesh = max((o for o in bpy.data.objects if o.type == "MESH" and o.parent == arm), key=lambda o: len(o.data.vertices))
+    mesh = max((o for o in bpy.data.objects if o.type == "MESH" and o.parent == arm),
+               key=_on_chest if improve.imported(arm) else lambda o: len(o.data.vertices))
     try:
         weighted = chest.add(mesh, arm, args.strength, args.height, args.amount)
     except ValueError as error:

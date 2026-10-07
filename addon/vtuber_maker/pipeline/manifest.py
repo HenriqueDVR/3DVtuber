@@ -88,6 +88,12 @@ def new(source, name, author="Unknown"):
             "pieces": []}
 
 
+def improves(data):
+    """Whether this character starts from a finished .vrm, which the build takes in as it is and
+    adds to (pipeline/improve.py), instead of from a bare model it rigs."""
+    return str(data.get("source") or "").lower().endswith(".vrm")
+
+
 def carries_rig(path):
     """Whether a model file is an FBX with a VRoid-style skeleton, as Tripo's "VRM 1.0 humanoid" rig
     exports: then it is its own `rig` (adopt.py). Read as bytes: binary and ASCII FBX both keep

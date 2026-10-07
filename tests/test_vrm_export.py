@@ -199,5 +199,54 @@ class NormalizeBones(unittest.TestCase):
             np.testing.assert_allclose(worlds[1] @ np.r_[shape[key], 1], self.worlds[1] @ np.r_[was[key], 1], atol=1e-7)
 
 
+class NormalizeConstrainedBones(unittest.TestCase):
+    """Node constraints (a .vrm from elsewhere: twist and aim helpers) name axes in a joint's own frame."""
+
+    QUARTER = [0.0, 0.0, 0.7071068, 0.7071068]  # 90 degrees about Z: the joint's X is the model's Y
+
+    def build(self, name, twist_turn, aim_turn=(0.0, 0.0, 0.2, 0.98)):
+        constraint = lambda kind, **settings: {"VRMC_node_constraint": {"constraint": {kind: {"weight": 1, **settings}}}}  # noqa: E731
+        nodes = [{"name": "arm", "translation": [0, 1, 0], "rotation": self.QUARTER, "children": [1, 2, 3]},
+                 {"name": "twist", "translation": [.1, 0, 0], "rotation": list(twist_turn),
+                  "extensions": constraint("roll", source=0, rollAxis="X")},
+                 {"name": "aim", "translation": [.2, 0, 0], "rotation": list(aim_turn), "children": [4],
+                  "extensions": constraint("aim", source=0, aimAxis="PositiveX")},
+                 {"name": "plain", "translation": [.3, 0, 0], "rotation": [0.0, 0.3, 0.0, 0.954]},
+                 {"name": "under_aim", "translation": [.05, 0, 0]},
+                 {"name": "body", "mesh": 0, "skin": 0}]
+        gltf = {"asset": {"version": "2.0"}, "nodes": nodes, "scenes": [{"nodes": [0, 5]}],
+                "meshes": [{"primitives": []}], "skins": [{"joints": [0, 1, 2, 3, 4], "inverseBindMatrices": 0}],
+                "accessors": [{"bufferView": 0, "componentType": 5126, "count": 5, "type": "MAT4"}],
+                "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 320}], "buffers": [{"byteLength": 320}]}
+        self.worlds = NormalizeBones.world_matrices(gltf)
+        ibm = np.array([np.linalg.inv(self.worlds[j]) for j in range(5)], np.float32).transpose(0, 2, 1).tobytes()
+        path = glb(FIXTURE_OUT / name, gltf, ibm)
+        vrm_export.normalize_bones(path)
+        after, _ = vrm_export._read_glb(path)
+        return after, NormalizeBones.world_matrices(after)
+
+    def test_a_roll_axis_takes_the_name_of_the_model_axis_it_lies_along(self):
+        after, worlds = self.build("normalize_roll.glb", twist_turn=(0, 0, 0, 1))
+        roll = after["nodes"][1]["extensions"]["VRMC_node_constraint"]["constraint"]["roll"]
+        self.assertEqual(roll["rollAxis"], "Y")
+        for j in (0, 1, 3):
+            np.testing.assert_allclose(worlds[j][:3, :3], np.eye(3), atol=1e-7)
+            np.testing.assert_allclose(worlds[j][:3, 3], self.worlds[j][:3, 3], atol=1e-7)
+
+    def test_an_aim_joint_keeps_its_frame_and_what_hangs_from_it_is_straightened(self):
+        after, worlds = self.build("normalize_aim.glb", twist_turn=(0, 0, 0, 1))
+        self.assertEqual(after["nodes"][2]["extensions"]["VRMC_node_constraint"]["constraint"]["aim"]["aimAxis"], "PositiveX")
+        np.testing.assert_allclose(worlds[2], self.worlds[2], atol=1e-7)
+        np.testing.assert_allclose(worlds[4][:3, :3], np.eye(3), atol=1e-7)
+        np.testing.assert_allclose(worlds[4][:3, 3], self.worlds[4][:3, 3], atol=1e-7)
+
+    def test_a_roll_axis_off_every_model_axis_leaves_both_joints_as_they_were(self):
+        after, worlds = self.build("normalize_roll_off.glb", twist_turn=(0.0, 0.0, 0.2588190, 0.9659258))  # 30 degrees
+        self.assertEqual(after["nodes"][1]["extensions"]["VRMC_node_constraint"]["constraint"]["roll"]["rollAxis"], "X")
+        for j in (0, 1):
+            np.testing.assert_allclose(worlds[j], self.worlds[j], atol=1e-7)
+        np.testing.assert_allclose(worlds[3][:3, :3], np.eye(3), atol=1e-7)
+
+
 if __name__ == "__main__":
     unittest.main()
