@@ -24,8 +24,11 @@ import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import threading
 import time
+import urllib.request
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -154,6 +157,18 @@ CHECKS = {"movement", "springs"}
 # without an avatar: model C's eye step refused (iris over the lids) and the chain ended with no .vrm.
 # Chest bounce too: a chest it can't find leaves the avatar without the bounce.
 SOFT = {"face_tracking", "chest", "eyes", "mouth"}
+# Steps that make what a finished .vrm already has, with what of the file's stays instead: a
+# character whose source is a .vrm (manifest.improves) is taken in as it is and these don't run.
+KEPT = {"survey": "a finished .vrm is read as it is, not surveyed",
+        "hair": "the file's own hair weights and springs stay", "ahoge": "the file's own springs stay",
+        "face_tracking": "the file's own face shapes stay", "loose": "the file's own weights stay",
+        "fingers": "the file's own fingers stay", "pieces": "the file's own weights stay",
+        "finger_guides": "the file's own fingers stay", "tpose": "the file's own rest pose stays",
+        "eyes": "the file's own eyes stay", "mouth": "the file's own mouth stays",
+        "movement": "it reads the modelled pose of a model built here"}
+# Run before a check on a character taken in from a .vrm: its meshes joined in memory (the checks
+# measure one mesh, and a VRoid file's body, face and hair are three).
+WHOLE_BODY = ["--python-exit-code", "1", "-P", str(SCRIPTS / "_whole_body.py")]
 EYES_FALLBACK_REASON = ("the moving iris showed over the lids (the drawn iris is as tall as the eye), "
                         "so the eyes slide as a painted patch instead")
 
@@ -221,6 +236,16 @@ class Project:
 
     # ----- what the steps will do
 
+    @property
+    def improving(self):
+        """Whether the character is a finished .vrm being added to, not a model being built."""
+        return manifest.improves(self.data)
+
+    def source_holds(self):
+        """What the .vrm this character started from holds (`shipped`); None for a model."""
+        source = manifest.path_of(self.data, "source")
+        return shipped(source) if self.improving and source and source.exists() else None
+
     def model(self):
         """The model the steps read: the source, or its painted copy when the character has paint."""
         source = manifest.path_of(self.data, "source")
@@ -246,6 +271,10 @@ class Project:
         """The manifest's options with every "decide from the survey" filled in."""
         options = dict(self.data["options"])
         survey = self.survey() or {"options": {}, "triangles": 0, "face_patch": False}
+        if self.improving:
+            # the file keeps its size: what scales with height goes by the height it has
+            tall = (self.state["steps"].get("build", {}).get("report") or {}).get("height")
+            options["height"] = tall or options["height"]
         found = survey["options"]
         if options["rigid_head"] is None:
             options["rigid_head"] = bool(found.get("rigid_head"))
@@ -288,6 +317,8 @@ class Project:
             "mouth": (not o["mouth_fix"] or not face) and "no mouth fix asked for",
             "vrm_check": o["tpose"] == "none" and "no final VRM",
         }
+        if self.improving:
+            skip.update(KEPT)
         return [(name, not skip.get(name), skip.get(name) or "") for name in NAMES]
 
     def status(self):
@@ -303,6 +334,8 @@ class Project:
         check = self.state["steps"].get("check", {})
         failed = _read_json(check.get("json"), {}).get("failed")
         return {"name": self.name, "manifest": str(self.manifest_path), "out": str(self.out),
+                "improving": self.improving, "source_holds": self.source_holds(),
+                "gained": gained(self.source_holds(), self.ships()),
                 "latest_blend": str(last) if last else None, "options": self.options(), "steps": steps,
                 "check_failed": failed, "verdict": self.verdict(failed), "ships": self.ships(),
                 "approved": self.approved(), "since_approved": self.since_approved()}
@@ -397,10 +430,13 @@ class Project:
         if steps.get("vrm_check", {}).get("status") != "done":
             return {"ready": False, "issues": [("build", "not built to the end yet")], "looks": []}
         issues = [("review", f"rig check: {f}") for f in (failed or [])]
+        looks = []
+        if self.improving:
+            # the skinning came with the file and no step here remakes it: said, not held against the build
+            issues, looks = [], [(page, f"{line} (the file's own skinning, kept as it came)") for page, line in issues]
         for name in sorted(SOFT):
             if steps.get(name, {}).get("status") == "failed":
                 issues.append(("build", f"built without {name.replace('_', ' ')}"))
-        looks = []
         ships = self.ships()
         if ships:
             done = lambda name: steps.get(name, {}).get("status") == "done"  # noqa: E731
@@ -409,6 +445,8 @@ class Project:
                                                         and self.options()["eyes"] != "hidden"})
             issues += [("build", f"exported file: {line}") for line in in_file]
             looks += [("face", line) for line in to_see]
+            # a .vrm taken in must come out with everything it had
+            issues += [("build", f"exported file: {line}") for line in lost(self.source_holds(), ships)]
         # the loose step measures itself and undoes a tidy-up that tore the rig: the avatar is safe,
         # but an armpit it meant to join may open
         loose = steps.get("loose", {})
@@ -427,7 +465,7 @@ class Project:
         for name in CHECKS:
             if steps.get(name, {}).get("status") == "failed":
                 looks.append(("movement", f"the {name} check couldn't run"))
-        if not self.data.get("face"):
+        if not self.data.get("face") and not self.improving:
             # without face points the build still finishes, and nothing said the face was dead
             # the build keeps the eyes as modelled (--keep-eyes): the blink comes with the face steps
             looks.insert(0, ("face", "no face points: face and eye tracking were skipped, so the avatar can't blink "
@@ -543,7 +581,8 @@ class Project:
         # character in more than one pose
         stills = {p.stem: str(p) for folder in renders if not folder.name.startswith("sheets")
                   for p in folder.glob("*.png") if p.stem.rpartition("_")[2] in ("front", "back", "left", "right")}
-        return {"surveyed": statuses.get("survey") == "done", "built": statuses.get("vrm_check") == "done",
+        # a finished .vrm isn't surveyed: it is as ready to build as a surveyed model
+        return {"surveyed": statuses.get("survey") == "done" or self.improving, "built": statuses.get("vrm_check") == "done",
                 "stale": sorted(n for n, s in statuses.items() if s == "stale"),
                 "failed": sorted(n for n, s in statuses.items() if s == "failed"),
                 "finished": max((e.get("finished") or "" for e in steps.values()), default="") or None,
@@ -615,7 +654,7 @@ class Project:
                 name = NAMES[index]
                 if CANCEL.is_set():
                     raise Cancelled(f"stopped by the user before {name}")
-                if name != "survey" and self.survey() is None:
+                if name != "survey" and self.survey() is None and not self.improving:
                     raise StepFailed("run the survey step first")
                 # planned afresh each time: the survey decides what later steps do
                 _, runs, why = self.plan()[index]
@@ -739,6 +778,8 @@ class Project:
         face = manifest.path_of(data, "face")
         if name == "survey":
             return ["preflight.py", source, "--json", stem.with_suffix(".json"), "--height", o["height"]], []
+        if name == "build" and self.improving:
+            return ["import_vrm.py", source, vrm, "--blend", blend], NO_EXPORT
         if name == "build":
             args = ["make_vrm.py", source, vrm, "--name", self.name, "--author", data.get("author") or "Unknown",
                     "--blend", blend, "--height", o["height"], "--keep-eyes", "--manifest", self.manifest_path]
@@ -761,7 +802,8 @@ class Project:
             return ["check_movement.py", "--reference", reference, "--json", stem.with_suffix(".json"),
                     "--manifest", self.manifest_path, "--height", o["height"], "--listing", self.out / "pieces.json"], []
         if name == "springs":
-            return ["check_springs.py", "--json", stem.with_suffix(".json"), "--height", o["height"]], []
+            return (["check_springs.py", "--json", stem.with_suffix(".json"), "--height", o["height"]],
+                    WHOLE_BODY if self.improving else [])
         if name == "export":
             return ["export_vrm.py", vrm], []
         script = {"hair": "fix_hair_weights.py", "ahoge": "add_ahoge_spring.py", "face_tracking": "add_face_tracking.py",
@@ -773,12 +815,17 @@ class Project:
             return [script, blend], []
         if name == "check":
             # close-ups of the worst spots, so the Build page shows where a failure is
-            return [script, "--json", stem.with_suffix(".json"), "--spots", stem.with_name(stem.name + "_spots")], []
+            return ([script, "--json", stem.with_suffix(".json"), "--spots", stem.with_name(stem.name + "_spots")],
+                    WHOLE_BODY if self.improving else [])
         if name == "vrm_check":
             # what really ships: the exported file, re-imported (the add-on once swapped the pose on export)
             exported = self._last_vrm()
             if exported is None:
                 raise StepFailed("vrm_check: no exported .vrm yet")
+            if self.improving:
+                # the file has its own bone names back: read with the pipeline's, all its meshes as one
+                return ([script, exported, "--json", stem.with_suffix(".json")],
+                        ["--python-exit-code", "1", "-P", str(SCRIPTS / "load_vrm_as_ours.py"), *WHOLE_BODY])
             load = ("import bpy; bpy.ops.wm.read_homefile(use_empty=True); "
                     f"assert bpy.ops.import_scene.vrm(filepath={str(exported)!r}) == {{'FINISHED'}}")
             return [script, "--json", stem.with_suffix(".json")], ["--python-expr", load]
@@ -873,9 +920,25 @@ def changes(before, now):
         better += [f"movement: {n} no longer flagged" for n in sorted(named(old) - named(new))]
     old, new = read(before, "springs"), read(now, "springs")
     if old is not None and new is not None:
-        for key, field, what in (("sagging", "sag_cm", "droop at rest"), ("coming_away", "gap_cm", "left behind by a swing")):
-            was = max((r[field] for r in old.get(key, [])), default=0.0)
-            now_ = max((r[field] for r in new.get(key, [])), default=0.0)
+        # droop chain by chain: the report lists only chains over their limit, each kind with its own
+        # (a hat tip 3 cm, cloth 8), and the largest of one build against the largest of the other
+        # read model B's hat tip at 4.0 cm against its cape at 8.6 as one chain drooping twice as far
+        sag_was = {r.get("chain"): r["sag_cm"] for r in old.get("sagging", [])}
+        sag_now = {r.get("chain"): r["sag_cm"] for r in new.get("sagging", [])}
+        # of the chains both list, the one that droops most further and the one that droops most less
+        both = sorted(set(sag_was) & set(sag_now), key=lambda c: sag_now[c] - sag_was[c])
+        rows = [(sag_was[c], sag_now[c], "droop at rest") for c in dict.fromkeys(both[-1:] + both[:1])]
+        newly = sorted(set(sag_now) - set(sag_was), key=lambda c: -sag_now[c])
+        gone = sorted(set(sag_was) - set(sag_now), key=lambda c: -sag_was[c])
+        if newly:
+            worse.append(f"physics: {len(newly)} chain{'s' if len(newly) > 1 else ''} newly over the droop limit at rest "
+                         f"({newly[0]} {sag_now[newly[0]]} cm)")
+        if gone:
+            better.append(f"physics: {len(gone)} chain{'s' if len(gone) > 1 else ''} no longer over the droop limit at rest "
+                          f"({gone[0]} was {sag_was[gone[0]]} cm)")
+        rows.append((max((r["gap_cm"] for r in old.get("coming_away", [])), default=0.0),
+                     max((r["gap_cm"] for r in new.get("coming_away", [])), default=0.0), "left behind by a swing"))
+        for was, now_, what in rows:
             if now_ - was > SPRING_NOISE:
                 worse.append(f"physics: worst {what} {was} -> {now_} cm")
             elif was - now_ > SPRING_NOISE:
@@ -1148,7 +1211,7 @@ def shipped(path):
     springs = gltf["extensions"].get("VRMC_springBone") or {}
     materials = gltf.get("materials", [])
     return {"bones": len(bones), "fingers": sum(1 for b in bones if any(f in b for f in FINGERS)),
-            "turned_joints": [nodes[j].get("name", str(j)) for j in joints if not _unrotated(nodes[j])],
+            "turned_joints": _turned(nodes, joints),
             "arms_off_level": _arms_off_level(nodes, bones),
             "blink": "blink" in bound, "vowels": [v for v in VOWELS if v in bound],
             "look": (vrm.get("lookAt") or {}).get("type"), "looks_bound": all(k in bound for k in LOOKS),
@@ -1157,6 +1220,49 @@ def shipped(path):
             "materials": len(materials),
             "toon": sum("VRMC_materials_mtoon" in (m.get("extensions") or {}) for m in materials),
             "textures": len(gltf.get("images", [])), "megabytes": round(Path(path).stat().st_size / 2**20, 1)}
+
+
+def gained(before, after):
+    """What the exported file has over the .vrm it was made from (both `shipped`), as lines for
+    the Build page; [] before the build has run to its end, or for a character built from a model."""
+    if not before or not after:
+        return []
+    lines = []
+    was, now = len(before["turned_joints"]), len(after["turned_joints"])
+    if now < was:
+        lines.append(f"{was} joints rested turned in the file, {now or 'none'} now: tracking apps turn a bone about "
+                     "its own axes, and Warudo twists the fingers of a file whose joints rest turned")
+    for key, what in (("springs", "springs"), ("colliders", "spring colliders"), ("fingers", "finger bones")):
+        if after[key] > before[key]:
+            lines.append(f"{after[key] - before[key]} {what} added ({before[key]} before, {after[key]} now)")
+    new = sorted(set(after["shapes"]) - set(before["shapes"]))
+    if new:
+        lines.append(f"{len(new)} face shapes added")
+    return lines
+
+
+def lost(before, after):
+    """What a .vrm taken in had (`shipped`) that the exported one no longer has, as lines; [] when
+    nothing went missing, or for a character that didn't start from a .vrm (`before` None)."""
+    if not before or not after:
+        return []
+    lines = []
+    for key, what in (("bones", "humanoid bones"), ("fingers", "finger bones"), ("springs", "springs"),
+                      ("colliders", "spring colliders"), ("materials", "materials"), ("toon", "toon materials"),
+                      ("textures", "pictures")):
+        if after[key] < before[key]:
+            lines.append(f"{after[key]} {what}, the file taken in had {before[key]}")
+    gone = sorted(set(before["shapes"]) - set(after["shapes"]))
+    if gone:
+        lines.append(f"{len(gone)} face shapes of the file taken in are gone ({', '.join(gone[:4])}{', ...' if len(gone) > 4 else ''})")
+    if before["blink"] and not after["blink"]:
+        lines.append("the file taken in could blink; this one can't")
+    mute = [v for v in before["vowels"] if v not in after["vowels"]]
+    if mute:
+        lines.append(f"the file taken in had mouth shapes for {', '.join(mute)}; this one doesn't")
+    if before["look"] != after["look"] or (before["looks_bound"] and not after["looks_bound"]):
+        lines.append("the eyes no longer follow the gaze the way they did in the file taken in")
+    return lines
 
 
 def marks_eyes(points):
@@ -1197,6 +1303,43 @@ def _unrotated(node):
         return False
     x, y, z, _ = node.get("rotation", (0.0, 0.0, 0.0, 1.0))
     return max(abs(x), abs(y), abs(z)) < 1e-6 and all(abs(s - 1.0) < 1e-6 for s in node.get("scale", (1.0, 1.0, 1.0)))
+
+
+def _turned(nodes, joints):
+    """Names of the joints written with a turn or a scale of their own. Two kinds are left out,
+    both only in a .vrm taken in from elsewhere: joints a node constraint is on or reads (an aim
+    joint's own axis has to point at its source at rest, vrm_export.normalize_bones), and a joint
+    under one of those that is turned back against it and so rests on the model's axes."""
+    held = set()
+    for i, node in enumerate(nodes):
+        for constraint in ((node.get("extensions") or {}).get("VRMC_node_constraint") or {}).get("constraint", {}).values():
+            held |= {i, constraint.get("source")}
+    parent = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+    worlds = {}
+
+    def world(i):
+        if i not in worlds:
+            local = _rotation(nodes[i])
+            above = world(parent[i]) if i in parent else None
+            worlds[i] = local if above is None else [[sum(above[r][k] * local[k][c] for k in range(3)) for c in range(3)]
+                                                     for r in range(3)]
+        return worlds[i]
+
+    straight = lambda m: all(abs(m[r][c] - (r == c)) < 1e-5 for r in range(3) for c in range(3))  # noqa: E731
+    return [nodes[j].get("name", str(j)) for j in joints
+            if j not in held and not _unrotated(nodes[j]) and not straight(world(j))]
+
+
+def _rotation(node):
+    """A glTF node's turn and scale as a 3x3 matrix (rows), from its matrix or its rotation and scale."""
+    if "matrix" in node:
+        m = node["matrix"]  # column-major
+        return [[m[c * 4 + r] for c in range(3)] for r in range(3)]
+    x, y, z, w = node.get("rotation", (0.0, 0.0, 0.0, 1.0))
+    sx, sy, sz = node.get("scale", (1.0, 1.0, 1.0))
+    return [[(1 - 2 * (y * y + z * z)) * sx, 2 * (x * y - z * w) * sy, 2 * (x * z + y * w) * sz],
+            [2 * (x * y + z * w) * sx, (1 - 2 * (x * x + z * z)) * sy, 2 * (y * z - x * w) * sz],
+            [2 * (x * z - y * w) * sx, 2 * (y * z + x * w) * sy, (1 - 2 * (x * x + y * y)) * sz]]
 
 
 def _arms_off_level(nodes, bones):
@@ -1304,15 +1447,29 @@ def blender_version(blender):
 def vrm_addon_version(blender, version):
     """The VRM Add-on installed for this Blender, from the extension's own manifest, or None.
     A portable Blender keeps its extensions in its own `portable` folder, an installed one in
-    the user's AppData under its series."""
+    the user's settings folder under its series (`blender_settings`)."""
     series = ".".join((version or "4.2").split(".")[:2])
-    user = Path(os.environ.get("APPDATA", Path.home() / ".config")) / "Blender Foundation" / "Blender" / series
-    for home in (Path(blender).parent / "portable", user):
+    for home in (Path(blender).parent / "portable", blender_settings(series)):
         for toml in sorted((home / "extensions").glob("*/vrm/blender_manifest.toml")):
             found = re.search(r'^version\s*=\s*"([^"]+)"', toml.read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
             if found:
                 return found.group(1)
     return None
+
+
+def blender_settings(series, system=None, env=None, home=None):
+    """Where an installed Blender of this series ("5.2") keeps the user's settings and extensions.
+
+    Windows: %APPDATA%\\Blender Foundation\\Blender; macOS: ~/Library/Application Support/Blender;
+    Linux: $XDG_CONFIG_HOME/blender, else ~/.config/blender. Until 2026-10-07 the Windows shape was
+    looked in everywhere, so on macOS and Linux an installed add-on read as missing.
+    """
+    system, env, home = system or sys.platform, os.environ if env is None else env, Path(home or Path.home())
+    if system == "win32":
+        return Path(env.get("APPDATA") or home / "AppData" / "Roaming") / "Blender Foundation" / "Blender" / series
+    if system == "darwin":
+        return home / "Library" / "Application Support" / "Blender" / series
+    return Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "blender" / series
 
 
 def known_blenders():
@@ -1345,7 +1502,8 @@ def known_blenders():
 def portable_blenders():
     """The portable copies unzipped under tools/blender, each with its own `portable` settings
     folder. Offered on the Setup page, never picked unasked (`find_blender`)."""
-    return sorted((REPO / "tools" / "blender").glob("*/blender.exe"))
+    home = REPO / "tools" / "blender"
+    return sorted([*home.glob("*/blender.exe"), *(p for p in home.glob("*/blender") if p.is_file())])
 
 
 def _same_file(path):
@@ -1361,7 +1519,9 @@ def setup(given=None):
     failed step some minutes into the first build.
     """
     checks = []
-    add = lambda name, state, text, fix="": checks.append({"name": name, "state": state, "text": text, "fix": fix})  # noqa: E731
+    # `action`: what the first-run page's button does about it ("get_blender", "install_addon", "install:<package>")
+    add = lambda name, state, text, fix="", action="": checks.append(  # noqa: E731
+        {"name": name, "state": state, "text": text, "fix": fix, **({"action": action} if action else {})})
     blenders = known_blenders()
     try:
         blender = find_blender(given)
@@ -1373,11 +1533,15 @@ def setup(given=None):
                   tuple(map(int, b["series"].split("."))) > tuple(map(int, series.split(".")))), None)
     if blender is None:
         add("Blender", "bad", "Blender 4.2 or later wasn't found",
-            "install Blender 5.2 LTS from blender.org/download; the app finds it in its usual place")
+            f"the app can fetch Blender {blender_build()['version']} for itself ({blender_build()['bytes'] >> 20} MB, kept in its own folder), "
+            "or install it from blender.org/download" if blender_build()
+            else "install Blender 5.2 LTS from blender.org/download; the app finds it in its usual place",
+            "install_blender" if blender_build() else "get_blender")
     elif version is None:
-        add("Blender", "bad", f"{blender} doesn't start", "install Blender 5.2 LTS from blender.org/download")
+        add("Blender", "bad", f"{blender} doesn't start", "install Blender 5.2 LTS from blender.org/download", "get_blender")
     elif tuple(map(int, version.split("."))) < MIN_BLENDER:
-        add("Blender", "bad", f"Blender {version} is older than 4.2, which the app needs", "install Blender 5.2 LTS from blender.org/download")
+        add("Blender", "bad", f"Blender {version} is older than 4.2, which the app needs", "install Blender 5.2 LTS from blender.org/download",
+            "get_blender")
     elif series not in TESTED:
         add("Blender", "warn", f"Blender {version}: not yet tested with the app (tested: {', '.join(sorted(TESTED))})",
             "builds run, with a warning; pick a tested one below if something goes wrong")
@@ -1397,14 +1561,14 @@ def setup(given=None):
             add("VRM Add-on", "ok", f"VRM Add-on {addon}")
         else:
             add("VRM Add-on", "bad", "the VRM Add-on isn't installed in this Blender",
-                "open Blender, Edit > Preferences > Get Extensions, search for \"VRM format\" and install it")
-    for module, name, state, what, fix in (
-            ("PIL", "Pictures", "bad", "Pillow isn't installed: the face patch can't be made", "pip install pillow"),
-            ("tkinter", "File dialogs", "warn", "tkinter is missing: Browse buttons won't open, type paths instead", ""),
+                "open Blender, Edit > Preferences > Get Extensions, search for \"VRM format\" and install it", "install_addon")
+    for module, name, state, what, fix, action in (
+            ("PIL", "Pictures", "bad", "Pillow isn't installed: the face patch can't be made", "pip install pillow", "install:pillow"),
+            ("tkinter", "File dialogs", "warn", "tkinter is missing: Browse buttons won't open, type paths instead", "", ""),
             ("webview", "Own window", "warn", "pywebview isn't installed: the app opens in your browser instead of its own window",
-             "optional: pip install pywebview")):
+             "optional: pip install pywebview", "install:pywebview")):
         if not _installed(module):
-            add(name, state, what, fix)
+            add(name, state, what, fix, action)
     detector = face_guess.status()["python"]
     if detector:
         add("Auto face marking", "ok", "the face detector is installed: the Face page's \"Place them for me\" works")
@@ -1415,15 +1579,199 @@ def setup(given=None):
         add("Space", "warn", note)
     kept = vendor.status()
     if not kept["views"]:
-        add("Internet", "warn", "the 3D views load three.js from the internet: without a connection they stay empty",
-            "keep a copy with the app (17 MB, from jsDelivr and Google): the button below, or python -m app vendor")
+        add("Fully local", "warn", "not yet: the 3D views load three.js from the internet each time, and stay empty without a connection",
+            "keep a copy with the app (17 MB, from jsDelivr and Google): the button below, or python -m app vendor", "vendor")
     elif not kept["tracker"]:
-        add("Internet", "warn", "the 3D views work without a connection; the viewer's webcam test still loads its face tracker "
-            "from the internet", "keep a copy with the app (14 MB): the button below, or python -m app vendor")
+        add("Fully local", "warn", "nearly: the 3D views are kept with the app; the viewer's webcam test still loads its face tracker "
+            "from the internet", "keep a copy with the app (14 MB): the button below, or python -m app vendor", "vendor")
     else:
-        add("Internet", "ok", "the 3D views and the webcam test are kept with the app: no connection needed")
+        add("Fully local", "ok", "everything runs on this computer: your models and avatars never leave it, and no connection is needed")
     return {"blender": blender, "version": version, "chosen": chosen, "blenders": blenders,
-            "checks": checks, "ready": not any(c["state"] == "bad" for c in checks)}
+            "checks": checks, "ready": not any(c["state"] == "bad" for c in checks),
+            # for the first-run page: whether it was finished, and what a tester quotes in a report
+            "welcomed": bool(_read_json(SETTINGS, {}).get("welcomed")), "python": platform.python_version(),
+            "warudo": str(warudo_folder() or ""), "app": app_version()}
+
+
+def app_version():
+    """The app's commit, short, with "+" when tracked files differ from it; "" without git. What a
+    tester quotes so a report can be traced to the code that made it."""
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO, capture_output=True, text=True, timeout=20).stdout.strip()
+        changed = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=REPO,
+                                 capture_output=True, text=True, timeout=20).stdout.strip()
+        return commit + ("+" if commit and changed else "")
+    except Exception:  # noqa: BLE001 -- a label, never a reason to stop
+        return ""
+
+
+def welcome(done=True):
+    """Remember that the first-run page was finished (or, False, show it again at the next start)."""
+    settings = _read_json(SETTINGS, {})
+    settings["welcomed"] = bool(done)
+    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(SETTINGS, settings)
+    return {"welcomed": bool(done)}
+
+
+# The app's own Python packages the first-run page may install, by the module that shows they are there.
+PACKAGES = {"pillow": "PIL", "pywebview": "webview"}
+
+
+def package_command(name):
+    """The pip command that installs one of PACKAGES into the Python running the app."""
+    if name not in PACKAGES:
+        raise ValueError(f"{name} isn't a package the app installs ({', '.join(PACKAGES)})")
+    return [sys.executable, "-m", "pip", "install", name]
+
+
+def addon_command(blender):
+    """The command that has a Blender install the VRM Add-on from its own extensions site and
+    switch it on: what Get Extensions > "VRM format" > Install does, without opening Blender."""
+    return [str(blender), "--online-mode", "--command", "extension", "install", "--sync", "--enable", "vrm"]
+
+
+def install(command, what, on_event=None, timeout=900):
+    """Run an install command the user asked for and say how it went: {"installed", "log"}.
+    Raises StepFailed with the command's last lines when it fails."""
+    emit = on_event or (lambda event: None)
+    emit({"step": what, "status": "running"})
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=timeout, cwd=REPO)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise StepFailed(f"{what}: {error}") from error
+    log = (done.stdout or "") + (done.stderr or "")
+    if done.returncode != 0:
+        raise StepFailed(f"{what} failed (exit code {done.returncode}):\n{_tail(log, 1200)}")
+    emit({"step": what, "status": "done"})
+    return {"installed": what, "log": _tail(log, 1200)}
+
+
+# The Blender the app fetches for itself: the tested LTS as blender.org's own Windows zip, with the
+# checksum blender.org publishes beside it (release/Blender5.2/blender-5.2.2.sha256). Unzipped into
+# tools/blender it is a portable copy: nothing is installed on the computer, and deleting the folder removes it.
+BLENDER_ZIP = {"version": "5.2.2", "folder": "blender-5.2.2-windows-x64", "bytes": 404453484,
+               "url": "https://download.blender.org/release/Blender5.2/blender-5.2.2-windows-x64.zip",
+               "sha256": "3849d17a682cba006075aaa3f3597ecb5c9c30ec31035b2e092c53e40679b535"}
+# The same for Linux (x64): blender.org's tarball, unpacked the same way. Not run on a Linux computer yet.
+BLENDER_TAR = {"version": "5.2.2", "folder": "blender-5.2.2-linux-x64", "bytes": 383295504, "exe": "blender",
+               "url": "https://download.blender.org/release/Blender5.2/blender-5.2.2-linux-x64.tar.xz",
+               "sha256": "84098912789dc450e95697c4184fb8a90acbe5111c2ba4aede3fecb57806a168"}
+# By sys.platform. macOS has none: its Blender is a disk image to drag into Applications, where the app finds it.
+BLENDER_BUILDS = {"win32": BLENDER_ZIP, "linux": BLENDER_TAR}
+# Free space the zip and its 1.3 GB of files need together, with room to spare.
+BLENDER_SPACE = 3 << 30
+
+
+def blender_build(system=None, machine=None):
+    """The Blender the app can fetch for this computer (BLENDER_BUILDS), or None: another system,
+    or a processor blender.org's x64 build doesn't run on."""
+    machine = (machine or platform.machine()).lower()
+    return BLENDER_BUILDS.get(system or sys.platform) if machine in ("amd64", "x86_64") else None
+
+
+def _unpack(archive, folder):
+    """Unpack blender.org's zip or tarball into `folder`. A tarball's members are kept inside it
+    (Python 3.12's "data" filter where there is one; else any path leading out is refused)."""
+    if zipfile.is_zipfile(archive):
+        with zipfile.ZipFile(archive) as packed:
+            packed.extractall(folder)
+        return
+    with tarfile.open(archive) as packed:
+        if hasattr(tarfile, "data_filter"):
+            packed.extractall(folder, filter="data")
+            return
+        root = os.path.realpath(folder)
+        for member in packed.getmembers():
+            inside = os.path.realpath(os.path.join(root, member.name))
+            if os.path.commonpath([root, inside]) != root or member.islnk() or member.issym() and os.path.isabs(member.linkname):
+                raise StepFailed(f"{member.name} in Blender's archive leads outside its folder: not unpacked")
+        packed.extractall(folder)
+
+
+def install_blender(on_event=None, open_url=urllib.request.urlopen, source=None, addon=True):
+    """Fetch Blender into tools/blender (BLENDER_BUILDS), choose it for the builds and, with `addon`,
+    have it install the VRM Add-on: everything a new computer lacks, at one press. Returns setup().
+
+    The archive goes to a .part file, is hashed as it arrives and is only unpacked when the hash is
+    the pinned one. A copy already there is used as it is. The copy gets a `portable` folder, so its
+    add-ons and settings stay inside it and no Blender installed on the computer is touched.
+    Windows and Linux (x64): elsewhere Blender comes from blender.org or the system's packages.
+    """
+    source = source or blender_build()
+    emit = on_event or (lambda event: None)
+    if source is None:
+        raise StepFailed("the app only fetches Blender on Windows and Linux (x64): install Blender 4.2 or later from blender.org/download")
+    home = REPO / "tools" / "blender"
+    target = home / source["folder"]
+    exe = target / source.get("exe", "blender.exe")
+    if not exe.is_file():
+        home.mkdir(parents=True, exist_ok=True)
+        if free_disk(home) < BLENDER_SPACE:
+            raise StepFailed(f"Blender needs about {BLENDER_SPACE >> 30} GB free on {home.anchor} "
+                             f"({free_disk(home) / 2**30:.1f} GB there now)")
+        part = home / (source["folder"] + ".part")
+        unzipped = home / (source["folder"] + ".unzipping")
+        digest, got, said = hashlib.sha256(), 0, -1
+        emit({"step": "downloading Blender", "status": "running"})
+        try:
+            request = urllib.request.Request(source["url"], headers={"User-Agent": "oc2vrm"})
+            with open_url(request, timeout=120) as response, open(part, "wb") as out:
+                while chunk := response.read(1 << 20):
+                    if CANCEL.is_set():
+                        raise Cancelled("stopped by the user while downloading Blender")
+                    digest.update(chunk)
+                    out.write(chunk)
+                    got += len(chunk)
+                    tenth = got * 10 // max(source["bytes"], 1)
+                    if tenth != said:
+                        said = tenth
+                        emit({"step": "downloading Blender", "status": "progress", "reason": f"{got >> 20} of {source['bytes'] >> 20} MB"})
+            if digest.hexdigest() != source["sha256"]:
+                raise StepFailed(f"{source['url']} isn't the file blender.org lists (SHA-256 {digest.hexdigest()}, "
+                                 f"expected {source['sha256']}): not unzipped")
+            emit({"step": "downloading Blender", "status": "done"})
+            emit({"step": "unzipping Blender", "status": "running"})
+            shutil.rmtree(unzipped, ignore_errors=True)
+            _unpack(part, unzipped)
+            # the archive holds one folder named as itself; one of loose files is taken as that folder
+            inner = unzipped / source["folder"]
+            os.replace(inner if inner.is_dir() else unzipped, target)
+            emit({"step": "unzipping Blender", "status": "done"})
+        except (OSError, zipfile.BadZipFile, tarfile.TarError) as error:
+            raise StepFailed(f"fetching Blender: {error}") from error
+        finally:
+            part.unlink(missing_ok=True)
+            shutil.rmtree(unzipped, ignore_errors=True)
+        if not exe.is_file():
+            raise StepFailed(f"the archive was unpacked, but there is no {exe.name} in {target}")
+    (target / "portable").mkdir(exist_ok=True)
+    _BLENDER_VERSIONS.pop(str(exe), None)
+    use_blender(exe)
+    if addon and not vrm_addon_version(exe, blender_version(exe)):
+        with _Lock():
+            install(addon_command(exe), "installing the VRM Add-on", on_event)
+    return setup()
+
+
+def install_package(name, on_event=None):
+    """pip-install one of PACKAGES. The user's click is the consent: it downloads from PyPI."""
+    found = install(package_command(name), f"installing {name}", on_event)
+    importlib.invalidate_caches()
+    return found
+
+
+def install_vrm_addon(given=None, on_event=None):
+    """Install the VRM Add-on into the Blender the builds run on (`addon_command`): a download
+    from extensions.blender.org, at the user's click. Raises StepFailed when Blender says no, or
+    when the add-on still isn't there afterwards."""
+    blender = find_blender(given)
+    with _Lock():
+        found = install(addon_command(blender), "installing the VRM Add-on", on_event)
+    if not vrm_addon_version(blender, blender_version(blender)):
+        raise StepFailed("Blender ran, but the VRM Add-on still isn't there. Install it by hand: open Blender, "
+                         "Edit > Preferences > Get Extensions, search for \"VRM format\".\n" + found["log"])
+    return found
 
 
 def _installed(module):

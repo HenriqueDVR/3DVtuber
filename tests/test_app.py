@@ -1,5 +1,6 @@
 """The app's engine plans a character's steps from its manifest, and its server hands out only what it should."""
 import json
+import os
 import struct
 import sys
 import tempfile
@@ -355,6 +356,22 @@ class Engine(unittest.TestCase):
         self.assertEqual(changed["better"], ["rig check, arms raised: stretch 5.0 -> 4.0 cm"])
         self.assertIn(("build", "worse than the approved build: rig check, head turn: stretch 2.6 -> 8.0 cm"),
                       project.verdict([])["looks"])
+
+    def test_droop_is_compared_chain_by_chain(self):
+        # only chains over their own limit are listed: a hat tip's 4 cm against a cape's 8.6 is not one chain drooping more
+        def report(name, sagging):
+            path = self.root / f"{name}.json"
+            path.write_text(json.dumps({"sagging": [{"chain": c, "sag_cm": v} for c, v in sagging.items()], "coming_away": []}))
+            return {"springs": path}
+
+        before = report("before", {"HatTip": 4.0, "Skirt": 9.0})
+        now = report("now", {"HatTip": 3.5, "Cloth9": 8.6, "Cloth10": 8.5})
+        self.assertEqual(engine.changes(before, now), {
+            "worse": ["physics: 2 chains newly over the droop limit at rest (Cloth9 8.6 cm)"],
+            "better": ["physics: 1 chain no longer over the droop limit at rest (Skirt was 9.0 cm)"]})
+        # the chain that droops further is the one named, though another droops more
+        self.assertEqual(engine.changes(before, report("further", {"HatTip": 6.0, "Skirt": 9.2})),
+                         {"worse": ["physics: worst droop at rest 4.0 -> 6.0 cm"], "better": []})
 
     def test_only_a_finished_build_can_be_marked_good(self):
         with self.assertRaisesRegex(engine.StepFailed, "build to the end"):
@@ -1237,6 +1254,297 @@ class Engine(unittest.TestCase):
             manifest.MIGRATIONS.update(real[1])
 
 
+class FinishedVrm(unittest.TestCase):
+    """A character whose source is a finished .vrm is taken in as it is and added to, not built."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.root = Path(self.folder.name)
+        self.source = Engine.write_glb(self, "avatar.vrm", Engine.avatar(self, turned=3))
+        self.path = self.root / "character.json"
+        data = manifest.new("avatar.vrm", "Test")
+        data["out_dir"] = "out"
+        manifest.save(data, self.path)
+        self.real_settings, engine.SETTINGS = engine.SETTINGS, self.root / "settings.json"
+
+    def tearDown(self):
+        engine.SETTINGS = self.real_settings
+        self.folder.cleanup()
+
+    def project(self, **options):
+        data = manifest.load(self.path)
+        data["options"].update(options)
+        manifest.save(data, self.path)
+        return Project(self.path, blender="blender")
+
+    def finished(self, project, ships):
+        vrm = Engine.write_glb(self, "14_export.vrm", Engine.avatar(self))
+        project.state["steps"]["export"] = {"status": "done", "vrm": str(vrm)}
+        project.state["steps"]["vrm_check"] = {"status": "done", "report": {"ships": ships}}
+
+    def test_only_what_adds_to_the_file_runs(self):
+        project = self.project()
+        self.assertTrue(project.improving)
+        self.assertFalse(manifest.improves(manifest.new("model.glb", "Other")))
+        plan = {name: (runs, why) for name, runs, why in project.plan()}
+        self.assertEqual({name for name, (runs, _) in plan.items() if runs}, {"build", "check", "export", "vrm_check", "springs"})
+        self.assertEqual(plan["survey"], (False, "a finished .vrm is read as it is, not surveyed"))
+        self.assertEqual(plan["fingers"], (False, "the file's own fingers stay"))
+        self.assertIn("chest", {name for name, runs, _ in self.project(chest=True).plan() if runs})
+
+    def test_the_file_is_read_not_rigged_and_checked_whole(self):
+        project = self.project()
+        stem = self.root / "out" / "runs" / "now" / "01_build"
+        args, extra = project._arguments("build", stem, None)
+        self.assertEqual((args[0], Path(args[1])), ("import_vrm.py", self.source.resolve()))
+        self.assertEqual(extra, engine.NO_EXPORT)
+        _, extra = project._arguments("check", stem.with_name("13_check"), stem.with_suffix(".blend"))
+        self.assertEqual(extra, engine.WHOLE_BODY)
+        self.finished(project, None)
+        args, extra = project._arguments("vrm_check", stem.with_name("15_vrm_check"), None)
+        # the exported file has its own bone names back: read through the renaming, its meshes joined
+        self.assertEqual(Path(args[1]).name, "14_export.vrm")
+        self.assertIn(str(engine.SCRIPTS / "load_vrm_as_ours.py"), extra)
+        self.assertEqual(extra[-len(engine.WHOLE_BODY):], engine.WHOLE_BODY)
+
+    def test_the_height_that_scales_things_is_the_files_own(self):
+        project = self.project()
+        self.assertEqual(project.options()["height"], 1.6)
+        project.state["steps"]["build"] = {"status": "done", "report": {"height": 1.42}}
+        self.assertEqual(project.options()["height"], 1.42)
+
+    def test_the_status_says_what_the_file_came_with_and_what_it_gained(self):
+        project = self.project()
+        came = project.source_holds()
+        self.assertEqual((came["bones"], came["turned_joints"], came["springs"]), (8, ["LeftHand"], 2))
+        self.assertEqual(project.status()["gained"], [])  # nothing built yet
+        self.finished(project, dict(engine.shipped(Engine.write_glb(self, "out.vrm", Engine.avatar(self))), springs=4))
+        gained = project.status()["gained"]
+        self.assertEqual(len(gained), 2)
+        self.assertTrue(gained[0].startswith("1 joints rested turned in the file, none now"))
+        self.assertEqual(gained[1], "2 springs added (2 before, 4 now)")
+        self.assertEqual(project.verdict([]), {"ready": True, "issues": [], "looks": []})
+
+    def test_anything_the_file_had_and_the_export_lacks_blocks(self):
+        project = self.project()
+        whole = engine.shipped(Engine.write_glb(self, "out.vrm", Engine.avatar(self)))
+        self.assertEqual(engine.lost(project.source_holds(), whole), [])
+        self.assertEqual(engine.lost(None, whole), [])  # a character built from a model has no file to keep
+        less = dict(whole, springs=1, blink=False, vowels=["aa", "ih", "ou", "ee"], shapes=["aa"], look="bone", toon=0)
+        self.assertEqual(engine.lost(project.source_holds(), less), [
+            "1 springs, the file taken in had 2", "0 toon materials, the file taken in had 1",
+            "1 face shapes of the file taken in are gone (eyeBlinkLeft)", "the file taken in could blink; this one can't",
+            "the file taken in had mouth shapes for oh; this one doesn't",
+            "the eyes no longer follow the gaze the way they did in the file taken in"])
+        self.finished(project, less)
+        verdict = project.verdict([])
+        self.assertFalse(verdict["ready"])
+        self.assertIn(("build", "exported file: 1 springs, the file taken in had 2"), verdict["issues"])
+
+    def test_the_files_own_skinning_is_said_not_held_against_the_build(self):
+        project = self.project()
+        self.finished(project, engine.shipped(Engine.write_glb(self, "out.vrm", Engine.avatar(self))))
+        verdict = project.verdict(["arms raised: stretch"])
+        self.assertTrue(verdict["ready"])
+        self.assertEqual(verdict["looks"], [("review", "rig check: arms raised: stretch (the file's own skinning, kept as it came)")])
+
+    def test_a_joint_a_constraint_holds_turned_is_not_a_fault(self):
+        avatar = Engine.avatar(self, turned=3)
+        avatar["nodes"][3]["extensions"] = {"VRMC_node_constraint": {"constraint": {"aim": {"source": 2, "aimAxis": "PositiveX"}}}}
+        # the finger under it is turned back against it: on the model's axes, so no fault either
+        avatar["nodes"][3]["rotation"], avatar["nodes"][7]["rotation"] = [0.0, 0.0, 0.70710678, 0.70710678], [0.0, 0.0, -0.70710678, 0.70710678]
+        self.assertEqual(engine.shipped(Engine.write_glb(self, "held.vrm", avatar))["turned_joints"], [])
+        avatar["nodes"][7]["rotation"] = [0.0, 0.3, 0.0, 0.954]
+        self.assertEqual(engine.shipped(Engine.write_glb(self, "held.vrm", avatar))["turned_joints"], ["LeftIndexProximal"])
+
+    def test_nothing_is_got_ready_and_a_file_that_is_no_vrm_1_is_refused(self):
+        self.assertEqual(cli.prepare(self.path, blender="blender")["did"], [])
+        made = cli.cmd_init(SimpleNamespace(model=self.source, name="Again", author="Unknown", face=None, reference=None, rig=None,
+                                            manifest=self.root / "again.json"))
+        self.assertTrue(made["improving"])
+        self.assertIn(" run ", made["next"])
+        old = Engine.write_glb(self, "old.vrm", {"asset": {}, "nodes": [], "extensions": {"VRM": {"specVersion": "0.0"}}})
+        with self.assertRaisesRegex(ValueError, "isn't a VRM 1.0 file"):
+            cli.cmd_init(SimpleNamespace(model=old, name="Old", author="Unknown", face=None, reference=None, rig=None,
+                                         manifest=self.root / "old.json"))
+        self.assertFalse((self.root / "old.json").exists())
+
+
+class FirstRun(unittest.TestCase):
+    """What "Get set up" stands on: the checks name what a button can do, and the installs are only the app's own."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.real_settings, engine.SETTINGS = engine.SETTINGS, Path(self.folder.name) / "settings.json"
+
+    def tearDown(self):
+        engine.SETTINGS = self.real_settings
+        self.folder.cleanup()
+
+    def test_the_first_start_is_remembered_once_it_is_done(self):
+        self.assertFalse(engine.setup()["welcomed"])
+        self.assertEqual(engine.welcome(), {"welcomed": True})
+        report = engine.setup()
+        self.assertTrue(report["welcomed"])
+        self.assertTrue(report["python"])
+        engine.welcome(False)
+        self.assertFalse(engine.setup()["welcomed"])
+
+    def test_a_missing_blender_and_addon_name_what_gets_them(self):
+        real = engine.find_blender, engine.known_blenders
+        engine.known_blenders = lambda: []
+
+        def none(given=None):
+            raise FileNotFoundError("no Blender")
+        try:
+            engine.find_blender = none
+            checks = {c["name"]: c for c in engine.setup()["checks"]}
+            # on Windows the app fetches a copy for itself; elsewhere it says where Blender is got
+            self.assertEqual((checks["Blender"]["state"], checks["Blender"]["action"]),
+                             ("bad", "install_blender" if engine.blender_build() else "get_blender"))
+            self.assertNotIn("VRM Add-on", checks)  # nothing to look in yet
+        finally:
+            engine.find_blender, engine.known_blenders = real
+
+    def blender_zip(self, files):
+        import hashlib
+        import io
+        import zipfile
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w") as archive:
+            for name, text in files.items():
+                archive.writestr(name, text)
+        raw = data.getvalue()
+        source = {"version": "5.2.2", "folder": "blender-test", "bytes": len(raw), "url": "https://example.invalid/blender-test.zip",
+                  "sha256": hashlib.sha256(raw).hexdigest()}
+        asked = []
+
+        def open_url(request, timeout=None):
+            asked.append(request.full_url)
+            return io.BytesIO(raw)
+        return source, open_url, asked
+
+    def test_blender_is_fetched_into_the_apps_folder_checked_and_chosen(self):
+        real = engine.REPO, engine.blender_version, engine.free_disk
+        engine.REPO, engine.blender_version, engine.free_disk = Path(self.folder.name), lambda path: "5.2.2", lambda path: 100 << 30
+        try:
+            source, open_url, asked = self.blender_zip({"blender-test/blender.exe": "exe", "blender-test/5.2/scripts/x.py": "x"})
+            events = []
+            engine.install_blender(on_event=events.append, open_url=open_url, source=source, addon=False)
+            home = Path(self.folder.name) / "tools" / "blender"
+            exe = home / "blender-test" / "blender.exe"
+            self.assertTrue(exe.is_file())
+            self.assertTrue((home / "blender-test" / "portable").is_dir())  # its add-ons and settings stay with it
+            self.assertEqual(sorted(p.name for p in home.iterdir()), ["blender-test"])  # no zip, no half-unzipped folder left
+            self.assertEqual(Path(engine._read_json(engine.SETTINGS, {})["blender"]), exe)
+            self.assertEqual(asked, [source["url"]])
+            self.assertEqual([e["step"] for e in events if e["status"] == "done"], ["downloading Blender", "unzipping Blender"])
+            # a copy already there is used as it is: nothing is downloaded again
+            engine.install_blender(open_url=open_url, source=source, addon=False)
+            self.assertEqual(len(asked), 1)
+        finally:
+            engine.REPO, engine.blender_version, engine.free_disk = real
+
+    def test_a_download_that_is_not_blender_orgs_file_is_not_unzipped(self):
+        real = engine.REPO, engine.free_disk
+        engine.REPO, engine.free_disk = Path(self.folder.name), lambda path: 100 << 30
+        try:
+            source, open_url, _ = self.blender_zip({"blender-test/blender.exe": "exe"})
+            with self.assertRaisesRegex(engine.StepFailed, "isn't the file blender.org lists"):
+                engine.install_blender(open_url=open_url, source=dict(source, sha256="0" * 64), addon=False)
+            home = Path(self.folder.name) / "tools" / "blender"
+            self.assertEqual(list(home.iterdir()), [])
+            self.assertIsNone(engine._read_json(engine.SETTINGS, {}).get("blender"))
+            engine.free_disk = lambda path: 1 << 30
+            with self.assertRaisesRegex(engine.StepFailed, "needs about 3 GB free"):
+                engine.install_blender(open_url=open_url, source=source, addon=False)
+        finally:
+            engine.REPO, engine.free_disk = real
+
+    def test_linux_gets_blender_orgs_tarball_unpacked_the_same_way(self):
+        import hashlib
+        import io
+        import tarfile
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode="w:xz") as packed:
+            for name, text in (("blender-test/blender", b"elf"), ("blender-test/5.2/scripts/x.py", b"x")):
+                info = tarfile.TarInfo(name)
+                info.size, info.mode = len(text), 0o755
+                packed.addfile(info, io.BytesIO(text))
+        raw = data.getvalue()
+        source = {"version": "5.2.2", "folder": "blender-test", "exe": "blender", "bytes": len(raw),
+                  "url": "https://example.invalid/blender-test.tar.xz", "sha256": hashlib.sha256(raw).hexdigest()}
+        real = engine.REPO, engine.blender_version, engine.free_disk
+        engine.REPO, engine.blender_version, engine.free_disk = Path(self.folder.name), lambda path: "5.2.2", lambda path: 100 << 30
+        try:
+            engine.install_blender(open_url=lambda request, timeout=None: io.BytesIO(raw), source=source, addon=False)
+            home = Path(self.folder.name) / "tools" / "blender"
+            self.assertTrue((home / "blender-test" / "blender").is_file())
+            self.assertTrue((home / "blender-test" / "portable").is_dir())
+            self.assertEqual(sorted(p.name for p in home.iterdir()), ["blender-test"])
+            self.assertEqual(Path(engine._read_json(engine.SETTINGS, {})["blender"]), home / "blender-test" / "blender")
+            self.assertEqual(engine.portable_blenders(), [home / "blender-test" / "blender"])
+        finally:
+            engine.REPO, engine.blender_version, engine.free_disk = real
+
+    def test_which_computers_the_app_fetches_blender_for(self):
+        self.assertIs(engine.blender_build("win32", "AMD64"), engine.BLENDER_ZIP)
+        self.assertIs(engine.blender_build("linux", "x86_64"), engine.BLENDER_TAR)
+        self.assertIsNone(engine.blender_build("darwin", "arm64"))
+        self.assertIsNone(engine.blender_build("linux", "aarch64"))  # blender.org's Linux build is x64
+        for build in engine.BLENDER_BUILDS.values():
+            self.assertTrue(build["url"].startswith("https://download.blender.org/release/") and build["folder"] in build["url"])
+            self.assertEqual(len(build["sha256"]), 64)
+
+    def test_the_addon_is_looked_for_where_each_system_keeps_blenders_settings(self):
+        home = Path("/home/tester")
+        self.assertEqual(engine.blender_settings("5.2", "linux", {}, home), home / ".config" / "blender" / "5.2")
+        self.assertEqual(engine.blender_settings("5.2", "linux", {"XDG_CONFIG_HOME": "/cfg"}, home), Path("/cfg") / "blender" / "5.2")
+        self.assertEqual(engine.blender_settings("5.2", "darwin", {}, home), home / "Library" / "Application Support" / "Blender" / "5.2")
+        self.assertEqual(engine.blender_settings("4.5", "win32", {"APPDATA": "C:/Users/t/AppData/Roaming"}, home),
+                         Path("C:/Users/t/AppData/Roaming") / "Blender Foundation" / "Blender" / "4.5")
+        # ... and found there: an add-on installed on Linux no longer reads as missing
+        settings = Path(self.folder.name) / ".config" / "blender" / "5.2"
+        (settings / "extensions" / "blender_org" / "vrm").mkdir(parents=True)
+        (settings / "extensions" / "blender_org" / "vrm" / "blender_manifest.toml").write_text('id = "vrm"\nversion = "4.7.2"\n')
+        real = engine.blender_settings
+        try:
+            engine.blender_settings = lambda series: real(series, "linux", {}, self.folder.name)
+            self.assertEqual(engine.vrm_addon_version("/opt/blender-5.2/blender", "5.2.2"), "4.7.2")
+        finally:
+            engine.blender_settings = real
+
+    def test_what_is_kept_with_the_app_is_said_as_fully_local(self):
+        real = engine.vendor.status
+        try:
+            engine.vendor.status = lambda: {"views": True, "tracker": True}
+            row = next(c for c in engine.setup()["checks"] if c["name"] == "Fully local")
+            self.assertEqual((row["state"], "action" in row), ("ok", False))
+            self.assertIn("no connection is needed", row["text"])
+            engine.vendor.status = lambda: {"views": False, "tracker": False}
+            row = next(c for c in engine.setup()["checks"] if c["name"] == "Fully local")
+            self.assertEqual((row["state"], row["action"]), ("warn", "vendor"))
+        finally:
+            engine.vendor.status = real
+
+    def test_only_the_apps_own_packages_are_installed(self):
+        self.assertEqual(engine.package_command("pillow")[1:], ["-m", "pip", "install", "pillow"])
+        with self.assertRaisesRegex(ValueError, "isn't a package the app installs"):
+            engine.package_command("requests; rm -rf")
+        with self.assertRaisesRegex(ValueError, "isn't a package the app installs"):
+            server.api("install_package", {}, {"name": "numpy"})
+
+    def test_the_addon_is_installed_by_blender_itself(self):
+        self.assertEqual(engine.addon_command("b.exe"), ["b.exe", "--online-mode", "--command", "extension", "install", "--sync", "--enable", "vrm"])
+
+    def test_a_failed_install_says_what_the_command_said(self):
+        with self.assertRaisesRegex(engine.StepFailed, "installing nothing failed \\(exit code 3\\)(.|\\n)*no such thing"):
+            engine.install([sys.executable, "-c", "import sys; print('no such thing'); sys.exit(3)"], "installing nothing")
+        events = []
+        done = engine.install([sys.executable, "-c", "print('fine')"], "installing nothing", on_event=events.append)
+        self.assertEqual((done["installed"], done["log"].strip(), [e["status"] for e in events]), ("installing nothing", "fine", ["running", "done"]))
+
+
 class Server(unittest.TestCase):
     def test_serves_only_model_and_output_files_inside_the_repository(self):
         inside = REPO / "viewer" / "index.html"
@@ -1525,18 +1833,34 @@ class Pages(unittest.TestCase):
             self.skipTest(str(error))
         served, port = server._listen(0)
         threading.Thread(target=served.serve_forever, daemon=True).start()
+        # a computer that has been through "Get set up", whatever this one has: the app then opens on Characters
+        folder = tempfile.TemporaryDirectory()
+        real_settings, engine.SETTINGS = engine.SETTINGS, Path(folder.name) / "settings.json"
+        engine.SETTINGS.write_text(json.dumps({**engine._read_json(real_settings, {}), "welcomed": True}))
+
+        def open_page(look):
+            with tempfile.TemporaryDirectory() as profile:
+                return subprocess.run([browser, "--headless=new", f"--user-data-dir={profile}", "--no-first-run", "--mute-audio",
+                                       "--enable-unsafe-swiftshader", "--enable-logging=stderr", "--v=0", "--virtual-time-budget=40000",
+                                       "--dump-dom", f"http://127.0.0.1:{port}/?look={look}"], capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace", timeout=120)
         # in both looks (Setup): the arcade one adds its own screens, the classic one must stay as it was
         pages = {}
         try:
             for look in ("arcade", "classic"):
-                with tempfile.TemporaryDirectory() as profile:
-                    pages[look] = subprocess.run([browser, "--headless=new", f"--user-data-dir={profile}", "--no-first-run", "--mute-audio",
-                                                  "--enable-unsafe-swiftshader", "--enable-logging=stderr", "--v=0", "--virtual-time-budget=40000",
-                                                  "--dump-dom", f"http://127.0.0.1:{port}/?look={look}"], capture_output=True, text=True,
-                                                 encoding="utf-8", errors="replace", timeout=120)
+                pages[look] = open_page(look)
+            # ... and one that hasn't starts on "Get set up", with its lines drawn
+            engine.SETTINGS.write_text(json.dumps({**engine._read_json(real_settings, {}), "welcomed": False}))
+            first = open_page("classic")
         finally:
             served.shutdown()
             served.server_close()
+            engine.SETTINGS = real_settings
+            folder.cleanup()
+        self.assertEqual([line for line in first.stderr.splitlines() if "CONSOLE" in line and "Uncaught" in line], [])
+        for mark in ('class="page on" id="start"', "Blender 4.2 or later", "App version"):
+            self.assertTrue(mark in first.stdout, f"first start: {mark}")
+        self.assertNotIn('class="page on" id="home"', first.stdout)
         for look, done in pages.items():
             page = done.stdout
             errors_said = [line for line in done.stderr.splitlines() if "CONSOLE" in line and ("Uncaught" in line or "SyntaxError" in line)]

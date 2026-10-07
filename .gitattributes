@@ -1,1 +1,5 @@
 app/gui/vendor/** -text
+# the launchers run only with their own system's line ends, whatever the checkout or a downloaded zip does
+*.bat -text
+*.sh text eol=lf
+*.command text eol=lf

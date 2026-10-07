@@ -99,7 +99,7 @@ try {
           <code>out\&lt;name&gt;\character.json</code>. To go back to one you already started, open it from Characters.</p></details>
     </header>
     <div class="card w-sm">
-      <label for="new-model">1 · The model (.fbx recommended; .glb and .obj work)</label>
+      <label for="new-model">1 · The model (.fbx recommended; .glb and .obj work; a finished .vrm is improved as it is)</label>
       <div class="field"><input type="text" id="new-model" placeholder="E:\3DVtuber\samples\my_oc.fbx">
         <button class="act alt" data-browse="model" data-for="new-model">Browse…</button></div>
       <p class="help">The textured model straight from Tripo (P2 works best). <b>Recommended:</b> in Tripo press
@@ -109,6 +109,9 @@ try {
         skeleton is broken. An unrigged model works too: the app places the skeleton.</p>
       <p class="help">Generate it standing in a <b>T-pose</b> (arms straight out) if you can: sleeves then don't fuse to
         the ribs. An A-pose (arms angled down) still builds.</p>
+      <p class="help"><b>A finished avatar (.vrm, VRM 1.0)</b> from VRoid or anywhere else is taken in as it is: its
+        skeleton, weights, expressions, springs and materials stay, and nothing is rigged again. The build straightens
+        its joints for finger tracking, can add chest bounce (Options), checks it and writes a new .vrm beside it.</p>
       <label for="new-name">2 · Name</label><input type="text" id="new-name" placeholder="MyOC">
       <p class="help">A folder name for the build: letters, digits, <code>_</code>. Also the avatar's name in Warudo.</p>
       <label for="new-author">Author (optional)</label><input type="text" id="new-author" placeholder="Unknown">
@@ -550,6 +553,44 @@ try {
   </div>
 </section>
 
+<section class="page" id="start">
+  <header class="page-head">
+    <div class="kicker">First start</div>
+    <h2>Get set up <span class="chip" id="start-chip"></span></h2>
+    <p class="lead">What the app needs on this computer, in order. Each line says what it found; a button gets what is
+      missing. Nothing is downloaded until you press its button.</p>
+  </header>
+  <div class="stack">
+    <div class="card w-lg"><div class="title">1 · Needed to build an avatar</div>
+      <div id="start-needed"><p class="msg">checking…</p></div>
+      <div class="row" style="margin-top:var(--s3)"><button class="act alt" id="start-refresh">Check again</button>
+        <button class="act alt" id="start-blender" title="pick which Blender runs the builds, or add one installed somewhere unusual">I already have Blender…</button></div>
+      <p class="help">Blender is the free 3D program that does the work in the background; you never have to open it.
+        <b>Get it for me</b> fetches a copy the app keeps for itself, with the add-on. If you install Blender yourself
+        instead, press <b>Check again</b> afterwards.</p>
+    </div>
+    <div class="card w-lg"><div class="title">2 · Good to have</div>
+      <div id="start-extras"></div>
+      <p class="help" id="start-warudo" style="margin-top:var(--s3)"></p>
+    </div>
+    <div class="card w-lg"><div class="title">3 · What you need to bring</div>
+      <p class="help">A 3D model of your character. The tested way: generate it in <b>Tripo</b> standing in a
+        <b>T-pose</b> (arms straight out), press <b>Rig</b>, pick "VRM 1.0 humanoid" and export as <b>FBX</b>. A plain
+        <code>.glb</code> or <code>.obj</code> works too, and a finished <code>.vrm</code> (VRM 1.0) is improved as it is.</p>
+      <div class="row"><button class="act" id="start-go">Start: make an avatar</button>
+        <button class="act alt" id="start-skip">Not now</button></div>
+    </div>
+    <div class="card w-lg"><div class="title">Testing the app?</div>
+      <p class="help">Thank you. What helps most: build one character from start to finish, load the <code>.vrm</code> in
+        your tracking app (Warudo, VNyan), and say what looked wrong and in which pose. When something breaks or looks
+        off, open <b>Stuck?</b>, write what you saw and press the button: it gathers the settings, logs and pictures of
+        that character into one folder. Send that folder (zipped) with the line below. The 3D model file itself is
+        <b>not</b> in it; rendered pictures of the character and any screenshots you attached are.</p>
+      <p class="msg" id="start-version"></p>
+    </div>
+  </div>
+</section>
+
 <section class="page" id="setup">
   <header class="page-head">
     <h2>Setup <span class="chip" id="setup-chip"></span></h2>
@@ -558,6 +599,7 @@ try {
   <div class="stack">
     <div class="card w-lg"><div class="title">Checks</div><div id="setup-checks"><p class="msg">checking…</p></div>
       <div class="row" style="margin-top:var(--s3)"><button class="act alt" id="setup-refresh">Check again</button>
+        <button class="act alt" id="setup-start" title="the first-start page: what is needed, in order, with a button for each">Get set up, step by step</button>
         <button class="act alt" id="setup-detector" data-job hidden title="a Python of its own with PyTorch and the face detector, in the app's tools folder">Install auto face marking…</button>
         <button class="act alt" id="setup-vendor" data-job hidden title="downloads three.js, three-vrm and the face tracker (17 MB, each file checked) into the app's folder">Keep a copy for offline use</button></div></div>
     <div class="card w-lg"><div class="title">Which Blender runs the builds</div>

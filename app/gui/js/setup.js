@@ -8,6 +8,7 @@ const same = (a, b) => String(a || "").toLowerCase().replaceAll("/", "\\") === S
 export async function loadSetup() {
   try { S.setup = await call("setup"); } catch (e) { say("setup-msg", e.message, true); return; }
   renderSetup();
+  app.renderStart?.();
   app.renderAll();
 }
 
@@ -32,7 +33,7 @@ function renderSetup() {
   $("setup-blenders").querySelectorAll("[data-forget]").forEach((b) => b.onclick = () => forget(s.blenders[+b.dataset.forget]));
   $("setup-auto").hidden = !s.chosen;
   // offered while something the pages need still comes from the internet
-  $("setup-vendor").hidden = !s.checks.some((c) => c.name === "Internet" && c.state !== "ok");
+  $("setup-vendor").hidden = !s.checks.some((c) => c.name === "Fully local" && c.state !== "ok");
   $("setup-detector").hidden = !s.checks.some((c) => c.name === "Auto face marking" && c.state !== "ok");
 }
 $("setup-detector").onclick = async () => {
@@ -47,7 +48,7 @@ $("setup-vendor").onclick = () => app.job("vendor", {});
 // the pages already open still name the internet's copy: the kept one is read when a page loads
 app.vendored = async () => {
   await loadSetup();
-  if (!S.setup?.checks.some((c) => c.name === "Internet" && c.state !== "ok")) toast("Kept with the app. It is used from the next time the app opens.");
+  if (!S.setup?.checks.some((c) => c.name === "Fully local" && c.state !== "ok")) toast("Kept with the app. It is used from the next time the app opens.");
 };
 
 async function use(blender) {

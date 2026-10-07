@@ -13,6 +13,7 @@ import { renderSteps, loadRuns } from "./build.js";
 import { loadMovement, loadSprings } from "./movement.js";
 import { loadFeedback, loadRenders, loadSheets } from "./review.js";
 import { loadSetup } from "./setup.js";
+import "./start.js";
 import { resetPaint } from "./paint.js";
 
 const LAST = "vtuber-maker-project";
@@ -88,4 +89,7 @@ document.querySelectorAll("[data-examples]").forEach((host) => {
 });
 
 go(location.hash.slice(1) || "home");
-loadProjects().then(resume).then(loadSetup).catch(failed);
+// a computer the app hasn't been set up on starts at "Get set up", unless a link named another page
+loadProjects().then(resume).then(loadSetup).then(() => {
+  if (S.setup && !S.setup.welcomed && ["", "home"].includes(location.hash.slice(1))) go("start");
+}).catch(failed);

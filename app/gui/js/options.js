@@ -53,10 +53,15 @@ async function setOption(key, value) {
   await refreshManifest(); await refreshStatus(); app.renderAll();
 }
 
+// The options that count for a character taken in from a finished .vrm (engine.KEPT skips the rest).
+const IMPROVES = ["chest", "chest_amount"];
+
 export function renderOptions() {
   if (!S.manifest) { $("option-grid").innerHTML = `<p class="msg">Open or create a character first.</p>`; return; }
   const resolved = S.status?.options || {};
-  $("option-grid").innerHTML = OPTION_UI.map((row) => {
+  // a finished avatar keeps what it has: only what the build can add to one is offered
+  const offered = S.status?.improving ? OPTION_UI.filter((row) => IMPROVES.includes(row[0])) : OPTION_UI;
+  $("option-grid").innerHTML = (S.status?.improving ? `<p class="help">This character is a finished avatar (.vrm): its head, hair, hands, face and pose stay as they are, so only what can be added to it is here.</p>` : "") + offered.map((row) => {
     if (row.length === 1) return `<h3>${row[0]}</h3>`;
     const [key, title, what, choices] = row, v = S.manifest.options[key] ?? null;
     if (!Array.isArray(choices)) {

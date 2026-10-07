@@ -208,6 +208,9 @@ def cmd_init(args):
     path = (args.manifest or REPO / "out" / args.name / "character.json").resolve()
     if path.exists():
         raise ValueError(f"{path} exists: edit it with set/joint/piece, or pick another --manifest")
+    if Path(args.model).suffix.lower() == ".vrm" and engine.shipped(args.model) is None:
+        raise ValueError(f"{args.model} isn't a VRM 1.0 file. A VRM 0.x file isn't taken in: "
+                         "export it as VRM 1.0 (VRoid Studio and UniVRM both do)")
     path.parent.mkdir(parents=True, exist_ok=True)
     data = manifest.new(_relative(args.model, path), args.name, args.author)
     if args.face:
@@ -222,8 +225,9 @@ def cmd_init(args):
     manifest.save(data, path)
     # another tool's skeleton in the model: readable (adopt.py) but not measured, so not taken unasked
     other = None if data.get("rig") else manifest.rig_kind(args.model)
+    improving = manifest.improves(data)
     return {"manifest": str(path), "source": data["source"], "rig": data.get("rig"), "other_rig": other,
-            "next": f"python -m app prepare {path}"}
+            "improving": improving, "next": f"python -m app {'run' if improving else 'prepare'} {path}"}
 
 
 def cmd_status(args):
@@ -332,6 +336,9 @@ def prepare(manifest_path, on_event=None, blender=None):
     emit = on_event or (lambda event: None)
     args = lambda: SimpleNamespace(manifest=Path(manifest_path), blender=blender)  # noqa: E731
     did = []
+    if _project(args()).improving:
+        # a finished .vrm has its pieces, face and weights already: nothing to get ready
+        return {"did": did, "status": _project(args()).status(), "next": "`run`: the file is taken in as it is and added to"}
     if _project(args()).survey() is None:
         _project(args()).run(only="survey", on_event=emit)
         did.append("survey")

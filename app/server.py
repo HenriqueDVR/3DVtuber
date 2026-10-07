@@ -112,6 +112,16 @@ def api(route, query, body):
         return JOBS.start("installing the face detector", lambda emit: cli.install_detector(on_event=emit))
     if route == "vendor":
         return JOBS.start("keeping a copy for offline use", lambda emit: vendor.fetch(on_event=emit))
+    # the first-run page's buttons: each a download the user asked for by pressing it
+    if route == "install_blender":
+        return JOBS.start("fetching Blender", lambda emit: engine.install_blender(on_event=emit))
+    if route == "install_addon":
+        return JOBS.start("installing the VRM Add-on", lambda emit: engine.install_vrm_addon(on_event=emit))
+    if route == "install_package":
+        engine.package_command(body.get("name"))  # refused here, not minutes into a job, when it isn't one of ours
+        return JOBS.start(f"installing {body['name']}", lambda emit: engine.install_package(body["name"], on_event=emit))
+    if route == "welcome":
+        return engine.welcome(body.get("done", True))
     if route in ("use_blender", "forget_blender"):
         if JOBS.running:
             raise StepFailed(f"busy: {JOBS.running} is still running")

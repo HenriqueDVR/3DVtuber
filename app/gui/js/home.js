@@ -109,7 +109,12 @@ $("create").onclick = async () => {
       "good", { ms: made.other_rig ? 12000 : 4500 });
     say("create-msg", "");
     await app.loadProjects(made.manifest);
-    if ($("create-prepare").checked) job("prepare", {});
+    if (made.improving) {
+      // a finished avatar has nothing to mark or list: getting it ready is building it
+      toast("A finished avatar: it is taken in as it is, and nothing is rigged again.", "good", { ms: 8000 });
+      app.go("build");
+      if ($("create-prepare").checked) job("run", {});
+    } else if ($("create-prepare").checked) job("prepare", {});
   } catch (e) { say("create-msg", e.message, true); }
 };
 $("rename").onclick = async () => {
@@ -168,9 +173,29 @@ export async function renderSurvey() {
   $("model-files").innerHTML = m ? `Model in use: <code>${esc(m.source)}</code>`
     + (m.reference ? `<br>Original, before the face patch: <code>${esc(m.reference)}</code>` : "") : "";
   const entry = S.status?.steps.find((s) => s.step === "survey");
-  $("survey-state").textContent = entry ? entry.status : "";
-  $("survey-state").className = `chip ${entry?.status?.split(" ")[0] || ""}`;
+  // a finished .vrm is not surveyed or rigged: the card says what the file came with instead
+  const holds = S.status?.improving ? S.status.source_holds : null;
+  $("prepare-run").hidden = $("survey-run").hidden = !!S.status?.improving;
+  $("rig-path").closest(".card").hidden = !!S.status?.improving;
+  const card = $("survey").closest(".card"), lead = document.querySelector("#model-open .lead");
+  card.querySelector("p.help").hidden = !!S.status?.improving;
+  card.querySelector(".title").firstChild.textContent = S.status?.improving ? "The file " : "Survey ";
+  lead.dataset.model ??= lead.innerHTML;
+  lead.innerHTML = S.status?.improving ? "A finished avatar: it is taken in as it is and added to. Choose what to add on Options, then build."
+    : lead.dataset.model;
+  $("survey-state").textContent = S.status?.improving ? "a finished avatar" : entry ? entry.status : "";
+  $("survey-state").className = `chip ${S.status?.improving ? "info" : entry?.status?.split(" ")[0] || ""}`;
   $("survey").innerHTML = "";
+  if (S.status?.improving) {
+    $("survey").innerHTML = !holds ? `<p class="failed">The file is no longer where it was: <code>${esc(m.source)}</code></p>` : `<p class="help">Taken in as it is: nothing below is made again. <code>${esc(m.source)}</code></p><table>
+      <tr><td>Skeleton</td><td>${holds.bones} humanoid bones, ${holds.fingers} of them fingers${holds.turned_joints.length ? `; ${holds.turned_joints.length} joints rest turned (the build straightens them)` : ""}</td></tr>
+      <tr><td>Face</td><td>${holds.blink ? "blinks" : "no blink"}, ${holds.vowels.length} of 5 mouth shapes, ${holds.shapes.length} face shapes in all</td></tr>
+      <tr><td>Eyes</td><td>${holds.look === "bone" ? "eye bones follow the gaze" : holds.looks_bound ? "face shapes follow the gaze" : "don't follow the gaze"}</td></tr>
+      <tr><td>Physics</td><td>${holds.springs} springs, ${holds.colliders} colliders</td></tr>
+      <tr><td>Look</td><td>${holds.materials} materials (${holds.toon} toon), ${holds.textures} pictures, ${holds.megabytes} MB</td></tr>
+      </table>`;
+    return;
+  }
   if (!entry?.json) return;
   const { url } = await call("url", { path: entry.json });
   if (!url) return;

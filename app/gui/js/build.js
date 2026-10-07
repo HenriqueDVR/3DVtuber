@@ -124,13 +124,15 @@ function renderTodo() {
   if (!S.manifest || !S.status) { $("todo").innerHTML = `<p class="help">Open or create a character first (Characters).</p>`; return; }
   const steps = Object.fromEntries(S.status.steps.map((s) => [s.step, s])), items = [];
   const add = (text, label, act, kind = "warn", isJob = false) => items.push({ text, label, act, kind, isJob });
-  if (steps.survey?.status !== "done") add("Survey the model: reads how it stands and what it's made of.", "Run survey", () => job("run", { only: "survey" }), "warn", true);
-  if (!S.listing) add("List the pieces, then give any hair, hat, cape or sleeve its role.", "Go to Parts", () => app.go("parts"));
-  if (!S.manifest.face) add("Mark the eyes and mouth. Without them the avatar can't blink, has no face tracking and its eyes don't move: only the vowel mouth shapes ship.", "Go to Face", () => app.go("face"));
+  const improving = !!S.status.improving;
+  if (!improving && steps.survey?.status !== "done") add("Survey the model: reads how it stands and what it's made of.", "Run survey", () => job("run", { only: "survey" }), "warn", true);
+  if (!improving && !S.listing) add("List the pieces, then give any hair, hat, cape or sleeve its role.", "Go to Parts", () => app.go("parts"));
+  if (!improving && !S.manifest.face) add("Mark the eyes and mouth. Without them the avatar can't blink, has no face tracking and its eyes don't move: only the vowel mouth shapes ship.", "Go to Face", () => app.go("face"));
   const failed = S.status.steps.filter((s) => s.runs && s.status === "failed");
   const built = S.status.steps.some((s) => s.step !== "survey" && ["done", "stale", "failed"].includes(s.status));
   const next = nextRun(S.status);
-  if (!built) add("Build the avatar: a few minutes, one step after another.", "Build everything", () => job("run", {}), "warn", true);
+  if (!built) add(improving ? "Take the avatar in and write it out improved: about a minute. The file you gave is not changed."
+    : "Build the avatar: a few minutes, one step after another.", "Build everything", () => job("run", {}), "warn", true);
   else if (next) add(`${next.count} step${next.count > 1 ? "s" : ""} to (re)build, from “${stepName(next.from)}”${next.stale ? ": something before it changed" : ""}.`,
     `Run from ${stepName(next.from)}`, () => job("run", { from: next.from }), "warn", true);
   for (const f of failed) add(`“${stepName(f.step)}” failed and the avatar was built without it: ${plain(f.step, f.reason)}${f.known ? ` (${f.known.code}: ${f.known.fix})` : ""}`,
@@ -144,6 +146,7 @@ function renderTodo() {
   const pageName = (page) => page[0].toUpperCase() + page.slice(1);
   for (const [page, text] of S.status.verdict?.issues || []) if (page !== "build") add(text, `Go to ${pageName(page)}`, () => app.go(page), "failed");
   for (const [page, text] of S.status.verdict?.looks || []) if (page !== "face" || S.manifest.face) add(text, `Go to ${pageName(page)}`, () => app.go(page));
+  for (const line of S.status.gained || []) add(`Better than the file you gave: ${line}.`, "Go to Review", () => app.go("review"), "done");
   if (S.status.verdict?.ready) add("Load the .vrm in Warudo and try it pose by pose; note what you see on the Review page.", "Go to Review", () => app.go("review"), "done");
   $("todo").innerHTML = items.length ? items.map((it, i) => `<div class="todo"><span class="${it.kind}">${esc(it.text)}</span>
     <button class="act alt small" data-todo="${i}" ${it.isJob ? "data-job" : ""} ${it.isJob && !$("runbar").hidden ? "disabled" : ""}>${esc(it.label)}</button></div>`).join("") : `<p class="done">Nothing left.</p>`;

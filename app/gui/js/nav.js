@@ -19,14 +19,18 @@ app.go = go;
 document.querySelectorAll("#steps button").forEach((b) => b.onclick = () => go(b.dataset.go));
 addEventListener("hashchange", () => go(location.hash.slice(1)));
 
+// The pages with nothing to do for a finished avatar (.vrm), which keeps its own pieces, joints and face.
+const KEPT = ["parts", "joints", "face", "paint", "movement"];
+// The page after `name`: the next in order, past the ones a finished avatar has no use for.
+const after = (name) => ORDER.slice(ORDER.indexOf(name) + 1).find((page) => !(S.status?.improving && KEPT.includes(page)));
+
 // "Next: Joints →" at the end of every step page
 for (const [i, name] of ORDER.entries()) {
-  const next = ORDER[i + 1];
-  if (!next) continue;
+  if (!ORDER[i + 1]) continue;
   const foot = document.createElement("div");
   foot.className = "page-next";
-  foot.innerHTML = `<button class="act alt">Next: ${TITLES[next]} →</button>`;
-  foot.firstElementChild.onclick = () => go(next);
+  foot.innerHTML = `<button class="act alt" data-after="${name}">Next: ${TITLES[ORDER[i + 1]]} →</button>`;
+  foot.firstElementChild.onclick = () => go(after(name));
   $(name).append(foot);
 }
 
@@ -54,10 +58,10 @@ export function renderNav() {
   const setup = S.setup && !S.setup.ready ? ["to fix", "bad"] : ["", ""];
   const badges = !m ? { home: [S.projects.length || "", ""], setup } : {
     home: [S.projects.length, ""], setup,
-    model: steps.survey?.status === "done" ? ["surveyed", "good"] : ["survey", "warn"],
-    parts: !S.listing ? ["not listed", "warn"] : [`${m.pieces.length} role${m.pieces.length === 1 ? "" : "s"}`, m.pieces.length ? "info" : ""],
+    model: st?.improving ? ["a finished avatar", "info"] : steps.survey?.status === "done" ? ["surveyed", "good"] : ["survey", "warn"],
+    parts: st?.improving ? ["", ""] : !S.listing ? ["not listed", "warn"] : [`${m.pieces.length} role${m.pieces.length === 1 ? "" : "s"}`, m.pieces.length ? "info" : ""],
     joints: !S.listing ? ["", ""] : moved ? [`${moved} moved`, "info"] : ["detected", ""],
-    face: m.face ? ["marked", "good"] : facePlaced ? [`${facePlaced} placed`, "warn"] : ["to do", "warn"],
+    face: st?.improving ? ["", ""] : m.face ? ["marked", "good"] : facePlaced ? [`${facePlaced} placed`, "warn"] : ["to do", "warn"],
     build: st?.verdict?.ready && !pending ? ["ready", "good"] : failed ? [`${failed} failed`, "bad"]
       : pending && nextRun(st) ? [`${pending} to build`, "warn"] : steps.build?.status === "done" ? ["built", "info"] : ["", ""],
     movement: S.movement ? (flagged ? [`${flagged} flagged`, "warn"] : ["clear", "good"]) : ["", ""],
@@ -72,16 +76,19 @@ export function renderNav() {
     const [text, kind] = badges[el.dataset.chip] || ["", ""];
     el.textContent = text; el.className = `chip ${kind}`;
   });
-  const done = { model: steps.survey?.status === "done", parts: !!S.listing, face: !!m?.face,
+  const done = { model: steps.survey?.status === "done" || !!st?.improving, parts: !!S.listing, face: !!m?.face,
     build: !!st?.verdict?.ready && !pending, movement: !!S.movement && !flagged };
   document.querySelectorAll("#steps button[data-go]").forEach((b) => {
     b.querySelector(".n").classList.toggle("done", !!(m && done[b.dataset.go]));
     // a page that can't do anything yet says why, instead of opening empty
     const why = !m && !["home", "model", "help", "setup"].includes(b.dataset.go) ? "open or create a character first"
+      // a finished avatar keeps its own pieces, joints, face and pictures: those pages have nothing to do
+      : st?.improving && KEPT.includes(b.dataset.go) ? "a finished avatar (.vrm) keeps its own: nothing to do here"
       : b.dataset.go === "joints" && !S.listing ? "list the pieces first (Parts)"
       : b.dataset.go === "movement" && steps.pieces?.status !== "done" && steps.build?.status !== "done" ? "build first" : "";
     b.classList.toggle("locked", !!why); b.title = why;
   });
+  document.querySelectorAll("[data-after]").forEach((b) => { b.textContent = `Next: ${TITLES[after(b.dataset.after)]} →`; });
   // which Blender runs the builds, a click from changing it
   $("nav-blender").textContent = !S.setup ? "" : S.setup.version ? `Blender ${S.setup.version}` : "no Blender found";
   $("nav-blender").className = S.setup && !S.setup.version ? "failed" : "";
