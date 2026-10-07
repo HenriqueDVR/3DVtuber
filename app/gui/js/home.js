@@ -142,11 +142,11 @@ $("duplicate").onclick = async () => {
 };
 $("survey-run").onclick = () => job("run", { only: "survey" });
 $("prepare-run").onclick = () => job("prepare", {});
-// Ready: the one thing only the user can do is next, with the way past it for a faceless model.
+// Ready: the one thing only the user can do is the face, a press away. The page isn't changed under
+// them: landing on step 4 from step 1 read as pages skipped.
 app.prepared = () => {
-  app.go("face");
-  toast("Ready. Mark the eyes and mouth on the picture, then press Save and build.", "good",
-    { action: { label: "Build without a face", run: () => { app.go("build"); job("run", {}); } }, ms: 15000 });
+  toast("Ready: the pieces are listed and the face patch is made. Next, mark the eyes and mouth on the Face page.", "good",
+    { action: { label: "Go to Face", run: () => app.go("face") }, ms: 20000 });
 };
 document.querySelectorAll("[data-browse]").forEach((b) => b.onclick = async () => {
   try { const { path } = await call("browse", { kind: b.dataset.browse }); if (path) $(b.dataset.for).value = path; }

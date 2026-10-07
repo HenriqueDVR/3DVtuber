@@ -51,8 +51,11 @@ python -m app vendor                                     # fetch the app's copie
 ## A new character
 
 The shortest path is `init`, `prepare`, face points (`face`, `face-guess`, or the Face page),
-`run`. The app does the same: "Create the character and get it ready" runs `prepare` and lands on
-the Face page; "Save and build" there runs the chain.
+`run`. The app does the same: "Create the character and get it ready" runs `prepare` and says the
+Face page is next (a button in the message; the page isn't changed under the user); "Save and
+build" there runs the chain. Every choice on the Face page is saved as it is made, the eyes'
+choice sits above the points it decides (covered eyes: the mouth's four only), and the redrawn
+free mouth is the default (`mouth_fix`, `manifest.OPTIONS`).
 
 `prepare` makes the **face patch**: a copy of the model whose face has its own sharp texture,
 mapped from a front view. The patched copy becomes the manifest's `source`; the model before it
@@ -337,7 +340,9 @@ character select draw them for a character built before. Every picture is framed
 JSON says where the head and floor are in it, so `look.js` `art()` puts any character in any pose
 on the same spot at the same size, head on the middle line. `summary()` hands them out as
 `portraits`. A character without them shows a plain still render (`portrait`, `stills`), measured
-from the picture; never a T-pose, in either case.
+from the picture; never a T-pose, in either case. Before any build there is `first_look.png`
+(`engine.FIRST_PICTURE`): the model as it came, from the front, drawn when its pieces are listed
+(`list_pieces.py --picture`, so `prepare` makes it), which may well be a T-pose.
 
 The fonts (Anton, Chakra Petch) come from Google Fonts; offline it falls back to Impact
 and Segoe UI.

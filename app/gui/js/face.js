@@ -22,8 +22,10 @@ addEventListener("message", async (e) => {
     facePoints = data; showFacePoints(); showPointsState();
     // saved as soon as all twelve are placed: a separate save inside the marker was easy to miss,
     // and "Save face options" next to it saved only the options
+    // Only on the Face page: the marker also answers every time it is handed the points again (each
+    // time the character is read: after any job, on any page), and "Face points saved." came up on Movement.
     clearTimeout(pointsTimer);
-    if (e.data.complete) pointsTimer = setTimeout(() => savePoints().then((wrote) => wrote === "saved" && toast("Face points saved.")).catch((err) => say("face-msg", err.message, true)), 600);
+    if (e.data.complete && $("face").classList.contains("on")) pointsTimer = setTimeout(() => savePoints().then((wrote) => wrote === "saved" && toast("Face points saved.")).catch((err) => say("face-msg", err.message, true)), 600);
   }
 });
 let pointsTimer = null, pointsSaved = null;
@@ -33,16 +35,20 @@ const features = () => hiddenEyes() ? ["mouth"] : ["right_eye", "left_eye", "mou
 const pointCount = () => 4 * features().length;
 const placed = (p) => features().reduce((n, k) => n + Object.keys(p?.[k] || {}).length, 0);
 const marked = () => ({ ...facePoints, ...(hiddenEyes() ? { right_eye: {}, left_eye: {} } : {}) });
+// The points alone, in one order: what is kept (face.json) and what the marker hands back are the
+// same points written differently (key order, an eye left out or empty), and read as a change.
+const written = (p) => JSON.stringify(["right_eye", "left_eye", "mouth"].map((k) =>
+  Object.entries(p?.[k] || {}).sort(([a], [b]) => a < b ? -1 : 1).map(([n, [x, y]]) => [n, Math.round(x * 10), Math.round(y * 10)])));
 async function savePoints() {
   if (placed(facePoints) < pointCount()) return false;
-  if (pointsSaved === JSON.stringify(marked())) return true;
+  if (pointsSaved === written(marked())) return true;
   await call("face_save", { points: marked() });
-  pointsSaved = JSON.stringify(marked());
+  pointsSaved = written(marked());
   await refreshManifest(); await refreshStatus(); app.renderAll(); showPointsState();
   return "saved";
 }
 function showPointsState() {
-  const n = placed(facePoints), done = n === pointCount() && pointsSaved === JSON.stringify(marked());
+  const n = placed(facePoints), done = n === pointCount() && pointsSaved === written(marked());
   S.facePlaced = n;
   $("points-state").textContent = done ? "saved" : n === pointCount() ? "saving…" : `${n} of ${pointCount()} placed`;
   $("points-state").className = `chip ${done ? "done" : n ? "warn" : ""}`;
@@ -57,7 +63,7 @@ export async function loadFace() {
   faceView.clear(); faceDots.clear(); facePatch = faceImage = patchFit = null; $("face-checks").innerHTML = "";
   if (!S.manifestPath) return;
   const face = await call("face");
-  facePoints = face.points; pointsSaved = face.points ? JSON.stringify(face.points) : null; showPointsState();
+  facePoints = face.points; pointsSaved = face.points ? written(face.points) : null; showPointsState();
   if (!face.model) {
     $("patch-make").textContent = "Make a face patch";
     $("patch-state").textContent = PATCH_NEEDED + " (It isn't a .glb, so it shows here once the patch is made.)";
@@ -198,20 +204,29 @@ export function renderFace() {
   $("mouth-free").disabled = $("mouth-scale").disabled = !fix;
   showEyeChoice(); showFeatures();
 }
+// The choices, kept as each is made (as the Options page keeps its own). Kept only by the Save
+// buttons, a choice was put back to the saved one whenever the page was drawn again (after the
+// points saved themselves, after any job): "eyes are covered" kept turning back into automatic,
+// which asked for eye points again and held the build.
+async function saveChoices() {
+  // (what else a manifest says of the mouth, its rest and lift, stays)
+  const fix = $("mouth-fix").checked ? { ...S.manifest.options.mouth_fix, free: $("mouth-free").checked, scale: +$("mouth-scale").value || 1 } : null;
+  const now = { eyes: $("eyes").value || null, face_tracking: $("mouth-tracking").value === "true", mouth_fix: fix };
+  const changed = Object.entries(now).filter(([key, value]) => JSON.stringify(S.manifest.options[key] ?? null) !== JSON.stringify(value));
+  for (const [key, value] of changed) await call("set", { key, value });
+  if (changed.length) { await refreshManifest(); await refreshStatus(); app.renderAll(); }
+  return changed.length;
+}
+const keepChoices = () => saveChoices().then((n) => { say("face-msg", ""); if (n) saved("Saved. Rebuild for the face to change."); }).catch((e) => say("face-msg", e.message, true));
 // Saves the points and the choices; true when the points went in too.
 async function saveFace() {
   try {
-    const points = await savePoints();
-    await call("set", { key: "eyes", value: $("eyes").value || null });
-    await call("set", { key: "face_tracking", value: $("mouth-tracking").value === "true" });
-    await call("set", { key: "mouth_fix", value: $("mouth-fix").checked ? { free: $("mouth-free").checked, scale: +$("mouth-scale").value } : null });
-    await refreshManifest(); await refreshStatus(); app.renderAll();
-    if (points) { say("face-msg", ""); return true; }
-    say("face-msg", `Saved the choices, but not the points: ${placed(facePoints)} of ${pointCount()} are placed. Place them all in step 2.`, true);
+    await saveChoices();
+    if (await savePoints()) { say("face-msg", ""); return true; }
+    say("face-msg", `${placed(facePoints)} of ${pointCount()} points are placed. Place them all in step 2.`, true);
   } catch (e) { say("face-msg", e.message, true); }
   return false;
 }
-$("face-apply").onclick = async () => { if (await saveFace()) saved("Saved the points and the choices. Rebuild for the face to change."); };
 // The face points shape the head, eyes and mouth from the rig step on: a first build runs
 // everything, a later one from "build".
 $("face-build").onclick = async () => {
@@ -233,5 +248,7 @@ function showFeatures() {
   showPointsState(); showFacePoints();
   if (markerReady) $("marker").contentWindow.postMessage({ type: "face-features", features: features() }, location.origin);
 }
-$("eyes").onchange = () => { showEyeChoice(); showFeatures(); };
-$("mouth-fix").onchange = () => { $("mouth-free").disabled = $("mouth-scale").disabled = !$("mouth-fix").checked; };
+// (the eyes' choice first, then the points it leaves to keep: with the eyes covered the mouth's four are all)
+$("eyes").onchange = async () => { showEyeChoice(); await keepChoices(); showFeatures(); savePoints().catch((e) => say("face-msg", e.message, true)); };
+$("mouth-fix").onchange = () => { $("mouth-free").disabled = $("mouth-scale").disabled = !$("mouth-fix").checked; keepChoices(); };
+for (const id of ["mouth-tracking", "mouth-free", "mouth-scale"]) $(id).onchange = keepChoices;

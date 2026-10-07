@@ -129,7 +129,8 @@ try {
       <div class="row" style="margin-top:var(--s4)"><button class="act" id="create">Create the character</button>
         <label class="inline"><input type="checkbox" id="create-prepare" checked> and get it ready</label></div>
       <p class="help">Getting it ready runs the survey, lists the pieces and makes the face patch in one go, a minute or
-        two. Then you mark the eyes and mouth and press Save and build. Untick to go page by page yourself.</p>
+        two. The one thing left for you is the Face page: mark the eyes and mouth and press Save and build. Untick to
+        run each page's step yourself.</p>
       <div class="msg" id="create-msg"></div>
     </div>
   </div>
@@ -276,11 +277,19 @@ try {
     </div>
     <div class="card">
       <div class="title">2 · Mark the eyes and mouth <span class="chip" id="points-state"></span></div>
+      <div class="opt"><b>First: how the eyes move</b>
+        <p class="help">Makes the eyes follow where you look in the tracking app (Warudo: set eye movement to "blendshapes").
+          Blinking works either way.
+          <b>Eyes behind a visor, glasses or a mask:</b> choose "eyes are covered", and only the mouth's four points are asked for below.</p>
+        <select id="eyes" aria-label="eye tracking"><option value="">automatic (recommended)</option><option value="iris">moving iris</option>
+          <option value="slide">sliding eye patches</option><option value="none">none: eyes stay still</option>
+          <option value="hidden">none: eyes are covered (visor, glasses, mask)</option></select>
+        <p class="choice" id="eyes-choice"></p>
+        <div class="examples" data-examples="eyes"></div></div>
       <p class="help">Click the highlighted point on the picture, twelve in all: four per eye (the two corners, the top and
         bottom of the opening, where the lashes meet the white) and four for the mouth. Drag a dot to move it. The 3D view
         shows where each lands on the head: the dots must sit on the eyes and the mouth (a mouth once got marked on the
-        nose). They save by themselves once all twelve are placed. <b>Eyes behind a visor, glasses or a mask:</b> choose
-        "eyes are covered" under Eye tracking in step 3, and only the mouth's four points are asked for.</p>
+        nose). They save by themselves once all are placed.</p>
       <p class="help"><b>A mouth drawn as a line:</b> put the two corner points on the ends of the line, and the top and
         bottom points just above and just below its middle, the same distance from it. Only the corners set how big the
         talking mouth is; the top and bottom only say how high it sits, so there is no need to mark a bigger box. For a
@@ -297,23 +306,15 @@ try {
       </div>
     </div>
     <div class="card w-lg">
-      <div class="title">3 · How the face moves</div>
-      <div class="opt"><b>Eye tracking</b>
-        <p class="help">Makes the eyes follow where you look in the tracking app (Warudo: set eye movement to "blendshapes").
-          Blinking works either way.</p>
-        <select id="eyes" aria-label="eye tracking"><option value="">automatic (recommended)</option><option value="iris">moving iris</option>
-          <option value="slide">sliding eye patches</option><option value="none">none: eyes stay still</option>
-          <option value="hidden">none: eyes are covered (visor, glasses, mask)</option></select>
-        <p class="choice" id="eyes-choice"></p>
-        <div class="examples" data-examples="eyes"></div></div>
+      <div class="title">3 · How the mouth moves</div>
       <div class="opt"><b>Mouth tracking</b>
         <p class="help">Makes the mouth follow yours in the tracking app: the jaw and the mouth's corners, not only the
           five talking shapes. Eye tracking and mouth tracking are separate: have both, either or neither.</p>
         <select id="mouth-tracking" aria-label="mouth tracking"><option value="true">on (recommended)</option>
           <option value="false">off: only the five talking shapes</option></select></div>
       <div class="opt"><b>Mouth</b>
-        <p class="help">By default the mouth opens by bending the face around the marked mouth. If it barely opens, looks
-          smeared, or the face dents when talking, redraw it.</p>
+        <p class="help">By default the talking mouth is redrawn on a patch of its own: it opens cleanly and never bends
+          the face. Untick both to have the face itself bend around the marked mouth instead (the model's own mouth, as painted).</p>
         <label class="inline"><input type="checkbox" id="mouth-fix"> redraw the talking mouth shapes</label>
         <p class="help indent">Replaces the talking shapes (a, i, u, e, o) with drawn mouth shapes fitted to the
           marked mouth: a dark opening with a tongue that opens cleanly.</p>
@@ -324,8 +325,7 @@ try {
           <span class="help">how big the drawn mouth is against the marked one (1.3 = 30% bigger)</span></div>
         <div class="examples" data-examples="mouth"></div></div>
       <div class="row" style="margin-top:var(--s3)"><button class="act" id="face-build" data-job>Save and build</button>
-        <button class="act alt" id="face-apply">Save only</button>
-        <span class="help">saves the points and these choices; the build is what puts them on the avatar</span></div>
+        <span class="help">the points and every choice on this page save as you make them; the build is what puts them on the avatar</span></div>
       <div class="msg" id="face-msg"></div>
     </div>
   </div>
@@ -445,8 +445,9 @@ try {
   <header class="page-head">
     <div class="kicker">Step 7 of 8</div>
     <h2>Movement <span class="chip" data-chip="movement"></span></h2>
-    <p class="lead">Catches clothing that doesn't move with the body, before you find it in Warudo. Two tests, both run in
-      Blender and report back. To <i>watch</i> the avatar move, open it on Review.</p>
+    <p class="lead">Catches clothing that doesn't move with the body, before you find it in Warudo. Two tests: each runs in
+      Blender for about a minute and then says here what it found, and what to do about it if anything. Nothing on this
+      page moves on screen: to <i>watch</i> the avatar move, go on to Review.</p>
   </header>
   <div class="cols" style="margin-bottom:var(--s3)">
     <div class="card"><div class="title">Pose test</div>
@@ -459,17 +460,17 @@ try {
         (renders never run them). It reports hair or cloth that droops, pieces left behind by a swing, and swinging parts
         sinking into the body. Needs a finished build.</p>
       <button class="act alt" id="springs-run" data-job>Run the physics test</button>
-      <div id="springs-out" class="msg" style="margin-top:var(--s2)">not run yet</div></div>
+      <div id="springs-out" style="margin-top:var(--s2)"><b>Result:</b> not run yet</div></div>
   </div>
   <span class="msg" id="movement-msg"></span>
   <div class="split">
     <div class="view sticky" id="movement-view"><div class="hint"><span style="color:#ff5a5a">■</span> stays behind ·
-      <span style="color:#ffa040">■</span> stretches · <span style="color:#8a8a8a">■</span> fine · click a row to highlight</div></div>
+      <span style="color:#ffa040">■</span> stretches · <span style="color:#5aa0ff">■</span> looked at, right as it is · <span style="color:#8a8a8a">■</span> fine · click a row to highlight</div></div>
     <div class="card list"><div class="title" style="padding-top:var(--s3)">Pose test results</div>
-      <table><thead><tr><th></th><th>Piece</th><th>What goes wrong</th><th>Suggested fix</th><th></th></tr></thead><tbody id="movement-rows"></tbody></table>
+      <p id="movement-summary" style="margin:0 var(--s3) var(--s2)"></p>
+      <table><thead><tr><th></th><th>Piece</th><th>What the test saw</th><th>What to do</th><th></th></tr></thead><tbody id="movement-rows"></tbody></table>
       <p class="msg" id="movement-next"></p></div>
   </div>
-  <div class="row" style="margin-top:var(--s3)"><button class="act alt" id="move-viewer-open">Watch it move (Review) →</button></div>
 </section>
 
 <section class="page" id="review" data-step="8">
