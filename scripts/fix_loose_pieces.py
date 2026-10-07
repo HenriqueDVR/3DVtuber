@@ -83,6 +83,11 @@ def main():
 
 
 def tidy(armature, meshes, join):
+    for mesh in meshes:
+        # first: the join below only joins copies whose leading bones agree
+        shared = loose.share_strand_seams(mesh)
+        if shared:
+            print(f"{shared} copies of vertices along texture seams in hair and cloth given one set of weights")
     if join:
         for mesh in meshes:
             # a crack in the generated surface: its two rims under a millimetre apart, so not "touching"

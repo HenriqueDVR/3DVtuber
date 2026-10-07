@@ -261,7 +261,8 @@ def split_torn_seams(mesh_obj, armature_obj, verts=None):
     on model C's twin-tail). A vertex left holding faces only on the other side takes its weights
     from its neighbours there, so no corner of a cut face is still pulled by the other limb.
 
-    Never between two hair chains or two cloth chains: side by side over one head of hair or one
+    Never between a hair or cloth chain and the body it hangs from (anything but an arm), nor
+    between two hair chains or two cloth chains: side by side over one head of hair or one
     cape they are no chain of each other, and the cut slit model D's hair and cape along every
     chain boundary (476 of its 628 cut edges), open whenever they swung. Springs beside each other
     move together, and what is left between them stretches, as cloth does. Appendage chains are
@@ -281,6 +282,12 @@ def split_torn_seams(mesh_obj, armature_obj, verts=None):
         if first < 0 or second < 0 or first == second:
             return False
         if strand(names[first]) and strand(names[first]) == strand(names[second]):
+            return False
+        # a hair or cloth chain is only cut from an arm: where a cape's top is on the hips or a thigh
+        # the cut opened as the body bent (model B: 24 copies, 2.8 cm apart with the spine twisted,
+        # 10.3 cm with a leg lifted; seen in Warudo as holes in the cape). It stretches there instead.
+        chain, other = (_STRAND_CHAIN.match(names[first]), names[second]), (_STRAND_CHAIN.match(names[second]), names[first])
+        if any(is_chain and not _ARM.search(bone) and not _STRAND_CHAIN.match(bone) for is_chain, bone in (chain, other)):
             return False
         pair = (min(first, second), max(first, second))
         if pair not in torn:
@@ -329,6 +336,8 @@ def split_torn_seams(mesh_obj, armature_obj, verts=None):
 
 # The side-by-side chains hair.py and cloth.py lay over one head of hair or one cape.
 _STRAND_CHAIN = re.compile(r"(Hair|Cloth)\d+_\d+$")
+# Arm bones, fingers included: what a chain resting against it is still cut from.
+_ARM = re.compile(r"Shoulder|Arm|Hand|Thumb|Index|Middle|Ring|Little")
 # The fingers of one hand: Left/Right, then the finger and its segment.
 _FINGER = re.compile(r"(Left|Right)(?:Thumb|Index|Middle|Ring|Little)[A-Z][a-z]+$")
 
@@ -472,6 +481,12 @@ def fix_weight_islands(mesh_obj, armature_obj, verts=None):
     A cut's two sides share their spots but not their surface (see _surface): walked across it,
     a glove and the strip of thigh it was cut from read as patches on each other, and one took
     the other's weights.
+
+    Not a patch on one hair or cloth chain among another's: chains side by side over one cape hand
+    the surface from one to the next, as split_torn_seams leaves them joined. Taken for strays,
+    model B's cape had 5 such patches (up to 32 vertices) each given the mean of everything round
+    it, up to 25 bones a vertex: the export keeps 4, so the file moved them otherwise than the
+    .blend did (whole cape swinging, worst edge 7.1 cm in the .blend, 10.0 in the file).
     """
     verts = world_vertices(mesh_obj) if verts is None else verts
     weld, edge_a, edge_b = _surface(mesh_obj, armature_obj, verts)
@@ -499,6 +514,9 @@ def fix_weight_islands(mesh_obj, armature_obj, verts=None):
             # entirely, which will one day move the other way, is a mistake worth undoing.
             if not _torn(armature_obj, [was, now]):
                 continue
+            strand = _STRAND_CHAIN.match(was)
+            if strand and _STRAND_CHAIN.match(now) and strand.group(1) == _STRAND_CHAIN.match(now).group(1):
+                continue
             borrowed = borrowed * (weights[:, members].sum(axis=0).mean() / borrowed.sum())
             weights[:, members] = borrowed[:, None]
             touched.extend(int(index) for index in members)
@@ -509,6 +527,84 @@ def fix_weight_islands(mesh_obj, armature_obj, verts=None):
     if fixed:
         _write_weights(mesh_obj, weights, touched)
     return fixed
+
+
+def share_strand_seams(mesh_obj, verts=None):
+    """Give the copies of a vertex that hair or cloth chains hold one set of weights: their mean.
+    Returns how many vertices changed.
+
+    An imported mesh has a copy of a vertex for each side of a texture seam, and each copy gets its
+    own weights. Where the copies are led by different chains over one head of hair or one cape,
+    or by different bones of one chain, the seam opens whenever the chains swing: model A built
+    from its manifest had 291 such copies over 1 cm apart with one chain swung (22.6 cm the worst),
+    seen in Warudo as tears in the hair; the build marked good had 2. With one set of weights the
+    surface stretches there instead, as split_torn_seams leaves neighbouring chains joined.
+
+    Only spots where every copy is led by a chain of one kind (all hair or all cloth): a copy on the
+    head, a limb or the hips is the other side of something that may be meant to part.
+    Changes no geometry and no UVs.
+    """
+    verts = world_vertices(mesh_obj) if verts is None else verts
+    count = len(verts)
+    weld, _, _ = welded_edges(mesh_obj, verts)
+    if np.array_equal(weld, np.arange(count)):
+        return 0
+    weights = _weight_table(mesh_obj, count)
+    kinds = {"Hair": 1, "Cloth": 2}
+    kind_of_group = np.array([kinds[m.group(1)] if (m := _STRAND_CHAIN.match(group.name)) else 0
+                              for group in mesh_obj.vertex_groups] + [0])
+    leader = np.argmax(weights, axis=0)
+    leader[weights.max(axis=0) <= 0.0] = -1
+    kind = kind_of_group[leader]
+    low, high, copies = np.full(count, 9), np.zeros(count, dtype=int), np.zeros(count, dtype=int)
+    np.minimum.at(low, weld, kind)
+    np.maximum.at(high, weld, kind)
+    np.add.at(copies, weld, 1)
+    strands = (low[weld] == high[weld]) & (low[weld] > 0) & (copies[weld] > 1)
+    total = np.zeros_like(weights)
+    np.add.at(total, (slice(None), weld), weights)
+    mean = total[:, weld] / copies[weld]
+    touched = np.flatnonzero(strands & (np.abs(weights - mean).max(axis=0) > 1e-4))
+    if len(touched):
+        weights[:, touched] = mean[:, touched]
+        _write_weights(mesh_obj, weights, [int(index) for index in touched])
+    return int(len(touched))
+
+
+def share_seam_copies(mesh_obj, verts=None):
+    """Give the copies of a vertex led by one and the same bone one set of weights: their mean.
+    Returns how many vertices changed.
+
+    Run before the T-pose bake. A step that rewrites weights vertex by vertex can leave the two
+    copies along a texture seam a little apart: the fitted-skirt repair left 30 copies across
+    model A's lower back with 6 to 12% of an upper arm on one copy and none on its twin. Nothing
+    shows in the modelled pose; the bake then turns the arms 45 degrees and leaves the two copies
+    apart for good, a slit above the belt seen in Warudo as a hole in the clothing.
+
+    Copies led by different bones are left alone: the two sides of a cut (a sleeve cut free of the
+    skirt it rested on) are meant to part. Changes no geometry and no UVs.
+    """
+    verts = world_vertices(mesh_obj) if verts is None else verts
+    count = len(verts)
+    weld, _, _ = welded_edges(mesh_obj, verts)
+    if np.array_equal(weld, np.arange(count)):
+        return 0
+    weights = _weight_table(mesh_obj, count)
+    leader = np.argmax(weights, axis=0)
+    leader[weights.max(axis=0) <= 0.0] = -1
+    low, high, copies = np.full(count, len(weights)), np.full(count, -2), np.zeros(count, dtype=int)
+    np.minimum.at(low, weld, leader)
+    np.maximum.at(high, weld, leader)
+    np.add.at(copies, weld, 1)
+    one_bone = (low[weld] == high[weld]) & (low[weld] >= 0) & (copies[weld] > 1)
+    total = np.zeros_like(weights)
+    np.add.at(total, (slice(None), weld), weights)
+    mean = total[:, weld] / copies[weld]
+    touched = np.flatnonzero(one_bone & (np.abs(weights - mean).max(axis=0) > 1e-4))
+    if len(touched):
+        weights[:, touched] = mean[:, touched]
+        _write_weights(mesh_obj, weights, [int(index) for index in touched])
+    return int(len(touched))
 
 
 def _patches_of(leader, weld, edge_a, edge_b, count):

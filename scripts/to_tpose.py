@@ -57,6 +57,9 @@ def main():
         for mesh in meshes:
             changed = loose.synchronize_shoulder_seams(mesh, armature)
             print(f"{mesh.name}: synchronized {changed} shoulder seam vertices (topology unchanged)")
+            # past the shoulders too: any copies on one bone that an earlier step left a little apart
+            shared = loose.share_seam_copies(mesh)
+            print(f"{mesh.name}: {shared} copies of vertices along texture seams given one set of weights")
     down = math.radians(args.angle)
     direction = (math.cos(down), 0.0, -math.sin(down))
     turned = tpose.to_t_pose(meshes[0], armature, direction=direction, extra_meshes=meshes[1:],
