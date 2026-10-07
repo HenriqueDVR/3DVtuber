@@ -314,7 +314,10 @@ class Project:
             "loose": not o["loose_pieces"] and "loose-piece repair off",
             "fingers": (o["fingers"] == "none" and "fingers off") or (rigged and "the adopted rig has its own fingers"),
             "pieces": not pieces and "no clothing pieces named in the manifest",
-            "finger_guides": (o["fingers"] != "guides" and "finger guides off") or (rigged and "the adopted rig has its own fingers"),
+            # a model with mitten hands: the finger step found none to rig, and the guides step, which
+            # relays fingers, stopped the whole build with no avatar (the synthetic character, default options)
+            "finger_guides": (o["fingers"] != "guides" and "finger guides off") or (rigged and "the adopted rig has its own fingers")
+            or (self.state["steps"].get("fingers", {}).get("status") == "nothing to do" and "no separate fingers were found on this model"),
             "tpose": o["tpose"] == "none" and "T-pose off",
             "chest": not o["chest"] and "chest bounce off",
             "eyes": (o["eyes"] in ("none", "hidden") or not face) and "no eye tracking, or no face points",

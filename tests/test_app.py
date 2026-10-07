@@ -1254,6 +1254,26 @@ class Engine(unittest.TestCase):
             manifest.MIGRATIONS.update(real[1])
 
 
+class NoFingers(unittest.TestCase):
+    """A model with mitten hands still builds: the steps that work on fingers stand aside."""
+
+    def test_the_guides_step_is_skipped_when_no_fingers_were_found(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "character.json"
+            data = manifest.new("model.glb", "Test")
+            data["out_dir"] = "out"
+            manifest.save(data, path)
+            project = Project(path, blender="blender")
+            plan = {name: (runs, why) for name, runs, why in project.plan()}
+            self.assertTrue(plan["finger_guides"][0])
+            project.state["steps"]["fingers"] = {"status": "nothing to do"}
+            plan = {name: (runs, why) for name, runs, why in project.plan()}
+            self.assertEqual(plan["finger_guides"], (False, "no separate fingers were found on this model"))
+            self.assertTrue(plan["tpose"][0] and plan["export"][0])
+            project.state["steps"]["fingers"] = {"status": "done"}
+            self.assertTrue(dict((n, r) for n, r, _ in project.plan())["finger_guides"])
+
+
 class FinishedVrm(unittest.TestCase):
     """A character whose source is a finished .vrm is taken in as it is and added to, not built."""
 
