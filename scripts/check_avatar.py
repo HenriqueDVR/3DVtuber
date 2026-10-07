@@ -45,6 +45,8 @@ SQUASH_MIN = 0.02
 SHOW = 3
 # Close-ups of the worst spots (--spots) cut away what lies more than this (m) in front of them.
 SPOT_CLIP = 0.08
+# The ring drawn round a spot in its close-ups (m, its outer radius): a fifth of the picture's width.
+SPOT_RING = 0.03
 # A build is worth looking at by hand when it is over one of these.
 LIMITS = {"unweighted": 0, "stretch_cm": 6.0, "squash": 0.35}
 
@@ -194,6 +196,10 @@ def render_spots(folder, measured, posed_by, arm, mesh_obj, edges, rest, reset, 
     A textured, flat-lit orthographic view from the front and from the side the spot is on, the
     camera and two red markers on the edge's ends staying put between rest and posed, so the pair
     shows what the numbers mean. Only the rig check's worst two, not every pose.
+
+    A ring is drawn round the spot in every picture, and one more picture shows the whole figure in
+    the pose with the ring on it: the two 6 mm dots alone were not found on the close-ups (the user,
+    2026-10-07), and a close-up of black cloth did not say where on the body it was.
     """
     from pathlib import Path
     folder = Path(folder)
@@ -233,8 +239,19 @@ def render_spots(folder, measured, posed_by, arm, mesh_obj, edges, rest, reset, 
         marker.data.materials.append(red)
         scene.collection.objects.link(marker)
         markers.append(marker)
+    # flat, facing the camera and held in front of whatever covers the spot
+    pink = bpy.data.materials.new("SpotRing")
+    pink.diffuse_color = (1.0, 0.0, 0.75, 1)  # reads on skin, black cloth, white and orange hair alike
+    ring = bpy.data.objects.new("SpotRing", bpy.data.meshes.new("SpotRing"))
+    turn = np.linspace(0, 2 * np.pi, 64, endpoint=False)
+    circle = np.stack([np.cos(turn), np.sin(turn), np.zeros(64)], axis=1)
+    ring.data.from_pydata([*(circle * SPOT_RING).tolist(), *(circle * SPOT_RING * 0.8).tolist()], [],
+                          [(i, (i + 1) % 64, 64 + (i + 1) % 64, 64 + i) for i in range(64)])
+    ring.data.materials.append(pink)
+    scene.collection.objects.link(ring)
     matrix = np.array(mesh_obj.matrix_world)
     spots = []
+    tall = float(rest[:, 2].max() - rest[:, 2].min())
 
     def posed_points():
         bpy.context.view_layer.update()
@@ -278,15 +295,31 @@ def render_spots(folder, measured, posed_by, arm, mesh_obj, edges, rest, reset, 
             for view, direction in (facing, ("side", (float(np.sign(centre[0]) or 1), 0, 0))):
                 camera.location = Vector(focus) + Vector(direction) * 2
                 camera.rotation_euler = (-Vector(direction)).to_track_quat("-Z", "Z").to_euler()
+                ring.rotation_euler, ring.scale = camera.rotation_euler, (1, 1, 1)
+                ring.location = Vector(focus) + Vector(direction) * (SPOT_CLIP - 0.005)
                 path = folder / f"{kind}_{view}_{state}.png"
                 scene.render.filepath = str(path)
                 bpy.ops.render.render(write_still=True)
                 files[f"{'side' if view == 'side' else 'face'}_{state}"] = str(path)
+            if state == "posed":
+                # the whole figure in the pose, from the spot's side, nothing cut away: where on the body it is
+                direction = Vector(facing[1])
+                middle = Vector((0, float(focus[1]), float(rest[:, 2].min()) + tall / 2))
+                camera.data.ortho_scale, camera.data.clip_start = tall * 1.25, 0.1
+                camera.location = middle + direction * 2
+                camera.rotation_euler = (-direction).to_track_quat("-Z", "Z").to_euler()
+                ring.rotation_euler, ring.scale = camera.rotation_euler, (tall * 1.6,) * 3
+                ring.location = Vector(focus) + direction * 1.5
+                path = folder / f"{kind}_where.png"
+                scene.render.filepath = str(path)
+                bpy.ops.render.render(write_still=True)
+                files["where"] = str(path)
+                camera.data.ortho_scale, camera.data.clip_start = 0.3, 2 - SPOT_CLIP
         reset()
         spots.append({"kind": kind, "pose": label, "what": what, "at": [round(float(v), 3) for v in centre],
                       "weights": [weights(a), weights(b)], "files": files})
         print(f"CHECK SPOT {kind} ({label}, {what}) at {np.round(centre, 3)}: {folder}")
-    for marker in markers:
+    for marker in (*markers, ring):
         bpy.data.objects.remove(marker, do_unlink=True)
     bpy.data.objects.remove(camera, do_unlink=True)
     return spots

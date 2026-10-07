@@ -99,12 +99,15 @@ async function renderDetail() {
 // the rig check's worst stretch and squash, close up: at rest, then in the pose that did it
 function spotsHtml(spots) {
   if (!spots?.length) return "";
-  return spots.map((s) => `<p class="msg" style="margin:8px 0 2px">Where it ${esc(s.what)} (${esc(s.pose)}), red dots on the edge's ends:
-      <button class="act alt small" data-watch="${esc(s.pose)}" title="open the avatar in the viewer, in this pose">Watch it</button></p>
-    <div class="spots">${["face", "side"].flatMap((v) => ["rest", "posed"].map((st) => {
-      const caption = `${v === "face" ? (s.at[1] > 0 ? "back" : "front") : "side"}, ${st === "rest" ? "at rest" : s.pose}`;
-      return `<figure><img src="${served(s.files[`${v}_${st}`])}" alt="${esc(caption)}"><figcaption>${esc(caption)}</figcaption></figure>`;
-    })).join("")}</div>`).join("");
+  // what to look for, said: the pictures alone were a close-up of cloth with two dots nobody found
+  const look = { stretch: "the surface between the two red dots is pulled long: a thin, smeared or torn-looking strip",
+    squash: "the surface between the two red dots is pressed together: a crease, a fold or a dent" };
+  return spots.map((s) => `<p class="msg" style="margin:8px 0 2px"><b>The spot that ${esc(s.what)}</b> in the pose “${esc(s.pose)}”. ${s.files.where ? "In the pink ring" : "Look for"}: ${look[s.kind] || "the two red dots are the ends of the measured edge"}.
+      Each pair is the same view standing still, then in the pose; click a picture to see it large.
+      <button class="act alt small" data-watch="${esc(s.pose)}" title="open the avatar in the viewer, in this pose">Watch it move</button></p>
+    <div class="spots">${(s.files.where ? [["where", `where on the body (${s.pose})`]] : []).concat(["face", "side"].flatMap((v) => ["rest", "posed"].map((st) =>
+      [`${v}_${st}`, `${v === "face" ? (s.at[1] > 0 ? "back" : "front") : "side"}, ${st === "rest" ? "standing still" : s.pose}`])))
+      .map(([file, caption]) => `<figure><img src="${served(s.files[file])}" alt="${esc(caption)}"><figcaption>${esc(caption)}</figcaption></figure>`).join("")}</div>`).join("");
 }
 
 // [label, action] rerunning a failed step, first setting the options its error code names as the fix
