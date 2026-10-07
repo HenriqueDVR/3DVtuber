@@ -66,7 +66,9 @@ class Engine(unittest.TestCase):
         self.assertNotIn("finger_guides", runs)
         self.assertNotIn("vrm_check", runs)
         self.assertNotIn("pieces", runs)  # no clothing pieces named
-        self.assertNotIn("mouth", runs)
+        # the redrawn mouth is the default since 2026-10-07 (the user's choice); null in the manifest turns it off
+        self.assertIn("mouth", runs)
+        self.assertNotIn("mouth", self.runs(self.project({"options": {}, "triangles": 40000}, mouth_fix=None)))
 
     def test_build_passes_the_manifest_its_joints_and_flags(self):
         data = manifest.load(self.path)

@@ -14,6 +14,7 @@ two along new UV seams (model A's face patch did), so its unmodified model is th
 Plain Python, no bpy: the desktop app and agents read and write manifests outside Blender.
 """
 
+import copy
 import json
 import os
 import struct
@@ -63,7 +64,10 @@ OPTIONS = {
     "eyes": None,             # eye tracking: "iris" (moving iris), "slide" (painted patch), "none" (still, they blink),
                               # "hidden" (behind a visor or glasses: not marked, no blink); None: from the survey
     "slide": [],              # with "slide": [horizontal, vertical] travel in mm
-    "mouth_fix": None,        # {"scale": 1.3, "free": true} runs scripts/fix_mouth.py
+    # scripts/fix_mouth.py, once the face is marked: the talking shapes redrawn, on a mouth patch of its
+    # own (free). None: the face bends around the marked mouth. On by default since 2026-10-07 (the
+    # user: the best mouth on every character tried); a manifest written before says null itself.
+    "mouth_fix": {"scale": 1.0, "free": True},
     "chest": False,           # chest bounce: two spring bones on the chest (pipeline/chest.py)
     "chest_amount": 1.0,      # how much it bounces, 0.25 (barely) to 2 (a lot)
     "hair_hits_body": True,   # false: hair springs collide with the head alone (hair lying on the shoulders)
@@ -84,7 +88,7 @@ RIG_KEY = "vtuber_rig"
 def new(source, name, author="Unknown"):
     """A manifest for `source` with every option at its default and no pieces."""
     return {"version": VERSION, "name": name, "author": author, "source": str(source),
-            "reference": None, "face": None, "out_dir": None, "joints": {}, "options": dict(OPTIONS),
+            "reference": None, "face": None, "out_dir": None, "joints": {}, "options": copy.deepcopy(OPTIONS),
             "pieces": []}
 
 
@@ -168,7 +172,7 @@ def load(path):
     """Read and check a manifest; paths stay as written, resolve them with `path_of`."""
     path = Path(path)
     data = migrate(json.loads(path.read_text(encoding="utf-8")))
-    data["options"] = {**OPTIONS, **data.get("options", {})}
+    data["options"] = {**copy.deepcopy(OPTIONS), **data.get("options", {})}
     data.setdefault("joints", {})
     data.setdefault("pieces", [])
     for key in PATHS:
