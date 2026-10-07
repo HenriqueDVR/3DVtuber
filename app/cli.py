@@ -403,7 +403,8 @@ def cmd_pieces(args):
                                      # points and counts are the reference's, when there is one
                                      [manifest.path_of(project.data, "reference") or manifest.path_of(project.data, "source"),
                                       "--json", out,
-                                      "--manifest", project.manifest_path, "--glb", project.out / "pieces.glb"],
+                                      "--manifest", project.manifest_path, "--glb", project.out / "pieces.glb",
+                                      "--picture", project.out / engine.FIRST_PICTURE],
                                      log=project.out / "pieces.log")
     if code != 0:
         raise StepFailed(f"list_pieces failed (see {project.out / 'pieces.log'})\n{output[-2000:]}")

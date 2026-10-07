@@ -66,6 +66,9 @@ TESTED = {"4.2", "4.5", "5.2"}
 SUPPORT_ENDS = {"4.2": "2026-07", "4.5": "2027-07", "5.2": "2028-07"}
 # What this machine's user chose in the app, e.g. which Blender to run. out/ is never committed.
 SETTINGS = REPO / "out" / "settings.json"
+# A character's picture before it has a build to pose: the model as it came, from the front, drawn
+# when its pieces are listed (scripts/list_pieces.py --picture). The menus stood empty until the first build.
+FIRST_PICTURE = "first_look.png"
 # Under this many triangles a face has too few vertices to bend without denting.
 COARSE_FACE = 3_000
 
@@ -588,15 +591,17 @@ class Project:
         # character in more than one pose
         stills = {p.stem: str(p) for folder in renders if not folder.name.startswith("sheets")
                   for p in folder.glob("*.png") if p.stem.rpartition("_")[2] in ("front", "back", "left", "right")}
+        first = self.out / FIRST_PICTURE
+        first = str(first) if first.exists() else None
         # a finished .vrm isn't surveyed: it is as ready to build as a surveyed model
         return {"surveyed": statuses.get("survey") == "done" or self.improving, "built": statuses.get("vrm_check") == "done",
                 "stale": sorted(n for n, s in statuses.items() if s == "stale"),
                 "failed": sorted(n for n, s in statuses.items() if s == "failed"),
                 "finished": max((e.get("finished") or "" for e in steps.values()), default="") or None,
-                "approved": self.approved() is not None, "picture": str(pictures[0]) if pictures else None,
+                "approved": self.approved() is not None, "picture": str(pictures[0]) if pictures else first,
                 "portrait": str(min(fronts, key=lambda p: (next((i for i, pose in enumerate(("hang", "rest"))
                                                                  if p.stem.startswith(pose)), 2), -p.stat().st_mtime)))
-                if fronts else None, "stills": stills, "portraits": self.portrait_set(),
+                if fronts else first, "stills": stills, "portraits": self.portrait_set(),
                 "waiting": self.looked_at() is False}
 
     # ----- the character's pictures

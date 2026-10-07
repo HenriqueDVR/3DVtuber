@@ -21,7 +21,7 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "addon"))
 
-from vtuber_maker.pipeline import cloth, landmarks, manifest, meshdata, normalize, parts, texture_space  # noqa: E402
+from vtuber_maker.pipeline import cloth, landmarks, manifest, meshdata, normalize, parts, preview, texture_space  # noqa: E402
 
 # Pieces smaller than this share of the vertices are listed only when named in the manifest,
 # or when they are hair or a face insert: a model can have hundreds of specks.
@@ -43,6 +43,8 @@ def main():
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--glb", type=Path, help="also export the normalized model, each vertex carrying its "
                                                  "piece label as the _PIECE attribute, for the app's 3D view")
+    parser.add_argument("--picture", type=Path, help="also draw the model from the front, as it came, on a clear ground: "
+                                                     "the app's picture of a character that has no build to pose yet")
     args = parser.parse_args(argv)
     data = manifest.load(args.manifest) if args.manifest else None
     height = data["options"]["height"] if data else 1.6
@@ -128,6 +130,11 @@ def main():
     args.json.write_text(json.dumps(report, indent=2), encoding="utf-8")
     if args.glb:
         export_labelled(mesh, labels, args.glb)
+    if args.picture:
+        try:
+            preview.render(str(args.picture.resolve()), "front", 1024)
+        except Exception as error:  # noqa: BLE001 -- a picture for the menus: the listing never fails for want of it
+            print(f"the picture could not be drawn: {error}")
     print(f"VTUBER_MAKER_PIECE_LIST {len(listed)} pieces written to {args.json}")
 
 
