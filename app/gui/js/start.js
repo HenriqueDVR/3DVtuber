@@ -1,6 +1,6 @@
 // The Setup page's checks: what the app needs, in order, each with the button that gets it. A computer
-// that lacks something a build needs opens on Setup (main.js); one that has it all never sees it unasked.
-import { $, S, app, esc } from "./core.js";
+// that lacks something a build needs opens on Setup (main.js); one that has it all sees it unasked once, the first start.
+import { $, S, app, call, esc } from "./core.js";
 import { ask, toast } from "./ui.js";
 import { loadSetup } from "./setup.js";
 
@@ -70,5 +70,6 @@ async function act(check) {
   if (state?.result?.installed || state?.result?.ready) toast("Installed.", "good");
 }
 
-$("start-go").onclick = () => app.go("model");
+// (a first start that had to get Blender ends here: Setup isn't opened unasked again)
+$("start-go").onclick = () => { if (!S.setup?.welcomed) call("welcome", {}).catch(() => {}); app.go("model"); };
 app.renderStart = renderStart;
