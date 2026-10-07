@@ -65,7 +65,12 @@ cd 3DVtuber
 python -m app.server
 ```
 
-On Windows, double-click `OC2VRM.bat` instead.
+On Windows, double-click `OC2VRM.bat` instead: on a new computer it offers to install Python and
+the one package the app needs. The app then opens on **Get set up**, which can fetch Blender and
+the VRM Add-on for itself, asking first; after that everything runs on your computer. On macOS
+double-click `OC2VRM.command`, on Linux run `sh oc2vrm.sh` (neither has been run by the author
+yet). Trying the app for someone else?
+See [docs/TESTERS.md](docs/TESTERS.md).
 
 **Make an avatar**
 
@@ -129,6 +134,7 @@ The same build, without the window. Every command prints JSON.
 ```bash
 python -m app setup                                   # what is missing on this computer
 python -m app init samples/my_oc.fbx --name MyOC      # start a character
+python -m app init avatar.vrm --name MyAvatar         # or improve a finished VRM 1.0 avatar as it is
 python -m app prepare out/MyOC/character.json         # survey, piece listing, face patch
 python -m app run out/MyOC/character.json             # the whole chain
 python -m app status out/MyOC/character.json          # what each step made, what is worth a look

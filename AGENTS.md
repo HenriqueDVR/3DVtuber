@@ -54,7 +54,8 @@ for the add-on zip.
   elsewhere), loose-part and clothing repairs (`loose.py`), fingers and T-pose (`fingers.py`,
   `finger_guides.py`, `hand_setup.py`, `tpose.py`), the face (`face_points.py`, `face_rig.py`,
   `face_texture.py`, `eyes.py`), physics (`hair.py`, `hair_physics.py`, `cloth.py`,
-  `spring_sim.py`), `vrm_export.py`, and the character manifest (`manifest.py`, `roles.py`).
+  `spring_sim.py`), `vrm_export.py`, the character manifest (`manifest.py`, `roles.py`), and
+  `improve.py` (a finished `.vrm` taken in as it is and added to, instead of a model built).
 - `scripts/`: Blender entry points (`make_vrm.py`, `to_tpose.py`, `apply_pieces.py`,
   `check_avatar.py`, `render_pose.py`, the `fix_*`/`add_*`/`check_*` tools, `retexture/`).
 - `app/`: plain Python. `engine.py` runs a character's build chain from its manifest, one Blender

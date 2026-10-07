@@ -68,7 +68,7 @@ user first. Without it the points are marked by hand. The Stable Diffusion face 
 
 ## The steps
 
-In order: `survey`, `build`, `hair`, `ahoge`, `face_tracking`, `loose`, `fingers`, `pieces`,
+For a model (a finished `.vrm` runs fewer: see "Improving a finished avatar"). In order: `survey`, `build`, `hair`, `ahoge`, `face_tracking`, `loose`, `fingers`, `pieces`,
 `finger_guides`, `tpose`, `chest`, `eyes`, `mouth`, `check`, `export`, `vrm_check`, `movement`,
 `springs`. `status` says which will run and why the others won't.
 
@@ -139,6 +139,44 @@ shoulders (it is lifted up its chains when the head tilts onto them); long hair 
 With `eyes` left to the survey, modelled eyes get a moving iris and painted eyes sliding patches.
 When the eye step refuses an iris (it would show over the lids), the engine reruns it with sliding
 eyes and remembers that for the character.
+
+## Improving a finished avatar (.vrm)
+
+A character whose `source` is a `.vrm` is **taken in as it is** (`manifest.improves`,
+`pipeline/improve.py`, `scripts/import_vrm.py`): its skeleton, weights, expressions, springs,
+colliders, node constraints, toon materials and metadata all stay, its meshes stay apart, and
+nothing is rigged again. VRM 1.0 only: `init` refuses a VRM 0.x file.
+
+```bash
+python -m app init avatar.vrm --name MyAvatar     # no prepare: there is nothing to get ready
+python -m app set out/MyAvatar/character.json chest true   # optional
+python -m app run out/MyAvatar/character.json     # about a minute; the file given is not changed
+```
+
+The steps that run: `build` (here: read the file), `chest` when asked for, `check`, `export`,
+`vrm_check`, `springs`. Every step that would make what the file already has is skipped, with the
+reason in `status` (`engine.KEPT`). The Parts, Joints, Face, Paint and Movement pages have nothing
+to do for such a character.
+
+What the build does to the file:
+
+- **Joints straightened.** Every joint is written unrotated, on the model's axes, as VRoid
+  exports them: tracking apps turn a bone about its own axes, and Warudo twists the fingers of a
+  file whose joints rest turned (any file saved from Blender by the VRM Add-on's own menu). Node
+  constraints are carried: a roll axis is renamed to the model axis it lies along; an aim joint
+  keeps its frame, since its axis has to point at its source at rest.
+- **Chest bounce** (`chest`, `chest_amount`): two spring bones, on the mesh the chest is on.
+- **Checked like a build**: the rig check and the spring check on all its meshes together, and
+  contact sheets.
+
+`status` says what the file came with (`source_holds`), what it gained (`gained`) and the
+verdict. Anything the file had that the export lacks (a bone, a face shape, a spring, a material,
+the blink) is an **issue**. What the rig check finds is a *look*: the skinning is the file's own
+and no step here remakes it.
+
+Not done to such a file: new face shapes, eye tracking, hair springs for a file without them, a
+T-pose bake, finger work. The humanoid bones carry the pipeline's names inside Blender and get
+their own names back in the exported file.
 
 ## Texture paint
 
@@ -217,6 +255,25 @@ the tracking app. Ask the user for a screenshot per pose.
 starts a run or writes a file is a POST with the page's own header. A second start shows the app
 already running. The page's three.js and three-vrm are the copies in `app/gui/vendor/`, pinned by
 SHA-256 (`app/vendor.py`), so the app needs no internet connection.
+
+## First start
+
+A computer the app hasn't been set up on opens on **Get set up** (`gui/js/start.js`, page `start`;
+again from Setup). It is drawn from `engine.setup()`: a check that a button can fix carries
+`action` (`install_blender`, Windows and Linux x64: `engine.install_blender` downloads the build in
+`engine.BLENDER_BUILDS` from blender.org into `tools/blender`, checks its pinned SHA-256, unpacks it
+as a portable copy, chooses it and installs the add-on in it; `get_blender` elsewhere (macOS) opens
+blender.org; `install_addon` has
+the chosen Blender install the VRM Add-on from its extensions site, `engine.addon_command`;
+`install:<package>` pip-installs one of `engine.PACKAGES`; `vendor` keeps the pages' libraries).
+Each install is a download: it runs only when the user presses its button and confirms. `welcome`
+(POST) remembers the page was finished (`out/settings.json`, `welcomed`). `OC2VRM.bat` offers
+Python (winget) and Pillow before the app starts; `oc2vrm.sh` (Linux, macOS; `OC2VRM.command` for
+Finder) says how to get Python and offers Pillow. A new Blender LTS means new `BLENDER_ZIP` and
+`BLENDER_TAR` (address, size and the hash from blender.org's `.sha256` file beside them). The
+add-on is looked for in each system's own Blender settings folder (`engine.blender_settings`).
+**macOS and Linux have not been run**: only what the tests can show on Windows is checked. For people trying the app:
+`docs/TESTERS.md`.
 
 ## The look
 
