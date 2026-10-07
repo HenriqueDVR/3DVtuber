@@ -366,9 +366,17 @@ async function menu() {
   const p = open(), sure = known(), next = sure ? upNext() : -1;
   const tags = (names) => names.map((n) => `<em class="${sure && done(n) ? "done" : ""}">${TITLES[n]}</em>`).join("");
   const says = (i) => !sure ? "" : i === 1 ? badge("build") || "model to .vrm" : i === 2 ? badge("movement") : badge("parts");
-  html(A("cards"), CARDS.map((c, i) => `<button class="mcard" data-i="${i}" style="--n:${i};--m:${c[2]}"><div class="un"><span class="no">0${i + 1}</span>${i === next ? `<span class="next">next up</span>` : ""}
-    <img alt="" hidden><div class="mystery" hidden>?</div><div class="cap"><b>${c[0]}</b><span class="pgs">${tags(GROUPS[c[1]] || ["build"])}</span><span>${esc(says(i))}</span></div></div></button>`).join(""));
-  [...A("cards").children].forEach((m, n) => m.classList.toggle("on", n === card));
+  // The cards are made once and written into after: the menu is drawn again when the picked character
+  // has loaded (its badges, "next up"), and cards made anew then dropped in a second time, pictures gone
+  // for a moment: a glitch a second after every character picked.
+  if (A("cards").children.length !== CARDS.length) A("cards").innerHTML = CARDS.map((c, i) => `<button class="mcard" data-i="${i}" style="--n:${i};--m:${c[2]}"><div class="un"><span class="no">0${i + 1}</span><span class="next" hidden>next up</span>
+    <img alt="" hidden><div class="mystery" hidden>?</div><div class="cap"><b>${c[0]}</b><span class="pgs"></span><span class="says"></span></div></div></button>`).join("");
+  [...A("cards").children].forEach((m, n) => {
+    m.classList.toggle("on", n === card);
+    m.querySelector(".next").hidden = n !== next;
+    html(m.querySelector(".pgs"), tags(GROUPS[CARDS[n][1]] || ["build"]));
+    put(m.querySelector(".says"), says(n));
+  });
   const arts = await Promise.all(poses(p));
   if (p?.manifest !== open()?.manifest) return;
   A("cards").querySelectorAll("img").forEach((img, i) => {
