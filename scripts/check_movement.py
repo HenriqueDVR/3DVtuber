@@ -243,6 +243,9 @@ def main():
                 row["findings"].append({"pose": pose, "kind": "torn", "stretch_cm": entry["stretch_cm"]})
         if row["findings"]:
             row["suggested"], row["why"] = _suggest(row, rest[members], shoulder_x, hips_z, looks.get(int(label)), named)
+            # seen, and right as it is (a cape the arms move under): listed so the user knows it was
+            # looked at, but not a problem. Shown as one, "the fix: as it should be" read as an error
+            row["expected"] = not row["suggested"] and row["why"].endswith("as they should")
             report.append(row)
     report.sort(key=lambda r: -len(r["findings"]))
     # every piece's touching vertices and the most of them left behind in any pose, for tuning

@@ -42,6 +42,9 @@ export function plain(step, reason) {
   if (step === "eyes" && /face points|patch/i.test(r)) return "eye tracking needs face points on a face patch (Face page).";
   return lastLine(r);
 }
+// A piece the pose test listed and found right as it is (a cape the arms move free under): not a problem.
+// (results written before the test said so itself are read by its words)
+export const movesFine = (row) => row.expected ?? (!row.suggested && /as they should$/.test(row.why || ""));
 export const stepName = (s) => s.replaceAll("_", " ");
 
 // a file under out/ as the server hands it out

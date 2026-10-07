@@ -1,5 +1,5 @@
 // The sidebar: pages, what each has left (badges), and the rebuild cue once something changed.
-import { $, S, app, stepName } from "./core.js";
+import { $, S, app, movesFine, stepName } from "./core.js";
 
 const ORDER = ["model", "parts", "joints", "face", "options", "build", "movement", "review"];
 const TITLES = { model: "Model", parts: "Parts", joints: "Joints", face: "Face", options: "Options", build: "Build", movement: "Movement", review: "Review" };
@@ -49,7 +49,7 @@ export function nextRun(status) {
 // Each page's badge and chip: what's done there and what's left, from what's already loaded.
 export function renderNav() {
   const m = S.manifest, st = S.status, steps = Object.fromEntries((st?.steps || []).map((s) => [s.step, s]));
-  const flagged = S.movement?.pieces?.length;
+  const flagged = S.movement?.pieces?.filter((row) => !movesFine(row)).length;
   const failed = (st?.steps || []).filter((s) => s.runs && s.status === "failed").length;
   const pending = (st?.steps || []).filter((s) => s.runs && !settled(s)).length;
   const moved = Object.keys(m?.joints || {}).length;

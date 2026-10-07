@@ -1,12 +1,13 @@
 // Movement: the pose test (pieces left behind or torn) and the physics test (springs running).
 import * as THREE from "three";
-import { $, S, app, call, esc, hex, say, roleName, ROLE_INFO, ROLE_STAGE } from "./core.js";
+import { $, S, app, call, esc, hex, movesFine, say, roleName, ROLE_INFO, ROLE_STAGE } from "./core.js";
 import { makeView } from "./views.js";
+import { toast } from "./ui.js";
 import { job } from "./jobs.js";
 
 const moveView = makeView($("movement-view"));
 let moveMeshes = [];
-const VERDICT_COLOUR = { behind: 0xff5a5a, torn: 0xffa040, fine: 0x8a8a8a };
+const VERDICT_COLOUR = { behind: 0xff5a5a, torn: 0xffa040, expected: 0x5aa0ff, fine: 0x8a8a8a };
 
 // `gltf` is the listed model Parts loaded: cloned here, coloured by what the pose test found
 export async function loadMovement(gltf) {
@@ -24,6 +25,7 @@ export async function loadMovement(gltf) {
 function verdictOf(label) {
   const row = S.movement?.pieces.find((r) => r.label === label);
   if (!row) return "fine";
+  if (movesFine(row)) return "expected";
   return row.findings.some((f) => f.kind === "stays behind") ? "behind" : "torn";
 }
 function renderMovement(selectedLabel) {
@@ -41,10 +43,16 @@ function renderMovement(selectedLabel) {
     mesh.material.needsUpdate = true;
   }
   const body = $("movement-rows"), movement = S.movement;
+  $("movement-summary").innerHTML = summary(movement);
   if (!movement) { body.innerHTML = `<tr><td colspan="5" class="msg">Not run yet: press “Run the pose test”.${moveMeshes.length ? "" : " List the pieces (Parts) to see them here."}</td></tr>`; return; }
   if (!movement.pieces.length) { body.innerHTML = `<tr><td colspan="5" class="done">Every piece moves with the body in every pose.</td></tr>`; return; }
-  body.innerHTML = movement.pieces.map((row) => {
+  // what needs a fix first; what was looked at and is right as it is after it
+  body.innerHTML = [...movement.pieces].sort((a, b) => movesFine(a) - movesFine(b)).map((row) => {
     const verdict = verdictOf(row.label);
+    if (verdict === "expected") return `<tr data-label="${row.label}"><td><span class="swatch" style="background:${hex(VERDICT_COLOUR.expected)}"></span></td>
+      <td>${esc(row.name || `piece ${row.label}`)}<span class="sub">${row.count.toLocaleString()} vertices${row.role ? `, now: ${roleName(row.role)}` : ""}</span></td>
+      <td>stays where it is while the arms move (${[...new Set(row.findings.map((f) => f.pose))].join(", ")})</td>
+      <td><b class="done">Nothing to fix</b><span class="sub">${esc(row.why[0].toUpperCase() + row.why.slice(1))}. It is listed so you know the test looked at it.</span></td><td></td></tr>`;
     // one line per kind of problem, with the poses it shows in
     const behind = row.findings.filter((f) => f.kind === "stays behind"), torn = row.findings.filter((f) => f.kind === "torn");
     const what = [behind.length ? `stays where it is while the body moves away (${behind.map((f) => f.pose).join(", ")})` : "",
@@ -76,17 +84,36 @@ function renderMovement(selectedLabel) {
     });
   });
 }
-$("movement-run").onclick = () => job("movement", {});
-$("springs-run").onclick = () => job("springs", {});
-$("move-viewer-open").onclick = () => { app.go("review"); app.openViewer(); };
+// What a test found, in a line: on the page above its results, and said when the run ends (the page
+// only changed some small print, and a finished test read as one that had told nothing).
+function summary(movement) {
+  if (!movement) return "";
+  const fine = movement.pieces.filter(movesFine).length, wrong = movement.pieces.length - fine;
+  const pieces = (n) => `${n} piece${n === 1 ? "" : "s"}`;
+  return `<b class="${wrong ? "warn" : "done"}">${wrong ? `${pieces(wrong)} to fix: each row below says what was seen and what fixed it before.` : fine ? "Nothing to fix." : "Nothing to fix: every piece moves with the body in every pose."}</b>`
+    + (fine ? ` ${pieces(fine)} looked at and right as ${fine === 1 ? "it is" : "they are"} (blue).` : "");
+}
+function springSummary(r) {
+  const found = r.sagging.length + r.coming_away.length + (r.clipping ? 1 : 0);
+  return found ? `${found} thing${found === 1 ? "" : "s"} to look at: listed under the physics test.` : `Nothing wrong: ${r.chains} spring chains ran, nothing droops, comes away or sinks into the body.`;
+}
+const text = (html) => Object.assign(document.createElement("i"), { innerHTML: html }).textContent;
+$("movement-run").onclick = async () => {
+  const state = await job("movement", {});
+  if (state && !state.error && !state.cancelled && S.movement) toast(`Pose test: ${text(summary(S.movement))}`, S.movement.pieces.some((row) => !movesFine(row)) ? "info" : "good", { ms: 9000 });
+};
+$("springs-run").onclick = async () => {
+  const state = await job("springs", {});
+  if (state && !state.error && !state.cancelled && S.springs) toast(`Physics test: ${springSummary(S.springs)}`, springSummary(S.springs).startsWith("Nothing") ? "good" : "info", { ms: 9000 });
+};
 
 export async function loadSprings() {
   const r = S.manifestPath ? (await call("springs_result")).result : null;
   S.springs = r;
-  if (!r) { $("springs-out").textContent = "not run yet"; return; }
+  if (!r) { $("springs-out").innerHTML = "<b>Result:</b> not run yet"; return; }
   const lines = [...r.sagging.map((s) => `${esc(s.chain)} sags ${s.sag_cm} cm lower than modelled just standing still (its springs are too soft for its weight)`),
     ...r.coming_away.map((c) => `a piece of ${c.count} vertices (#${c.label}) is left ${c.gap_cm} cm behind the hair or cloth it sits on when that swings: give it a role on Parts (a small bit sitting on hair or cloth: “rides another piece”)`),
     r.clipping ? `swinging hair or cloth sinks up to ${r.clipping.deepest_cm} cm into the body` : ""].filter(Boolean);
-  $("springs-out").innerHTML = lines.length ? `<ul class="plain">${lines.map((l) => `<li>${l}</li>`).join("")}</ul>` + (r.sagging.length || r.clipping ? `<span class="help">Sagging and sinking aren't adjustable in the app yet; if they look wrong in the viewer, say so on the Stuck? page.</span>` : "")
-    : `<span class="done">${r.chains} spring chains: nothing droops or comes away</span>`;
+  $("springs-out").innerHTML = `<b>Result:</b> ` + (lines.length ? `<ul class="plain">${lines.map((l) => `<li>${l}</li>`).join("")}</ul>` + (r.sagging.length || r.clipping ? `<span class="help">Sagging and sinking aren't adjustable in the app yet; if they look wrong in the viewer, say so on the Stuck? page.</span>` : "")
+    : `<span class="done">✓ ${springSummary(r)}</span>`);
 }
