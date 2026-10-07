@@ -16,7 +16,7 @@ from one generated model, in a few minutes, on your own computer.
 
 [Quick start](#-quick-start) · [What you get](#-what-you-get) · [The app](#-the-guided-app) · [How it works](#-how-it-works) · [For AI agents](#-for-ai-coding-agents)
 
-<img src="docs/img/app-paint.png" alt="The app's Paint page with a test character" width="820">
+<img src="docs/img/app-select.png" alt="The app's character select" width="820">
 
 </div>
 
@@ -66,7 +66,7 @@ python -m app.server
 ```
 
 On Windows, double-click `OC2VRM.bat` instead: on a new computer it offers to install Python and
-the one package the app needs. The app then opens on **Get set up**, which can fetch Blender and
+the one package the app needs. The app then opens on **Setup**, which can fetch Blender and
 the VRM Add-on for itself, asking first; after that everything runs on your computer. On macOS
 double-click `OC2VRM.command`, on Linux run `sh oc2vrm.sh` (Linux was run in a container, start to
 finished avatar; macOS has not been run yet). Trying the app for someone else?

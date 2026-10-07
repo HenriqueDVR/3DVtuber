@@ -258,8 +258,8 @@ SHA-256 (`app/vendor.py`), so the app needs no internet connection.
 
 ## First start
 
-A computer the app hasn't been set up on opens on **Get set up** (`gui/js/start.js`, page `start`;
-again from Setup). It is drawn from `engine.setup()`: a check that a button can fix carries
+A computer that lacks something a build needs opens on **Setup** (`main.js`; its check rows are
+`gui/js/start.js`); one that has it all opens on Characters. The rows are drawn from `engine.setup()`: a check that a button can fix carries
 `action` (`install_blender`, Windows and Linux x64: `engine.install_blender` downloads the build in
 `engine.BLENDER_BUILDS` from blender.org into `tools/blender`, checks its pinned SHA-256, unpacks it
 as a portable copy, chooses it and installs the add-on in it; `get_blender` elsewhere (macOS) opens
@@ -274,6 +274,28 @@ Finder) says how to get Python and offers Pillow. A new Blender LTS means new `B
 add-on is looked for in each system's own Blender settings folder (`engine.blender_settings`).
 **macOS and Linux have not been run**: only what the tests can show on Windows is checked. For people trying the app:
 `docs/TESTERS.md`.
+
+## Updates and the testers' copy
+
+The repository is private, so the app updates itself from GitHub with a key (`app/update.py`).
+`update.json` beside the app (never committed; `update.example.json` shows it): `repo`, `ref` (the
+branch testers follow) and `token`, a fine-grained key the owner makes with read-only access to
+this one repository's contents.
+
+```bash
+python -m app pack                 # dist/OC2VRM-<commit>.zip: the committed files, their version, update.json
+python -m app update               # is a newer commit published on that branch?
+python -m app update --apply       # get it (the Setup page's Update button)
+```
+
+An update downloads the published commit's zip (about 8 MB) and lays it over the app's own files.
+`out/`, `tools/`, `samples/`, `dist/`, `update.json`, the settings and a `music.*` are never written
+or removed; replaced files go to `out/update/backup_<old>/`; a file the last version brought and
+this one doesn't is removed. `.oc2vrm_version.json` says which commit a packed copy is. A running
+launcher isn't written over: its new copy waits as `<name>.new` and the launcher takes it when the
+app restarts (the server exits with code 75 and `OC2VRM.bat` / `oc2vrm.sh` start it again). A git
+checkout is updated with `git pull --ff-only` instead. Publishing to testers is moving the branch
+named in `ref`: `git push origin main:testers`.
 
 ## The look
 

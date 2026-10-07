@@ -12,19 +12,21 @@ reporting there is whether they got you to a running app.
 On Windows you don't have to install anything beforehand: the app gets what it needs, asking
 before each download.
 
-1. Download or clone this repository and open its folder.
+1. Unzip the copy you were sent and open its folder.
 2. Double-click **`OC2VRM.bat`**.
    - No Python on the computer: it offers to install Python 3.12 (through winget, Windows' own
      installer). Answer **Y**.
    - Then it offers Pillow, a small Python package the app needs. Answer **Y**.
-3. The app opens on **Get set up**. Go down the list: a red line has a button that fixes it.
+3. The app opens on **Setup** while something a build needs is missing. Go down the list: a red line
+   has a button that fixes it.
    - **Blender > Get it for me**: downloads Blender 5.2 LTS from blender.org (about 390 MB) into
      the app's own folder and adds the VRM Add-on. A few minutes. Nothing is installed on the
      computer, and a Blender you already have is neither used nor changed unless you pick it.
-   - When nothing is red, press **Start: make an avatar**.
+   - When nothing is red, press **All set: make an avatar**. From then on the app opens on your
+     characters.
 
-Nothing is downloaded unless you answer Y or press a button that says so. The page comes back
-any time from **Setup > Get set up, step by step**. After setup the app is fully local: your
+Nothing is downloaded unless you answer Y or press a button that says so. The same page is
+**Setup** in the app's menu at any time. After setup the app is fully local: your
 models and avatars stay on your computer.
 
 ### macOS
@@ -35,7 +37,7 @@ models and avatars stay on your computer.
    into **Applications** (the app looks there). The app does not fetch Blender on macOS.
 3. Download or clone this repository. Double-click **`OC2VRM.command`** (the first time: right-click,
    Open, Open), or in Terminal: `sh oc2vrm.sh`. It offers to install Pillow.
-4. The app opens in your browser on **Get set up**. **VRM Add-on > Install it for me** adds it to
+4. The app opens in your browser on **Setup**. **VRM Add-on > Install it for me** adds it to
    Blender; or in Blender: Edit > Preferences > Get Extensions > "VRM format".
 
 ### Linux
@@ -46,7 +48,7 @@ models and avatars stay on your computer.
    libgl1 libegl1 libxkbcommon0 libsm6 libice6`); a normal desktop has them.
 2. Download or clone this repository, then `sh oc2vrm.sh`. It offers to install Pillow (where the
    system refuses pip, it names the system package instead).
-3. The app opens in your browser on **Get set up**. On a 64-bit Intel/AMD computer
+3. The app opens in your browser on **Setup**. On a 64-bit Intel/AMD computer
    **Blender > Get it for me** fetches blender.org's build into the app's folder with the VRM
    Add-on. Or install Blender yourself: unpack blender.org's download into `/opt`, your home
    folder, `~/Applications` or `~/.local/share`, or have `blender` on your PATH. Snap and Flatpak
@@ -62,6 +64,16 @@ that read VRM 1.0, or VNyan under Proton, and skip *Send to Warudo*.
 | **Python 3.10 or newer** (3.12 recommended) | runs the app | [python.org/downloads](https://www.python.org/downloads/); in the installer tick **Add python.exe to PATH**; then `pip install -r requirements.txt` and `python -m app.server` |
 | **Blender 4.2 or later** (5.2 LTS is the tested one) | does the 3D work in the background; you never open it | [blender.org/download](https://www.blender.org/download/), then **Check again** |
 | **VRM Add-on for Blender** | writes the avatar file | the app's *Install it for me* button, or in Blender: Edit > Preferences > Get Extensions > "VRM format" |
+
+## Getting a fix
+
+When a fix is published the **Setup** page says "A newer one is published" under **This app**. Press
+**Update**: it downloads the app's own code (about 8 MB) and starts the app again. Your characters,
+their builds and Blender are not touched and nothing else is downloaded again. Say which version you
+are on in a report: the line under **This app**.
+
+Keep the file `update.json` that came in your copy: it is what lets the app ask for updates. Don't
+share it.
 
 ## 2. What to bring
 
@@ -96,7 +108,7 @@ To send a report:
 
 1. Open **Stuck?** in the app, write what you saw, press the button. It gathers that character's
    settings, logs, checks and rendered pictures into one folder (`out/<name>/bundles/<date>/`).
-2. Zip that folder and send it, with the line at the bottom of **Get set up** ("App version ...").
+2. Zip that folder and send it, with the "App version ..." line from the **Setup** page.
 
 The 3D model file itself is not in the bundle. Rendered pictures of the character, and any
 screenshots you attached on the Review page, are: leave them out if you'd rather not share them.
