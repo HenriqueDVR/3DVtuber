@@ -16,7 +16,9 @@ from one generated model, in a few minutes, on your own computer.
 
 [Quick start](#-quick-start) · [What you get](#-what-you-get) · [The app](#-the-guided-app) · [How it works](#-how-it-works) · [For AI agents](#-for-ai-coding-agents)
 
-<img src="docs/img/app-select.png" alt="The app's character select" width="820">
+<a href="docs/media/tool_showcase.mp4"><img src="docs/img/tool_showcase.webp" alt="The app at work: character select, parts, paint, build" width="820"></a>
+
+<sub>The first seconds of a 98-second tour. <a href="docs/media/tool_showcase.mp4">Watch all of it</a> (9 MB, with sound).</sub>
 
 </div>
 

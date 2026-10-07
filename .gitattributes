@@ -3,3 +3,6 @@ app/gui/vendor/** -text
 *.bat -text
 *.sh text eol=lf
 *.command text eol=lf
+# pictures and film for the README: not part of the app, kept out of the testers' zip and of updates
+docs/img/** export-ignore
+docs/media/** export-ignore
