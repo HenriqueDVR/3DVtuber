@@ -111,9 +111,19 @@ $("create").onclick = async () => {
     await app.loadProjects(made.manifest);
     if (made.improving) {
       // a finished avatar has nothing to mark or list: getting it ready is building it
-      toast("A finished avatar: it is taken in as it is, and nothing is rigged again.", "good", { ms: 8000 });
+      const terms = made.licence || {};
+      toast(terms.spec === "0.x" ? "A finished avatar in VRM 0.x: it is taken in as it is and written out as VRM 1.0. Nothing is rigged again."
+        : "A finished avatar: it is taken in as it is, and nothing is rigged again.", "good", { ms: 8000 });
       app.go("build");
-      if ($("create-prepare").checked) job("run", {});
+      // another's avatar under terms the app can't read: theirs to read and to say, before anything is changed
+      let may = !terms.confirm;
+      if (terms.confirm) {
+        may = !!await ask("This avatar's licence", { text: `${terms.name || "This avatar"}${terms.author ? ` by ${terms.author}` : ""}: ${terms.why}. `
+          + "Read its terms before the app changes it. Confirm only if they let you change the avatar, or it is your own.", ok: "I have read them and may change it" });
+        if (may) { await call("set", { key: "licence_read", value: true }); await app.loadProjects(made.manifest); }
+        else toast("Not confirmed: the build will stop at the licence. You can confirm later on the Options page.", "warn", { ms: 12000 });
+      }
+      if (may && $("create-prepare").checked) job("run", {});
     } else if ($("create-prepare").checked) job("prepare", {});
   } catch (e) { say("create-msg", e.message, true); }
 };

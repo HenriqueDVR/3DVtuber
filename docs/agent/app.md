@@ -152,7 +152,21 @@ eyes and remembers that for the character.
 A character whose `source` is a `.vrm` is **taken in as it is** (`manifest.improves`,
 `pipeline/improve.py`, `scripts/import_vrm.py`): its skeleton, weights, expressions, springs,
 colliders, node constraints, toon materials and metadata all stay, its meshes stay apart, and
-nothing is rigged again. VRM 1.0 only: `init` refuses a VRM 0.x file.
+nothing is rigged again. VRM 1.0 or 0.x; what is written is always VRM 1.0.
+
+**A VRM 0.x file** is converted on the way in (`improve.convert`). The VRM Add-on fills the 1.0
+bones, expressions, springs and colliders as it imports one and turns the model to face the 1.0
+way; the name, author and terms, the first-person mesh settings and the eyes' range it leaves at
+its defaults, and those are carried over here. Terms never come out looser than the file had them:
+what 0.x can't state (political, hate use) stays refused, "commercial use allowed" becomes a
+person's, a licence named "Other" keeps its address and the strictest fields beside it.
+
+**Its licence.** The add-on won't import a VRM 0.x file whose licence forbids changed versions
+(`CC_BY_ND`, `CC_BY_NC_ND`) or is a web page it can't read, until a person has looked. `init`
+answers with `licence` (`engine.licence`: whose avatar, the pages, `confirm`, `why`); the build
+stops with `VM-LICENCE` and the address until the user has said they read the terms and may change
+the avatar: option `licence_read` (the page asks when the character is made, and on Options).
+That is the user's to say: never set it for them. A VRM 1.0 file's terms the add-on doesn't judge.
 
 ```bash
 python -m app init avatar.vrm --name MyAvatar     # no prepare: there is nothing to get ready

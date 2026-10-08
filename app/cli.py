@@ -239,8 +239,7 @@ def cmd_init(args):
         raise ValueError(f"{model.name} is a {model.suffix or 'file with no type'}: the model must be one of {', '.join(MODEL_TYPES)}"
                          + (" (unpack the .zip and name the model inside it)" if model.suffix.lower() in (".zip", ".rar", ".7z") else ""))
     if Path(args.model).suffix.lower() == ".vrm" and engine.shipped(args.model) is None:
-        raise ValueError(f"{args.model} isn't a VRM 1.0 file. A VRM 0.x file isn't taken in: "
-                         "export it as VRM 1.0 (VRoid Studio and UniVRM both do)")
+        raise ValueError(f"{args.model} isn't a VRM file the app can read (VRM 1.0 or 0.x)")
     path.parent.mkdir(parents=True, exist_ok=True)
     data = manifest.new(_relative(args.model, path), args.name, args.author)
     if args.face:
@@ -257,6 +256,8 @@ def cmd_init(args):
     other = None if data.get("rig") else manifest.rig_kind(args.model)
     improving = manifest.improves(data)
     return {"manifest": str(path), "source": data["source"], "rig": data.get("rig"), "other_rig": other,
+            # whose avatar it is and whether its terms have to be read first (`set licence_read true` says they were)
+            "licence": engine.licence(args.model) if improving else None,
             "improving": improving, "next": f"python -m app {'run' if improving else 'prepare'} {path}"}
 
 

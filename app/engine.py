@@ -799,7 +799,7 @@ class Project:
         if name == "survey":
             return ["preflight.py", source, "--json", stem.with_suffix(".json"), "--height", o["height"]], []
         if name == "build" and self.improving:
-            return ["import_vrm.py", source, vrm, "--blend", blend], NO_EXPORT
+            return ["import_vrm.py", source, vrm, "--blend", blend, *(["--licence-read"] if o["licence_read"] else [])], NO_EXPORT
         if name == "build":
             args = ["make_vrm.py", source, vrm, "--name", self.name, "--author", data.get("author") or "Unknown",
                     "--blend", blend, "--height", o["height"], "--keep-eyes", "--manifest", self.manifest_path]
@@ -1273,7 +1273,7 @@ def shipped(path):
     gltf = _glb_json(path)
     vrm = ((gltf or {}).get("extensions") or {}).get("VRMC_vrm")
     if not vrm:
-        return None
+        return _shipped_0(path, gltf)
     nodes = gltf.get("nodes", [])
     bones = (vrm.get("humanoid") or {}).get("humanBones") or {}
     joints = sorted({j for skin in gltf.get("skins", []) for j in skin.get("joints", [])})
@@ -1291,6 +1291,88 @@ def shipped(path):
             "materials": len(materials),
             "toon": sum("VRMC_materials_mtoon" in (m.get("extensions") or {}) for m in materials),
             "textures": len(gltf.get("images", [])), "megabytes": round(Path(path).stat().st_size / 2**20, 1)}
+
+
+# VRM 0.x preset names as the 1.0 ones `shipped` speaks in.
+PRESETS_0 = {"a": "aa", "i": "ih", "u": "ou", "e": "ee", "o": "oh", "blink": "blink", "lookup": "lookUp",
+             "lookdown": "lookDown", "lookleft": "lookLeft", "lookright": "lookRight"}
+
+
+def _shipped_0(path, gltf):
+    """`shipped` for a VRM 0.x file, in the same words, so what a converted avatar came with can
+    be held against what left (`lost`); None when the file is no VRM at all. A spring per root
+    bone and every collider counted singly, as the VRM Add-on makes of them on the way to 1.0."""
+    vrm = ((gltf or {}).get("extensions") or {}).get("VRM")
+    if not isinstance(vrm, dict) or "humanoid" not in vrm:
+        return None
+    nodes = gltf.get("nodes", [])
+    bones = {b["bone"]: {"node": b["node"]} for b in vrm["humanoid"].get("humanBones", []) if "bone" in b and "node" in b}
+    joints = sorted({j for skin in gltf.get("skins", []) for j in skin.get("joints", [])})
+    groups = (vrm.get("blendShapeMaster") or {}).get("blendShapeGroups") or []
+    bound = {PRESETS_0.get(g.get("presetName")) for g in groups if g.get("binds")} - {None}
+    springs = vrm.get("secondaryAnimation") or {}
+    named = [mesh.get("extras") or {} for mesh in gltf.get("meshes", [])]
+    named += [p.get("extras") or {} for mesh in gltf.get("meshes", []) for p in mesh.get("primitives", [])]
+    return {"bones": len(bones), "fingers": sum(1 for b in bones if any(f in b for f in FINGERS)),
+            # (the arms' level is read on 1.0's axes: a 0.x file faces the other way)
+            "turned_joints": _turned(nodes, joints), "arms_off_level": None,
+            "blink": "blink" in bound, "vowels": [v for v in VOWELS if v in bound],
+            "look": {"Bone": "bone", "BlendShape": "expression"}.get((vrm.get("firstPerson") or {}).get("lookAtTypeName")),
+            "looks_bound": all(k in bound for k in LOOKS),
+            "shapes": sorted({n for extras in named for n in extras.get("targetNames", [])}),
+            "springs": sum(len(g.get("bones", [])) for g in springs.get("boneGroups", [])),
+            "colliders": sum(len(g.get("colliders", [])) for g in springs.get("colliderGroups", [])),
+            "materials": len(gltf.get("materials", [])),
+            "toon": sum(p.get("shader") == "VRM/MToon" for p in vrm.get("materialProperties", [])),
+            "textures": len(gltf.get("images", [])), "megabytes": round(Path(path).stat().st_size / 2**20, 1)}
+
+
+# Licences a VRM 0.x file can name that forbid changing it, and the two licence pages the VRM
+# Add-on reads by itself (with the answer on each that still wants a person to look).
+NO_CHANGES = ("CC_BY_ND", "CC_BY_NC_ND")
+READ_PAGES = {"hub.vroid.com": ("modification", "disallow"), "uv-license.com": ("remarks", "true")}
+
+
+def licence(path):
+    """What a .vrm says of who made it and what may be done with it, for the page that takes it in:
+    {"spec", "name", "author", "licence", "pages", "confirm", "why"}, or None when it isn't one.
+
+    `confirm`: the user has to read the terms and say they may change the avatar before it is
+    taken in. The VRM Add-on's own rule (importer/license_validation.py), kept here so it can be
+    asked before a Blender starts: a VRM 0.x file that forbids derivatives, or whose terms are a
+    web page the add-on can't read. A VRM 1.0 file's terms the add-on doesn't judge, and neither
+    does this. The build asks the add-on itself (improve.licence_stop): that answer is the one that counts.
+    """
+    from urllib.parse import parse_qsl, urlsplit
+    extensions = (_glb_json(path) or {}).get("extensions") or {}
+    if "VRMC_vrm" in extensions:
+        meta = extensions["VRMC_vrm"].get("meta") or {}
+        return {"spec": "1.0", "name": meta.get("name"), "author": ", ".join(meta.get("authors") or []),
+                "licence": meta.get("modification"), "pages": [u for u in (meta.get("otherLicenseUrl"),) if u],
+                "confirm": False, "why": ""}
+    meta = (extensions.get("VRM") or {}).get("meta")
+    if not isinstance(meta, dict):
+        return None
+    name = meta.get("licenseName")
+    pages = [u for u in dict.fromkeys((meta.get("otherLicenseUrl") if name == "Other" else None, meta.get("otherPermissionUrl"))) if u]
+    why = []
+    if name in NO_CHANGES:
+        why.append(f"its licence ({name.replace('_', ' ')}) doesn't allow changed versions")
+    if name == "Other" and not meta.get("otherLicenseUrl"):
+        why.append("it names its own licence and gives no address for it")
+    for page in pages:
+        key = stop = None
+        try:
+            url = urlsplit(page)
+            key, stop = READ_PAGES.get(url.hostname if url.path.endswith("/license") else None, (None, None))
+        except ValueError:
+            pass
+        if key is None:
+            why.append(f"its terms are on a page to read: {page}")
+        elif dict(parse_qsl(url.query)).get(key) == stop:
+            why.append(f"its licence page says changes need a look: {page}")
+    return {"spec": "0.x", "name": meta.get("title"), "author": meta.get("author"), "licence": name, "pages": pages,
+            "confirm": bool(why), "why": "; ".join(why)}
 
 
 def gained(before, after):

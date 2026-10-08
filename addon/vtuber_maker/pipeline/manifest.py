@@ -72,6 +72,7 @@ OPTIONS = {
     "chest": False,           # chest bounce: two spring bones on the chest (pipeline/chest.py)
     "chest_amount": 1.0,      # how much it bounces, 0.25 (barely) to 2 (a lot)
     "hair_hits_body": True,   # false: hair springs collide with the head alone (hair lying on the shoulders)
+    "licence_read": False,    # a .vrm whose licence has to be read before it is changed (VRM 0.x): the user has, and may
     "facing": None,           # None: front and back are found from the feet (orient.py); "file": the model
                               # faces the way its file has it, for one the app turned around
 }
@@ -253,7 +254,7 @@ def validate(data):
     for key, allowed in (("eyes", EYES), ("fingers", FINGERS), ("tpose", TPOSE), ("skinning", SKINNING), ("facing", FACING)):
         if options.get(key, OPTIONS[key]) not in allowed:
             problems.append(f"option {key} must be one of {', '.join('null (automatic)' if a is None else a for a in allowed)}")
-    for key in ("chest", "hair_hits_body"):
+    for key in ("chest", "hair_hits_body", "licence_read"):
         if not isinstance(options.get(key, OPTIONS[key]), bool):
             problems.append(f"option {key} must be true or false")
     amount = options.get("chest_amount", OPTIONS["chest_amount"])

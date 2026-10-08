@@ -615,6 +615,70 @@ class Engine(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "option facing must be one of"):
             manifest.load(self.path)
 
+    def vrm_0(self, licence="Other", page="https://example.org/terms.html", permission=None):
+        """A small VRM 0.x file's JSON: three bones, a mouth shape and a blink, two springs, a toon material."""
+        meta = {"title": "Old", "author": "Somebody Else", "licenseName": licence, "otherLicenseUrl": page,
+                **({"otherPermissionUrl": permission} if permission else {})}
+        groups = [{"name": "A", "presetName": "a", "binds": [{"mesh": 0, "index": 0, "weight": 100}]},
+                  {"name": "Blink", "presetName": "blink", "binds": [{"mesh": 0, "index": 1, "weight": 100}]},
+                  {"name": "LookUp", "presetName": "lookup", "binds": []}]
+        return {"asset": {"version": "2.0"}, "nodes": [{"name": "Hips", "children": [1]}, {"name": "Head", "children": [2]}, {"name": "Index"}],
+                "skins": [{"joints": [0, 1, 2]}], "images": [{}, {}], "materials": [{}, {}],
+                "meshes": [{"primitives": [{"extras": {"targetNames": ["Fcl_A", "Fcl_Blink"]}}]}],
+                "extensions": {"VRM": {"specVersion": "0.0", "meta": meta,
+                                       "humanoid": {"humanBones": [{"bone": "hips", "node": 0}, {"bone": "head", "node": 1}, {"bone": "leftIndexProximal", "node": 2}]},
+                                       "blendShapeMaster": {"blendShapeGroups": groups}, "firstPerson": {"lookAtTypeName": "Bone"},
+                                       "secondaryAnimation": {"boneGroups": [{"bones": [1, 2]}, {"bones": []}],
+                                                              "colliderGroups": [{"node": 1, "colliders": [{}, {}]}, {"node": 0, "colliders": [{}]}]},
+                                       "materialProperties": [{"shader": "VRM/MToon"}, {"shader": "VRM_USE_GLTFSHADER"}]}}}
+
+    def test_a_vrm_0_file_is_read_in_the_same_words_as_a_vrm_1(self):
+        holds = engine.shipped(Engine.write_glb(self, "old.vrm", self.vrm_0()))
+        self.assertEqual({k: holds[k] for k in ("bones", "fingers", "blink", "vowels", "look", "looks_bound", "shapes", "springs", "colliders",
+                                                "materials", "toon", "textures", "turned_joints", "arms_off_level")},
+                         {"bones": 3, "fingers": 1, "blink": True, "vowels": ["aa"], "look": "bone", "looks_bound": False,
+                          "shapes": ["Fcl_A", "Fcl_Blink"], "springs": 2, "colliders": 3, "materials": 2, "toon": 1, "textures": 2,
+                          "turned_joints": [], "arms_off_level": None})
+        # held against the 1.0 file it leaves as: nothing of its own counts as lost for being 0.x
+        self.assertEqual(engine.lost(holds, {**holds, "megabytes": 1}), [])
+        self.assertIn("1 springs, the file taken in had 2", engine.lost(holds, {**holds, "springs": 1})[0])
+        self.assertIsNone(engine.shipped(Engine.write_glb(self, "no.vrm", {"asset": {}, "extensions": {"VRM": {"specVersion": "0.0"}}})))
+
+    def test_whose_avatar_it_is_and_whether_its_terms_have_to_be_read(self):
+        licence = lambda **said: engine.licence(Engine.write_glb(self, "old.vrm", self.vrm_0(**said)))  # noqa: E731
+        other = licence()
+        self.assertEqual((other["spec"], other["name"], other["author"], other["pages"]), ("0.x", "Old", "Somebody Else", ["https://example.org/terms.html"]))
+        self.assertTrue(other["confirm"])
+        self.assertIn("https://example.org/terms.html", other["why"])
+        # a licence that says changed versions are fine asks nothing, one that forbids them asks
+        self.assertFalse(licence(licence="CC0")["confirm"])
+        self.assertFalse(licence(licence="CC_BY")["confirm"])
+        self.assertIn("doesn't allow changed versions", licence(licence="CC_BY_ND")["why"])
+        self.assertIn("no address", licence(page=None)["why"])
+        # VRoid Hub's licence page says it in its address: read, unless it says no changes
+        hub = "https://hub.vroid.com/en/license?modification={}&version=1"
+        self.assertFalse(licence(page=hub.format("allow"))["confirm"])
+        self.assertTrue(licence(page=hub.format("disallow"))["confirm"])
+        self.assertTrue(licence(licence="CC0", permission="https://example.org/more.html")["confirm"])
+        # a VRM 1.0 file's terms are not judged, as the add-on doesn't; a plain model has none
+        own = engine.licence(Engine.write_glb(self, "new.vrm", Engine.avatar(self)))
+        self.assertEqual((own["spec"], own["confirm"]), ("1.0", False))
+        self.assertIsNone(engine.licence(Engine.write_glb(self, "plain.glb", {"asset": {}})))
+
+    def test_a_vrm_0_file_makes_a_character_and_its_licence_is_asked_for(self):
+        old = Engine.write_glb(self, "old.vrm", self.vrm_0())
+        made = cli.cmd_init(SimpleNamespace(model=old, name="Old", author="Unknown", face=None, reference=None, rig=None,
+                                            manifest=self.root / "old.json"))
+        self.assertTrue(made["improving"] and made["licence"]["confirm"])
+        project = Project(self.root / "old.json", blender="blender")
+        build = lambda p: p._arguments("build", self.root / "runs" / "01_build", None)[0]  # noqa: E731
+        self.assertNotIn("--licence-read", build(project))
+        cli.cmd_set(SimpleNamespace(manifest=self.root / "old.json", key="licence_read", value="true"))
+        self.assertIn("--licence-read", build(Project(self.root / "old.json", blender="blender")))
+        known = errors.classify("build", 'VTUBER_MAKER_ERROR {"code": "VM-LICENCE", "detail": "terms (https://example.org/terms.html)"}')
+        self.assertEqual((known["code"], known["detail"]), ("VM-LICENCE", "terms (https://example.org/terms.html)"))
+        self.assertIn("Options page", known["fix"])
+
     def test_a_step_that_has_not_run_is_said_not_a_key_error(self):
         project = self.project()
         for step in ("tpose", "survey"):
@@ -1506,7 +1570,7 @@ class FinishedVrm(unittest.TestCase):
         self.assertTrue(made["improving"])
         self.assertIn(" run ", made["next"])
         old = Engine.write_glb(self, "old.vrm", {"asset": {}, "nodes": [], "extensions": {"VRM": {"specVersion": "0.0"}}})
-        with self.assertRaisesRegex(ValueError, "isn't a VRM 1.0 file"):
+        with self.assertRaisesRegex(ValueError, "isn't a VRM file the app can read"):
             cli.cmd_init(SimpleNamespace(model=old, name="Old", author="Unknown", face=None, reference=None, rig=None,
                                          manifest=self.root / "old.json"))
         self.assertFalse((self.root / "old.json").exists())

@@ -6,7 +6,10 @@ Reads the file with the VRM Add-on, so its skeleton, weights, expressions, sprin
 toon materials all stay (pipeline/improve.py); the humanoid bones take the pipeline's names. The
 .blend is what the later steps (chest bounce, the checks, the export) read. The export writes every
 joint unrotated, as VRoid does: a file saved by the VRM Add-on's own menu has Blender's bone frames,
-which Warudo's finger tracking twists. VRM 1.0 only. Never overwrites an existing file.
+which Warudo's finger tracking twists. A VRM 0.x file leaves as VRM 1.0 (improve.convert).
+`--licence-read`: the user has read the file's licence and may change the avatar; without it a
+VRM 0.x file whose licence the add-on can't read as allowing changes is not taken in. Never
+overwrites an existing file.
 """
 import argparse
 import json
@@ -21,10 +24,12 @@ from vtuber_maker.pipeline import improve, vrm_export  # noqa: E402
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Take a finished VRM 1.0 file in as it is.")
+    parser = argparse.ArgumentParser(description="Take a finished VRM file in as it is.")
     parser.add_argument("model", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--blend", type=Path, help="the scene the later steps read")
+    parser.add_argument("--licence-read", action="store_true",
+                        help="the user has read the file's licence and may change the avatar")
     return parser.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 
 
@@ -35,7 +40,10 @@ def main():
             sys.exit(f"{path} exists: choose a new name; files are never overwritten")
     bpy.ops.wm.read_homefile(use_empty=True)
     try:
-        armature, meshes = improve.load(args.model.resolve())
+        armature, meshes = improve.load(args.model.resolve(), licence_read=args.licence_read)
+    except improve.LicenceUnread as error:
+        print("VTUBER_MAKER_ERROR " + json.dumps({"code": "VM-LICENCE", "detail": error.detail}))
+        sys.exit(f"VRM NOT TAKEN IN its licence has to be read first: {error}")
     except improve.NotImprovable as error:
         sys.exit(f"VRM NOT TAKEN IN {error}")
     report = improve.holds(armature, meshes)

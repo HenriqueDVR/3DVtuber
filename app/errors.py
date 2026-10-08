@@ -32,6 +32,10 @@ KNOWN = [
     ("VM-TRIPO-MIX", None, r"'ShaderNodeMix' object has no attribute 'image'",
      "the model's material multiplies its colour by a grey factor (newer Tripo exports)",
      "run the matte step on the model first (scripts/matte_materials.py)", None),
+    ("VM-LICENCE", ("build",), r"its licence has to be read first",
+     "the avatar's licence has to be read before the app changes it",
+     "read the terms at the address in brackets; if they let you change the avatar (or it is yours), "
+     "say so on the Options page (\"The avatar's licence\") and build again", None),
     ("VM-ARMS-AT-SIDES", ("survey", "build"), r"the arms don't stand clear of the body",
      "the arms can't be told from the body",
      "generate the model in a T-pose (arms straight out to the sides) and make the character from that file", None),

@@ -96,6 +96,7 @@ A failed step's log is matched against `app/errors.py`; the Build page and `stat
 | `VM-NO-VRM-ADDON` | the VRM Add-on isn't installed in the Blender the app runs | install "VRM format" in that Blender (Get Extensions) |
 | `VM-EXPORT-POSE` | the written `.vrm`'s joints aren't where the rig's are | use a tested VRM Add-on version; rerun |
 | `VM-TRIPO-MIX` | `'ShaderNodeMix' object has no attribute 'image'` | run `scripts/matte_materials.py` on the model first |
+| `VM-LICENCE` | a VRM 0.x avatar whose licence forbids changes or is a web page the VRM Add-on can't read | the user reads the terms, then sets `licence_read` (Options: "The avatar's licence") |
 | `VM-ARMS-AT-SIDES` | both arm finders failed: the arms hang against the body or inside the clothing's outline (a tester's pirate, arms down in a long coat) | generate in a T-pose |
 | `VM-NOT-HUMANOID` | joint detection found no standing body | check the model; place joints on the Joints page |
 | `VM-ORIENT-UNSURE` | which way the model stands is undecided | turn it upright in Blender, re-export |

@@ -109,9 +109,10 @@ try {
         skeleton is broken. An unrigged model works too: the app places the skeleton.</p>
       <p class="help">Generate it standing in a <b>T-pose</b> (arms straight out) if you can: sleeves then don't fuse to
         the ribs. An A-pose (arms angled down) still builds.</p>
-      <p class="help"><b>A finished avatar (.vrm, VRM 1.0)</b> from VRoid or anywhere else is taken in as it is: its
+      <p class="help"><b>A finished avatar (.vrm, VRM 1.0 or 0.x)</b> from VRoid or anywhere else is taken in as it is: its
         skeleton, weights, expressions, springs and materials stay, and nothing is rigged again. The build straightens
-        its joints for finger tracking, can add chest bounce (Options), checks it and writes a new .vrm beside it.</p>
+        its joints for finger tracking, can add chest bounce (Options), checks it and writes a new .vrm beside it,
+        always as VRM 1.0. For an avatar someone else made, its licence may have to be read first: the app asks.</p>
       <label for="new-name">2 · Name</label><input type="text" id="new-name" placeholder="MyOC">
       <p class="help">A folder name for the build: letters, digits, <code>_</code>. Also the avatar's name in Warudo.</p>
       <label for="new-author">Author (optional)</label><input type="text" id="new-author" placeholder="Unknown">

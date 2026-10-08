@@ -33,6 +33,9 @@ const OPTION_UI = [
     [[true, "on (recommended)", "Repaired."], [false, "off", "Left as rigged: they can stretch into long spikes."]]],
   ["repair_shoulder_seams", "Repair shoulder seams", "Closes gaps that open at the shoulders between the body and a sleeve when the arms go up.",
     [[true, "on (recommended)", "Repaired."], [false, "off", "Left as rigged."]]],
+  ["A finished avatar"],
+  ["licence_read", "The avatar's licence", "An avatar made by someone else comes with terms. The app changes the file (it straightens joints, converts VRM 0.x to 1.0, adds what you choose), so where it can't read the terms as allowing that, it asks you. The address of the terms is on the Build page when the build stops for them.",
+    [[false, "not confirmed", "A file whose terms have to be read is not taken in."], [true, "I have read them and may change it", "The terms allow changing the avatar, or it is your own."]]],
   ["Body and hands"],
   ["facing", "Front and back", "Which side of the model is its front. The app finds it from the feet; a model it gets wrong is built with the face on the back of the head. After changing this, run again from the survey.",
     [AUTO("found from which way the toes point"), ["file", "as the file has it", "The model faces the way it was exported: for one the app turned around."]]],
@@ -56,13 +59,15 @@ async function setOption(key, value) {
 }
 
 // The options that count for a character taken in from a finished .vrm (engine.KEPT skips the rest).
-const IMPROVES = ["chest", "chest_amount"];
+const IMPROVES = ["chest", "chest_amount", "licence_read"];
+// ... and what only counts for one
+const ONLY_IMPROVES = ["A finished avatar", "licence_read"];
 
 export function renderOptions() {
   if (!S.manifest) { $("option-grid").innerHTML = `<p class="msg">Open or create a character first.</p>`; return; }
   const resolved = S.status?.options || {};
   // a finished avatar keeps what it has: only what the build can add to one is offered
-  const offered = S.status?.improving ? OPTION_UI.filter((row) => IMPROVES.includes(row[0])) : OPTION_UI;
+  const offered = OPTION_UI.filter((row) => S.status?.improving ? IMPROVES.includes(row[0]) : !ONLY_IMPROVES.includes(row[0]));
   $("option-grid").innerHTML = (S.status?.improving ? `<p class="help">This character is a finished avatar (.vrm): its head, hair, hands, face and pose stay as they are, so only what can be added to it is here.</p>` : "") + offered.map((row) => {
     if (row.length === 1) return `<h3>${row[0]}</h3>`;
     const [key, title, what, choices] = row, v = S.manifest.options[key] ?? null;
