@@ -3,11 +3,15 @@ import { $, S, app, movesFine, stepName } from "./core.js";
 
 const ORDER = ["model", "parts", "joints", "face", "options", "build", "movement", "review"];
 const TITLES = { model: "Model", parts: "Parts", joints: "Joints", face: "Face", options: "Options", build: "Build", movement: "Movement", review: "Review" };
-// Things a page does when it shows (a view that needs the listing, a list to reload).
-export const onShow = {};
+// Things a page does when it shows (a view that needs the listing, a list to reload), and when it
+// is left for another (a camera to let go of).
+export const onShow = {}, onLeave = {};
+let at = null;
 
 export function go(name) {
   if (!document.getElementById(name)?.classList.contains("page")) name = "home";
+  if (at && at !== name) onLeave[at]?.();
+  at = name;
   document.querySelectorAll(".page").forEach((s) => s.classList.toggle("on", s.id === name));
   document.querySelectorAll("#steps button").forEach((b) => b.classList.toggle("on", b.dataset.go === name));
   if (location.hash.slice(1) !== name) history.replaceState(null, "", `#${name}`);

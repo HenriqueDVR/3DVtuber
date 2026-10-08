@@ -2,6 +2,7 @@
 import { $, S, app, call, esc, lastVrm, say } from "./core.js";
 import { toast } from "./ui.js";
 import { job } from "./jobs.js";
+import { onLeave } from "./nav.js";
 
 // ---------- contact sheets: the exported file as apps draw it, beside the approved build's
 const sheetPictures = (urls, label) => urls.filter(Boolean).map((u) =>
@@ -118,6 +119,13 @@ document.querySelectorAll("[data-face]").forEach((b) => b.onclick = () => {
   step();
   faceTest = setInterval(step, 20);
 });
+
+// Leaving the page lets go of the webcam (the viewer's face tracking test) and stops the face test:
+// out of sight they ran on, the camera's light with them.
+onLeave.review = () => {
+  try { const frame = $("viewer").contentWindow; if (frame?.viewer?.webcam.on) frame.document.getElementById("webcam").click(); } catch {}
+  document.querySelector('[data-face="stop"]')?.click();
+};
 
 // ---------- Warudo feedback: a note and screenshots per build, listed newest first
 export async function loadFeedback() {
