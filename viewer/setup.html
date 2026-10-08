@@ -114,8 +114,8 @@ function parabola(p0, p1, p2) {
   return (x) => a * x * x + b * x + c;
 }
 
-// The redrawn mouth, about as the build will make it (the app's Face page sends its size): wide
-// open saying "a", and the closed line of a free mouth. face_rig.py's own numbers: an opening is a
+// The redrawn mouth, about as the build will make it (the app's Face page sends its size): the closed
+// line of a free mouth, where it rests, and wide open saying "a". face_rig.py's own numbers: an opening is a
 // rounded shape (MOUTH_SHAPES "aa": 0.42 mouth widths to each side, 0.72 tall) hanging from the mouth
 // line, its top MOUTH_TOP_LIFT (0.02) above it, every opening times the size; a free mouth rests as a
 // line 0.8 of the marked width. An estimate: the width is the marked corners' (the build never makes
@@ -135,18 +135,27 @@ function drawMouth(lw) {
     }
     ctx.closePath();
   };
+  // Two shapes, each named: the mouth at rest drawn solid, as it will sit on the still face, and the
+  // widest it opens as a dashed outline round it. Unnamed, the two read as a mistake.
+  const say = (text, at, align, base) => {
+    const [tx, ty] = toScreen(at);
+    ctx.font = `${11 * devicePixelRatio}px sans-serif`; ctx.textAlign = align; ctx.textBaseline = base;
+    ctx.setLineDash([]); ctx.lineWidth = 3 * devicePixelRatio; ctx.strokeStyle = "#000"; ctx.fillStyle = "#fff";
+    const dx = (align === "left" ? 6 : 0) * devicePixelRatio, dy = (base === "top" ? 6 : 0) * devicePixelRatio;
+    ctx.strokeText(text, tx + dx, ty + dy); ctx.fillText(text, tx + dx, ty + dy);
+  };
   ctx.save();
-  ctx.lineWidth = lw; ctx.strokeStyle = "#fff"; ctx.setLineDash([6 * devicePixelRatio, 4 * devicePixelRatio]);
-  const tall = 0.72 * width * mouthSize.scale;
-  outline(0.42 * width * mouthSize.scale, line - 0.02 * width, tall, 3.5, 2.2);
-  ctx.fillStyle = "rgba(255, 107, 181, .28)"; ctx.fill(); ctx.stroke();
-  if (mouthSize.free) { ctx.setLineDash([]); outline(0.4 * width, line - 0.035 * width, 0.07 * width, 3.5, 2.2); ctx.stroke(); }
-  ctx.setLineDash([]);
-  const [tx, ty] = toScreen([x, line - 0.02 * width + tall]);
-  ctx.font = `${11 * devicePixelRatio}px sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "top";
-  ctx.lineWidth = 3 * devicePixelRatio; ctx.strokeStyle = "#000"; ctx.fillStyle = "#fff";
-  const text = `open mouth, size × ${mouthSize.scale}`;
-  ctx.strokeText(text, tx, ty + 6 * devicePixelRatio); ctx.fillText(text, tx, ty + 6 * devicePixelRatio);
+  const top = line - 0.02 * width, tall = 0.72 * width * mouthSize.scale;
+  ctx.lineWidth = lw; ctx.strokeStyle = "#ff6bb5"; ctx.setLineDash([6 * devicePixelRatio, 4 * devicePixelRatio]);
+  outline(0.42 * width * mouthSize.scale, top, tall, 3.5, 2.2);
+  ctx.fillStyle = "rgba(255, 107, 181, .12)"; ctx.fill(); ctx.stroke();
+  say(`wide open (size × ${mouthSize.scale})`, [x, top + tall], "center", "top");
+  if (mouthSize.free) {
+    // a free mouth's closed line: 0.8 of the marked width whatever the size, 0.07 of it tall
+    ctx.setLineDash([]); ctx.strokeStyle = "#fff"; ctx.fillStyle = "rgba(70, 20, 30, .9)";
+    outline(0.4 * width, top, 0.07 * width, 3.5, 2.2); ctx.fill(); ctx.stroke();
+    say("closed (at rest)", [x + 0.4 * width, top + 0.035 * width], "left", "middle");
+  } else say("closed: the model's own painted mouth", [x, top], "center", "bottom");
   ctx.restore();
 }
 
