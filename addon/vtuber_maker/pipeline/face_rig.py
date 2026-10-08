@@ -100,7 +100,9 @@ MOUTH_BOTTOM_ROUNDNESS = 2.2
 # How far in front of the lips the patch sits.
 MOUTH_COVER_GAP = 0.0004
 # How far in front of the face an open mouth lies, following the face's curve.
-MOUTH_SURFACE_GAP = 0.0008
+# (0.8 mm until 2026-10-08: between a closed mouth and an opening the patch cuts the face's curve, and
+# skin stood 0.12 mm through it at a third of "ee" on model D)
+MOUTH_SURFACE_GAP = 0.0012
 # Modelled mouths barely move their lips: the mouth-inside patch shows the opening.
 MODELLED_MOUTH_OPENING = 0.45
 # reshape_mouth: an open mouth hangs from the mouth line, its top MOUTH_TOP_LIFT mouth widths above

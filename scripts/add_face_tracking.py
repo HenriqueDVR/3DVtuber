@@ -43,6 +43,10 @@ FREE_SMILE = 0.14
 FREE_FROWN = 0.1
 SIDE_SHIFT = 0.6        # mouthLeft/Right, in mouth widths
 PUCKER_IN = 0.3         # corners pulled towards the middle, in mouth widths
+# The shapes a tracker sends together that each make the drawn mouth narrower: (vowel, share of it).
+# At full strength together they may narrow it to PATCH_FLOOR of the narrowest of those vowels, no further.
+NARROWING = {"jawOpen": ("aa", None), "mouthPucker": ("ou", 0.7), "mouthFunnel": ("oh", 1.0)}
+PATCH_FLOOR = 0.6
 JAW_PIVOT_BACK = 0.1    # jaw hinge behind the mouth (m)
 JAW_PIVOT_UP = 0.04     # and above it (m)
 CHIN_BEHIND = 0.3       # the chin lies no further behind the mouth than this share of the way to the hinge
@@ -160,8 +164,48 @@ class FaceShapes:
         t = np.clip(sign * (self.basis[:, 0] - self.mouth[0]) / (0.3 * self.width) + 0.5, 0, 1)
         return (t * t * (3 - 2 * t))[:, None]
 
+    def patch_mask(self):
+        """The drawn mouth's own vertices (face_rig's patch), none on a mesh without one."""
+        attribute = self.obj.data.attributes.get(face_rig.MOUTH_GRID_ATTRIBUTE)
+        if attribute is None:
+            return np.zeros(self.count, dtype=bool)
+        grid = np.empty(self.count * 3)
+        attribute.data.foreach_get("vector", grid)
+        return grid.reshape(-1, 3)[:, 2] > 0.5
+
+    def narrowing_kept(self, patch, shares):
+        """How much of its narrowing each of `shares` ({vowel: share}) may keep on the patch (0..1).
+
+        Shape keys add up. Every opening is the same outline at another width, so the patch's width
+        under several keys is its closed width less each key's narrowing, and past nothing it comes
+        out the other side, facing backwards: seen as the mouth "inverting" on a small "o" (the
+        user, 2026-10-08; a free mouth's closed line is 0.8 mouth widths wide, and at size 0.7 every
+        opening is narrower than it). The narrowings are scaled together so that all at full
+        strength leave PATCH_FLOOR of the narrowest vowel; where they never reach that, nothing changes.
+        """
+        if not patch.any():
+            return 1.0
+        closed = np.ptp(self.basis[patch, 0])
+        widths = {name: np.ptp(self.read(name)[patch, 0]) for name in shares}
+        narrowed = sum(share * max(closed - widths[name], 0.0) for name, share in shares.items())
+        room = closed - PATCH_FLOOR * min(widths.values())
+        kept = 1.0 if narrowed <= room or narrowed <= 0 else max(room, 0.0) / narrowed
+        print(f"mouth patch: closed {1000 * closed:.1f} mm wide, the openings together narrow it by {1000 * narrowed:.1f} mm, "
+              f"kept {kept:.0%} of that")
+        return kept
+
     def add_mouth(self, jaw_drop):
         w = self.width
+        patch = self.patch_mask()
+        shares = {vowel: (JAW_VOWEL if share is None else share) for vowel, share in NARROWING.values()}
+        kept = self.narrowing_kept(patch, shares)
+
+        def opening(name):
+            """The vowel's share of this key, its narrowing of the patch held to what the keys together may have."""
+            delta = self.vowel(name, shares[name])
+            narrower = patch & (np.abs(self.read(name)[:, 0] - self.mouth[0]) < np.abs(self.basis[:, 0] - self.mouth[0]))
+            delta[narrower, 0] *= kept
+            return delta
         corners = {"Left": self.mouth + [w / 2, 0, 0], "Right": self.mouth - [w / 2, 0, 0]}
         reach = CORNER_REACH * w
 
@@ -186,7 +230,7 @@ class FaceShapes:
         lowest = np.argmin(np.where(chin_side, self.basis[:, 2], np.inf))
         if jaw[lowest, 2] >= 0:
             raise SystemExit("jaw turns the wrong way")
-        self.add("jawOpen", jaw + self.vowel("aa", JAW_VOWEL))
+        self.add("jawOpen", jaw + opening("aa"))
 
         for name, (move, vowel) in CORNERS.items():
             for side, corner in corners.items():
@@ -198,8 +242,13 @@ class FaceShapes:
                 self.add(f"{name}{side}", delta)
 
         pucker = sum(self.bump(c, reach, [(-1 if s == "Left" else 1) * PUCKER_IN * w, -0.1 * w, 0]) for s, c in corners.items())
-        self.add("mouthPucker", pucker + self.vowel("ou", 0.7))
-        self.add("mouthFunnel", 0.6 * pucker + self.vowel("oh", 1.0))
+        # The corners' pull is for the skin round the mouth. The patch is the opening itself and takes its
+        # shape from the vowel alone: pulled in as skin as well, it crossed its own middle (pucker at 1:
+        # 79% of model D's patch faced backwards, 31% of model A's). It still comes forward with the skin
+        # under it: left where it was, the puckered skin stood up to 4.9 mm in front of it.
+        pucker[patch, 0] = 0
+        self.add("mouthPucker", pucker + opening("ou"))
+        self.add("mouthFunnel", 0.6 * pucker + opening("oh"))
         for side in ("Left", "Right"):
             sign = 1 if side == "Left" else -1
             self.add(f"mouth{side}", self.bump(self.mouth, 1.6 * w, [sign * SIDE_SHIFT * w, 0, 0]))

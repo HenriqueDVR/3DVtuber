@@ -1,6 +1,8 @@
 """Re-hanging a tracked mouth patch's vowels from the mouth line (face_rig.reshape_mouth)."""
 
+import sys
 import unittest
+from pathlib import Path
 
 import bmesh
 import bpy
@@ -20,10 +22,12 @@ def co(key):
     return values.reshape(-1, 3)
 
 
-class ReshapeMouth(unittest.TestCase):
-    """A flat face (y = 0, facing -Y) with a closed mouth patch, "aa" opened above the line as model A's was."""
+class MouthFixture:
+    """A flat face (y = 0, facing -Y) with a closed mouth patch and its openings, put through reshape_mouth."""
 
     ARGS = {}
+    # vowel -> (half width, half height, drop), mouth widths: the openings the mesh comes with
+    OPENINGS = {"aa": (0.42, 0.24, 0.13)}
 
     @classmethod
     def setUpClass(cls):
@@ -64,13 +68,15 @@ class ReshapeMouth(unittest.TestCase):
 
         obj.shape_key_add(name="Basis")
         basis = co(mesh.shape_keys.reference_key)
-        opened = basis.copy()
-        opened[cls.patch] = face_rig._mouth_shape(np.array(grid), COVER, (0.42, 0.24, 0.13))
         # the vowel drops the lower lip, bulging it forward under the patch
         lip = ~cls.patch & (np.abs(basis[:, 0]) < 0.4 * WIDTH) & (basis[:, 2] < COVER["z"] - 0.1 * WIDTH) \
             & (basis[:, 2] > COVER["z"] - 0.5 * WIDTH)
-        opened[lip, 1] -= BULGE
-        obj.shape_key_add(name="aa").data.foreach_set("co", opened.astype(np.float32).ravel())
+        for name, shape in cls.OPENINGS.items():
+            opened = basis.copy()
+            opened[cls.patch] = face_rig._mouth_shape(np.array(grid), COVER, shape)
+            if name == "aa":
+                opened[lip, 1] -= BULGE
+            obj.shape_key_add(name=name).data.foreach_set("co", opened.astype(np.float32).ravel())
         slid = basis.copy()
         slid[cls.patch, 0] += 0.3 * WIDTH
         obj.shape_key_add(name="mouthLeft").data.foreach_set("co", slid.astype(np.float32).ravel())
@@ -78,6 +84,10 @@ class ReshapeMouth(unittest.TestCase):
         cls.lip = lip
         cls.result = face_rig.reshape_mouth(obj, **cls.ARGS)
         cls.keys = mesh.shape_keys.key_blocks
+
+
+class ReshapeMouth(MouthFixture, unittest.TestCase):
+    """ "aa" opened above the line, as model A's was."""
 
     def test_open_mouth_hangs_from_the_line(self):
         aa = co(self.keys["aa"])[self.patch]
@@ -121,6 +131,76 @@ class ReshapeFreeMouth(ReshapeMouth):
     """Bigger openings and a drawn closed mouth, as fix_mouth.py --free --scale makes them."""
 
     ARGS = {"scale": 1.3, "rest_share": 0.6, "rest_height": 0.07}
+
+
+class TrackerShapesOnASmallFreeMouth(MouthFixture, unittest.TestCase):
+    """The tracker's mouth shapes (add_face_tracking.py), rebuilt on a free mouth drawn small, as
+    fix_mouth.py --free --scale 0.7 leaves it: a closed line 0.8 mouth widths wide, every opening
+    narrower than it. Shape keys add up, and jaw, pucker and funnel together narrowed the patch past
+    nothing: it came out the other side facing backwards (the user, 2026-10-08: "the mouth inverts")."""
+
+    OPENINGS = dict(face_rig.MOUTH_SHAPES)
+    ARGS = {"scale": 0.7, "rest_share": 0.8 / 0.7, "rest_height": 0.07}
+    TOGETHER = ({"mouthPucker": 1}, {"mouthFunnel": 1}, {"mouthPucker": 1, "mouthFunnel": 1},
+                {"mouthPucker": 1, "mouthFunnel": 1, "jawOpen": 1}, {"mouthPucker": 1, "jawOpen": 0.3})
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import add_face_tracking
+        obj = bpy.data.objects["face"]
+        for name in (face_rig.EYE_INSERT_ATTRIBUTE, face_rig.FIXED_ATTRIBUTE):
+            obj.data.attributes.new(name, "INT", "POINT")
+        cls.tracking = add_face_tracking
+        add_face_tracking.FaceShapes(obj).add_mouth(0.008)
+        cls.keys = obj.data.shape_keys.key_blocks
+        obj.data.calc_loop_triangles()
+        triangles = np.array([t.vertices[:] for t in obj.data.loop_triangles])
+        cls.triangles = triangles[cls.patch[triangles].all(axis=1)]
+
+    def shown(self, values):
+        basis = co(self.keys["Basis"])
+        return basis + sum(value * (co(self.keys[name]) - basis) for name, value in values.items())
+
+    def facing(self, points):
+        a, b, c = (points[self.triangles[:, i]] for i in range(3))
+        return (b[:, 0] - a[:, 0]) * (c[:, 2] - a[:, 2]) - (b[:, 2] - a[:, 2]) * (c[:, 0] - a[:, 0])
+
+    def test_the_closed_line_is_the_wide_one(self):
+        # 0.8 mouth widths, whatever the openings' size
+        self.assertAlmostEqual(np.ptp(co(self.keys["Basis"])[self.patch, 0]), 0.8 * WIDTH, places=6)
+
+    def test_no_part_of_the_mouth_turns_its_back(self):
+        front = np.sign(self.facing(self.shown({"aa": 1})))
+        for values in self.TOGETHER:
+            with self.subTest(shapes=values):
+                area = self.facing(self.shown(values))
+                turned = (np.sign(area) != front) & (np.abs(area) > 1e-12)
+                self.assertEqual(int(turned.sum()), 0, f"{int(turned.sum())} of {len(area)} triangles face backwards")
+
+    def test_the_mouth_stays_open_wide_enough_to_see(self):
+        narrowest = min(np.ptp(co(self.keys[name])[self.patch, 0]) for name in ("aa", "ou", "oh"))
+        everything = self.shown({"mouthPucker": 1, "mouthFunnel": 1, "jawOpen": 1})[self.patch]
+        self.assertGreaterEqual(np.ptp(everything[:, 0]), self.tracking.PATCH_FLOOR * narrowest - 1e-6)
+
+    def test_the_mouth_comes_forward_with_the_puckered_skin(self):
+        # the corners' pull moves the skin forward; a patch left behind it showed skin through the mouth
+        pucker = co(self.keys["mouthPucker"]) - co(self.keys["Basis"])
+        self.assertLess(pucker[~self.patch, 1].min(), -1e-4)
+        self.assertLess(pucker[self.patch, 1].min(), -1e-4)
+
+
+class TrackerShapesOnABigFreeMouth(TrackerShapesOnASmallFreeMouth):
+    """Drawn big (--scale 1.3, as model A's), the openings never narrow the closed line to nothing:
+    each keeps its whole shape."""
+
+    ARGS = {"scale": 1.3, "rest_share": 0.8 / 1.3, "rest_height": 0.07}
+
+    def test_pucker_is_the_whole_of_its_vowels_share(self):
+        basis = co(self.keys["Basis"])
+        pucker, ou = co(self.keys["mouthPucker"]) - basis, co(self.keys["ou"]) - basis
+        np.testing.assert_allclose(pucker[self.patch, 0], 0.7 * ou[self.patch, 0], atol=1e-6)
 
 
 if __name__ == "__main__":

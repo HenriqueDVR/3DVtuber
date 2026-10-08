@@ -67,6 +67,7 @@ Suspicious edges have one end weighted to `Head`/`Neck` or to nothing, or sit in
 | A character keeps building sliding eyes | the fallback is remembered | set `eyes: "iris"` explicitly |
 | Mouth barely opens, looks smeared, or the face dents when talking | the face bends round the marked mouth | Face page: "redraw the talking mouth shapes", and "free mouth" for simple or chibi faces |
 | Mouth too small | size of the drawn mouth | Face page: mouth "size ×" |
+| The drawn mouth "inverts", breaks into slivers or vanishes on a small "o" (webcam tracking), skin shows through it | shape keys add up: jaw, pucker and funnel together narrowed the patch past nothing and it came out facing backwards (18 of 111 mixes on model D at size 0.7, pucker alone on model A); the corners' pull meant for the skin also moved the patch | fixed 2026-10-08 (`add_face_tracking.py` `narrowing_kept`, the pull kept off the patch's width; `MOUTH_SURFACE_GAP` 1.2 mm). A build from before: run it again from `mouth` |
 | Mouth inside is red on a non-human face | default mouth colours | option `mouth_colour: "skin"` |
 | Face soft or blurry | the generator's texture gives the face few pixels | the face patch (made by "Get it ready"); or the redraw in `docs/agent/retexture.md` |
 | Painting the hair changes the face behind it | a face patch made by an older version | remake the face patch (Face page) |
