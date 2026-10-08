@@ -180,7 +180,9 @@ def _hair_hang(verts, joints, found):
     hair_labels = found.labels[found.hair]
     hang = 0.0
     for piece in np.unique(hair_labels):
-        piece_verts = verts[found.labels == piece]
+        # the piece's hair alone: hair modelled into the body's own surface (parts.fused_hair) is a
+        # stretch of a piece that reaches the floor, and a cap's worth of it read as hair to the feet
+        piece_verts = verts[(found.labels == piece) & found.hair]
         if len(piece_verts) < HAIR_PIECE * len(hair_labels):
             continue
         hang = max(hang, (head_z - float(piece_verts[:, 2].min())) / head_height)

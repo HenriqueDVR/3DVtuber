@@ -50,7 +50,15 @@ ANKLE_BAND = (0.08, 0.16)
 FEET_ALIKE = 0.5
 TOE_MARGIN = 0.08
 UP_MARGIN = 0.4
-MIRROR_WEIGHT = 2.0
+# A body is a mirror image across its upright axis and across no other: the cue that held on every
+# model, where legs and soles did not. A tester's pirate in a T-pose (arms as wide as he is tall,
+# a coat and a tail between the legs, a head with more surface on top than his soles have below)
+# scored legs 0.08 and soles 0 standing, legs 0.50 lying on his side, and was laid on his side.
+MIRROR_WEIGHT = 4.0
+# The way the file stands counts for this much: importers hand nearly every model over upright, so
+# it takes the shape's clear word to turn one. Without it the same pirate, upright in his file,
+# read as standing on his head by 0.09 (the soles cue, on hair against boots).
+AS_FILED = 0.5
 
 
 class Orientation:
@@ -88,7 +96,7 @@ def detect(verts, tris):
     extents = np.ptp(points, axis=0)
     candidates = [AXES[i] * sign for i in range(3) if extents[i] >= LONG_ENOUGH * extents.max()
                   for sign in (1.0, -1.0)]
-    scored = sorted(((_standing_score(points, up), tuple(up)) for up in candidates), reverse=True)
+    scored = sorted(((_standing_score(points, up) + AS_FILED * np.allclose(up, AXES[2]), tuple(up)) for up in candidates), reverse=True)
     best, runner_up = scored[0], scored[1]
     up = np.array(best[1])
     # A second candidate almost as good means the model doesn't read as standing one way up.
