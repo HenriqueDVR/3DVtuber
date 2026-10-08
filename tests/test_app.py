@@ -2108,12 +2108,32 @@ class Pages(unittest.TestCase):
         real_welcome, welcomes = engine.welcome, []
         engine.welcome = lambda done=True: welcomes.append(done) or {"welcomed": bool(done)}
 
+        # what the browser asked the server for, to tell a page that ran from one the browser left half loaded
+        asked, real_get = [], server.Handler.do_GET
+
+        def noted(handler):
+            asked.append(handler.path)
+            return real_get(handler)
+        server.Handler.do_GET = noted
+
         def open_page(look):
-            with tempfile.TemporaryDirectory() as profile:
-                return subprocess.run([browser, "--headless=new", f"--user-data-dir={profile}", "--no-first-run", "--mute-audio",
-                                       "--enable-unsafe-swiftshader", "--enable-logging=stderr", "--v=0", "--virtual-time-budget=40000",
-                                       "--dump-dom", f"http://127.0.0.1:{port}/?look={look}"], capture_output=True, text=True,
-                                      encoding="utf-8", errors="replace", timeout=120)
+            # The browser's fast-forward clock (--virtual-time-budget) now and then runs out while the page's
+            # modules are still arriving: it leaves after a second or two having fetched 21 of the page's 54
+            # files, says nothing, and prints a page whose code never started (caught 2026-10-08: about 1 run
+            # in 100 by itself, more with the computer busy; it failed this test at random). That is the
+            # browser, not the page, and is tried again. A page whose code did start (it asks for
+            # /api/setup first), or that said an error, is judged as it came out.
+            for _ in range(3):
+                asked.clear()
+                with tempfile.TemporaryDirectory() as profile:
+                    done = subprocess.run([browser, "--headless=new", f"--user-data-dir={profile}", "--no-first-run", "--mute-audio",
+                                           "--enable-unsafe-swiftshader", "--enable-logging=stderr", "--v=0", "--virtual-time-budget=40000",
+                                           "--dump-dom", f"http://127.0.0.1:{port}/?look={look}"], capture_output=True, text=True,
+                                          encoding="utf-8", errors="replace", timeout=120)
+                said = any("CONSOLE" in line and ("Uncaught" in line or "SyntaxError" in line) for line in done.stderr.splitlines())
+                if said or any(path.startswith("/api/setup") for path in asked):
+                    break
+            return done
         # in both looks (Setup): the arcade one adds its own screens, the classic one must stay as it was
         pages = {}
         try:
@@ -2133,6 +2153,7 @@ class Pages(unittest.TestCase):
             served.shutdown()
             served.server_close()
             engine.setup, engine.welcome = real_setup, real_welcome
+            server.Handler.do_GET = real_get
         self.assertEqual(welcomes[:before], [], "a first start said by a page that wasn't one")
         self.assertEqual(greeted, [True])
         self.assertIn('class="page on" id="setup"', new.stdout)
