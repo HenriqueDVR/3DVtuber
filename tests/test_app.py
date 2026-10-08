@@ -772,6 +772,7 @@ class Engine(unittest.TestCase):
             engine._blender = real
 
     def test_contact_sheets_come_back_from_the_browser(self):
+        import subprocess
         import threading
         import urllib.request
         from app import sheet
@@ -779,10 +780,17 @@ class Engine(unittest.TestCase):
         vrm.write_bytes(b"glTF-model")
         seen = {}
 
-        class Browser:
-            """Stands in for headless Edge: loads the page and the model, sends two sheets back."""
-            def __init__(self, command, **_):
-                seen["command"] = command
+        class Browser(subprocess.Popen):
+            """Stands in for headless Edge: loads the page and the model, sends two sheets back. A process that
+            waits, so sheet.close() ends a real one (and the tree it would have started) as it does the browser."""
+            def __init__(self, command, **kwargs):
+                self.stands_in = command[0] == "edge.exe"
+                if not self.stands_in:
+                    # what sheet.close() itself runs to end the browser: as it is. Stood in for too,
+                    # taskkill "was" a process sleeping two minutes
+                    return super().__init__(command, **kwargs)
+                seen["command"], seen["process"] = command, self
+                super().__init__([sys.executable, "-c", "import time; time.sleep(120)"], **kwargs)
                 threading.Thread(target=self.visit, args=(command[-1],), daemon=True).start()
 
             def visit(self, url):
@@ -793,10 +801,8 @@ class Engine(unittest.TestCase):
                     urllib.request.urlopen(urllib.request.Request(f"{root}/sheet?name={name}", data=body, method="POST"))
 
             def kill(self):
-                seen["killed"] = True
-
-            def wait(self):
-                pass
+                seen["killed"] = seen.get("killed") or self.stands_in
+                super().kill()
         real = sheet.subprocess.Popen, sheet.find_browser
         sheet.subprocess.Popen, sheet.find_browser = Browser, lambda given=None: "edge.exe"
         try:
@@ -809,6 +815,7 @@ class Engine(unittest.TestCase):
             # a profile of its own, by its whole path (Edge shows a dialog for a relative one), gone afterwards
             profile = Path(next(c for c in seen["command"] if c.startswith("--user-data-dir=")).split("=", 1)[1])
             self.assertTrue(profile.is_absolute() and not profile.exists() and seen["killed"])
+            self.assertIsNotNone(seen["process"].returncode)
             # a texture the browser couldn't load is the page's failure, not a sheet of a white body
             Browser.last, Browser.said = "failed", {"error": "a texture didn't load"}
             with self.assertRaises(RuntimeError):
@@ -2226,9 +2233,23 @@ class Pages(unittest.TestCase):
     """The app's page opened in a browser without a window: every module loads and runs to its end.
     A page that throws while loading shows a half-drawn app and no error anywhere a test would see."""
 
+    # Read into the served page after main.js: once the page's first drawing is done (app.started), it sends
+    # what it drew. The browser's own --dump-dom took its picture when its fast-forward clock
+    # (--virtual-time-budget) ran out, and on Windows that came before the page's code had started, every run
+    # (2026-10-08): the browser exited with a page asking /api/setup, and its page and network processes
+    # went on for seconds, asking for /api/welcome into the next page's count and holding the profile.
+    REPORT = """<script type="module">
+import { app } from "/gui/js/core.js";
+// main.js has run, or failed to and left no app.started: either way the page is as its code left it
+Promise.resolve(app.started).finally(() => setTimeout(() => fetch(`/test/page${location.search}`, { method: "POST", body: document.documentElement.outerHTML })));
+</script>
+"""
+
     def test_every_page_module_runs(self):
-        import subprocess
+        import shutil
         import threading
+        import time
+        from urllib.parse import parse_qs, urlparse
         from app import sheet
         try:
             browser = sheet.find_browser()
@@ -2244,32 +2265,64 @@ class Pages(unittest.TestCase):
         real_welcome, welcomes = engine.welcome, []
         engine.welcome = lambda done=True: welcomes.append(done) or {"welcomed": bool(done)}
 
-        # what the browser asked the server for, to tell a page that ran from one the browser left half loaded
-        asked, real_get = [], server.Handler.do_GET
+        # the page with its report, and what each opening's page sent back, by its number
+        real_get, real_post, drawn, came = server.Handler.do_GET, server.Handler.do_POST, {}, threading.Condition()
+        page = vendor.local((server.GUI / "index.html").read_text(encoding="utf-8"))
+        self.assertIn("</body>", page)
+        page = page.replace("</body>", self.REPORT + "</body>").encode("utf-8")
 
-        def noted(handler):
-            asked.append(handler.path)
-            return real_get(handler)
-        server.Handler.do_GET = noted
+        def get(handler):
+            if urlparse(handler.path).path != "/":
+                return real_get(handler)
+            handler.send_response(200)
+            handler.send_header("Content-Type", "text/html; charset=utf-8")
+            handler.send_header("Content-Length", str(len(page)))
+            handler.end_headers()
+            handler.wfile.write(page)
+
+        def post(handler):
+            url = urlparse(handler.path)
+            if url.path != "/test/page":
+                return real_post(handler)
+            body = handler.rfile.read(int(handler.headers.get("Content-Length") or 0)).decode("utf-8")
+            with came:
+                drawn[parse_qs(url.query)["run"][0]] = body
+                came.notify_all()
+            handler.send_response(204)
+            handler.end_headers()
+        server.Handler.do_GET, server.Handler.do_POST = get, post
+        opened = []
 
         def open_page(look):
-            # The browser's fast-forward clock (--virtual-time-budget) now and then runs out while the page's
-            # modules are still arriving: it leaves after a second or two having fetched 21 of the page's 54
-            # files, says nothing, and prints a page whose code never started (caught 2026-10-08: about 1 run
-            # in 100 by itself, more with the computer busy; it failed this test at random). That is the
-            # browser, not the page, and is tried again. A page whose code did start (it asks for
-            # /api/setup first), or that said an error, is judged as it came out.
-            for _ in range(3):
-                asked.clear()
-                with tempfile.TemporaryDirectory() as profile:
-                    done = subprocess.run([browser, "--headless=new", f"--user-data-dir={profile}", "--no-first-run", "--mute-audio",
-                                           "--enable-unsafe-swiftshader", "--enable-logging=stderr", "--v=0", "--virtual-time-budget=40000",
-                                           "--dump-dom", f"http://127.0.0.1:{port}/?look={look}"], capture_output=True, text=True,
-                                          encoding="utf-8", errors="replace", timeout=120)
-                said = any("CONSOLE" in line and ("Uncaught" in line or "SyntaxError" in line) for line in done.stderr.splitlines())
-                if said or any(path.startswith("/api/setup") for path in asked):
-                    break
-            return done
+            opened.append(look)
+            run = str(len(opened))
+            profile = Path(tempfile.mkdtemp(prefix="browser_"))
+            try:
+                with tempfile.TemporaryFile() as log:
+                    process = sheet.launch(browser, profile, f"http://127.0.0.1:{port}/?look={look}&run={run}",
+                                           "--enable-logging=stderr", "--v=0", log=log)
+                    try:
+                        with came:
+                            came.wait_for(lambda: run in drawn, timeout=120)
+                    finally:
+                        sheet.close(process)
+                    log.seek(0)
+                    said = log.read().decode("utf-8", errors="replace")
+            finally:
+                # every process of the browser is gone (sheet.close): what still holds the profile after a few
+                # seconds is a browser process close() didn't reach, and is said, not left running
+                for wait in (0.2, 0.5, 1, 2, 4, 0):
+                    try:
+                        shutil.rmtree(profile)
+                        break
+                    except FileNotFoundError:
+                        break
+                    except OSError:
+                        if not wait:
+                            raise
+                        time.sleep(wait)
+            self.assertIn(run, drawn, f"the {look} page never said it was drawn ({browser}):\n{said[-3000:]}")
+            return SimpleNamespace(stdout=drawn[run], stderr=said)
         # in both looks (Setup): the arcade one adds its own screens, the classic one must stay as it was
         pages = {}
         try:
@@ -2289,7 +2342,7 @@ class Pages(unittest.TestCase):
             served.shutdown()
             served.server_close()
             engine.setup, engine.welcome = real_setup, real_welcome
-            server.Handler.do_GET = real_get
+            server.Handler.do_GET, server.Handler.do_POST = real_get, real_post
         self.assertEqual(welcomes[:before], [], "a first start said by a page that wasn't one")
         self.assertEqual(greeted, [True])
         self.assertIn('class="page on" id="setup"', new.stdout)

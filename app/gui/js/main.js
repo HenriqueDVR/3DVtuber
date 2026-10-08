@@ -92,12 +92,13 @@ document.querySelectorAll("[data-examples]").forEach((host) => {
 // gets each; one that has it all opens on Setup once, the first start (what was found, the extras,
 // the look), and on Characters ever after. Asked before the first page shows: shown first,
 // Characters flashed for a second before Setup took its place.
+// app.started: the first drawing, done (tests/test_app.py reads the page then, not when the browser guesses)
 const asked = location.hash.slice(1);
 if (asked && asked !== "home") {
   go(asked);
-  loadProjects().then(resume).then(loadSetup).catch(failed);
+  app.started = loadProjects().then(resume).then(loadSetup).catch(failed);
 } else {
-  loadSetup().catch(failed).then(() => {
+  app.started = loadSetup().catch(failed).then(() => {
     const first = S.setup?.ready && !S.setup.welcomed;
     go(S.setup && (!S.setup.ready || first) ? "setup" : "home");
     if (first) call("welcome", {}).catch(() => {});

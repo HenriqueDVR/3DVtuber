@@ -10,6 +10,7 @@ import json
 import mimetypes
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -47,6 +48,49 @@ def find_browser(given=None):
         if shutil.which(name):
             return shutil.which(name)
     raise NoBrowser("no Edge or Chrome found: set VTUBER_MAKER_BROWSER to one")
+
+
+def launch(browser, profile, url, *flags, log=subprocess.DEVNULL):
+    """The browser without a window on `url`, in a profile of its own (the user's browser, its sign-ins
+    and its open windows are left alone). Software WebGL is allowed for a machine without a graphics
+    card the browser will use. End it with close(), never by its own exit: see there."""
+    process = subprocess.Popen([browser, "--headless=new", f"--user-data-dir={profile}", "--no-first-run", "--mute-audio",
+                                "--enable-unsafe-swiftshader", *flags, url], stdout=subprocess.DEVNULL, stderr=log,
+                               start_new_session=os.name != "nt")
+    process.browser, process.profile = str(browser), str(profile)
+    return process
+
+
+def close(process):
+    """Ends the browser and every process it started, and waits for it. Killing the browser alone left its
+    page, network and GPU processes running on Windows for seconds: still asking the server for things,
+    still holding the profile's lockfile, so the profile couldn't be removed (2026-10-08).
+
+    On Windows the browser is found by its profile, not by the process that was started: Edge 154 hands
+    over to a child and exits within half a second, so the process in hand was already gone, nothing
+    was killed, and each contact sheet and each page of the test left sixteen processes running.
+    """
+    alive = process.poll() is None
+    if os.name == "nt":
+        if alive:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        quoted = lambda text: "'" + text.replace("'", "''") + "'"  # noqa: E731
+        sweep = (f"Get-CimInstance Win32_Process -Filter \"Name={quoted(Path(process.browser).name)}\" | "
+                 f"Where-Object {{ $_.CommandLine -and $_.CommandLine.Contains({quoted(process.profile)}) }} | "
+                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }")
+        try:
+            subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", sweep], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # no PowerShell to ask: the browser started is still ended below
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)  # the group outlives a browser that has itself gone
+        except (ProcessLookupError, PermissionError):
+            pass
+    if alive:
+        process.kill()
+    process.wait()
 
 
 def render(vrm, out_dir, browser=None, timeout=TIMEOUT):
@@ -108,19 +152,14 @@ def render(vrm, out_dir, browser=None, timeout=TIMEOUT):
     # profile, and on a system drive with 3.7 GB free it refused the main texture: a white body
     profile = tempfile.mkdtemp(prefix=".browser_", dir=out_dir)
     url = f"http://127.0.0.1:{server.server_port}/viewer/sheet.html?model=/model.vrm&post=1"
-    # a profile of its own: the user's browser, its sign-ins and its open windows are left alone.
-    # Software WebGL is allowed for a machine without a graphics card the browser will use.
-    process = subprocess.Popen([browser, "--headless=new", f"--user-data-dir={profile}", "--no-first-run", "--mute-audio",
-                                "--enable-unsafe-swiftshader", "--window-size=1280,900", url],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process = launch(browser, profile, url, "--window-size=1280,900")
     try:
         if not finished.wait(timeout):
             raise TimeoutError(f"the sheets weren't drawn in {timeout} s ({browser})")
         if got["error"]:
             raise RuntimeError(got["error"])
     finally:
-        process.kill()
-        process.wait()
+        close(process)
         server.shutdown()
         server.server_close()
         shutil.rmtree(profile, ignore_errors=True)
