@@ -6,3 +6,8 @@ app/gui/vendor/** -text
 # pictures and film for the README: not part of the app, kept out of the testers' zip and of updates
 docs/img/** export-ignore
 docs/media/** export-ignore
+# for working on the app, not for running it: kept out of the testers' zip and of updates too
+tests export-ignore
+.github export-ignore
+.gitattributes export-ignore
+update.example.json export-ignore
