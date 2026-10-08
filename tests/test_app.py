@@ -1848,6 +1848,19 @@ class Server(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "path"):
             server.api("init", {}, {"model": "m.glb", "name": "../evil"})
 
+    def test_a_model_that_cant_be_read_is_refused_when_the_character_is_made(self):
+        # a tester's good FBX failed the survey as an unsupported type: the path, pasted from
+        # Explorer's "Copy as path", kept its quotes
+        self.assertEqual(server._typed(' "C:\\art\\my oc.fbx" '), "C:\\art\\my oc.fbx")
+        with tempfile.TemporaryDirectory() as folder:
+            packed = Path(folder) / "tripo.zip"
+            packed.write_bytes(b"PK")
+            for model, said in ((packed, "unpack the .zip"), (Path(folder), "that is a folder"),
+                                (Path(folder) / "gone.fbx", "no model file"), ("", "name the model file first")):
+                with self.assertRaisesRegex(ValueError, said):
+                    server.api("init", {}, {"model": f'"{model}"' if model else "", "name": "Refused"})
+        self.assertFalse((REPO / "out" / "Refused").exists())
+
     def test_a_get_only_reads(self):
         # another site's <img src=".../api/prune?manifest=..."> reached every call: no header is asked of a GET
         class Probe(server.Handler):

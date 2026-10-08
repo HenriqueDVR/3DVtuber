@@ -219,10 +219,21 @@ def cmd_vendor(args):
     return vendor.fetch(on_event=events)
 
 
+MODEL_TYPES = (".fbx", ".glb", ".gltf", ".obj", ".vrm")
+
+
 def cmd_init(args):
     path = (args.manifest or REPO / "out" / args.name / "character.json").resolve()
     if path.exists():
         raise ValueError(f"{path} exists: edit it with set/joint/piece, or pick another --manifest")
+    # said here, with what was typed: left to the survey it was Blender's "can't be read" a minute
+    # later, the same for a .zip, a folder and a path pasted with its quotes on
+    model = Path(args.model)
+    if not model.is_file():
+        raise ValueError(f"no model file at {model}" + (": that is a folder, name the file in it" if model.is_dir() else ""))
+    if model.suffix.lower() not in MODEL_TYPES:
+        raise ValueError(f"{model.name} is a {model.suffix or 'file with no type'}: the model must be one of {', '.join(MODEL_TYPES)}"
+                         + (" (unpack the .zip and name the model inside it)" if model.suffix.lower() in (".zip", ".rar", ".7z") else ""))
     if Path(args.model).suffix.lower() == ".vrm" and engine.shipped(args.model) is None:
         raise ValueError(f"{args.model} isn't a VRM 1.0 file. A VRM 0.x file isn't taken in: "
                          "export it as VRM 1.0 (VRoid Studio and UniVRM both do)")

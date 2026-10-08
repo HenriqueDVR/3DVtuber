@@ -168,17 +168,20 @@ def api(route, query, body):
     if route == "init":
         if not body.get("name") or Path(body["name"]).name != body["name"]:
             raise ValueError("the name can't contain a path")
-        return cli.cmd_init(_args(model=Path(body["model"]), name=body["name"], author=body.get("author") or "Unknown",
-                                  manifest=None, face=Path(body["face"]) if body.get("face") else None,
-                                  reference=Path(body["reference"]) if body.get("reference") else None,
-                                  rig=Path(body["rig"]) if body.get("rig") else None))
+        typed = {key: _typed(body.get(key)) for key in ("model", "face", "reference", "rig")}
+        if not typed["model"]:
+            raise ValueError("name the model file first: type its path or press Browse")
+        return cli.cmd_init(_args(model=Path(typed["model"]), name=body["name"], author=body.get("author") or "Unknown",
+                                  manifest=None, face=Path(typed["face"]) if typed["face"] else None,
+                                  reference=Path(typed["reference"]) if typed["reference"] else None,
+                                  rig=Path(typed["rig"]) if typed["rig"] else None))
     if route == "set":
         return cli.cmd_set(_args(manifest=Path(m), key=body["key"], value=json.dumps(body["value"])))
     if route == "set_path":
         if body.get("key") not in ("source", "reference", "face", "author", "rig"):
             raise ValueError("only source, reference, face, rig and author are set this way")
         data = engine.manifest.load(m)
-        data[body["key"]] = body["value"] or None
+        data[body["key"]] = (body["value"] if body["key"] == "author" else _typed(body["value"])) or None
         engine.manifest.save(data, m)
         return {"saved": body["key"]}
     if route == "joint":
@@ -389,6 +392,12 @@ def _reveal(path):
 BROWSE = {"model": ("Model", "*.fbx *.glb *.gltf *.obj *.vrm"), "rig": ("Tripo rig (FBX)", "*.fbx"),
           "face": ("Face points", "*.json"), "blender": ("Blender", "blender.exe blender")}
 BROWSE_FROM = {"blender": engine.WINDOWS_BLENDER.parent}
+
+
+def _typed(value):
+    """A path as the user typed or pasted it. Windows' "Copy as path" hands it over in quotes: kept,
+    the file's type read as `.fbx"` and the survey refused a good FBX."""
+    return str(value or "").strip().strip("\"'").strip()
 
 
 def _browse_mac(title, start):

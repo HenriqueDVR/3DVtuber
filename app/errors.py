@@ -47,7 +47,8 @@ KNOWN = [
      {"eyes": "slide"}),
     ("VM-UNSUPPORTED-FILE", ("survey", "build"), r"Unsupported model type",
      "the model file type can't be read",
-     "export it as FBX, GLB/glTF or OBJ", None),
+     "export it as FBX, GLB/glTF or OBJ; a .zip must be unpacked first, and a path pasted with quotes "
+     "around it reads as this too: make the character again from the file itself", None),
     ("VM-BLENDER-OLD", None, r"needs Blender 4\.2 or later",
      "this Blender is older than 4.2, which the pipeline needs",
      "install Blender 4.2 LTS or later and point the app at it ($BLENDER or --blender)", None),
