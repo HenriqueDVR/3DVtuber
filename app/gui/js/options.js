@@ -34,6 +34,8 @@ const OPTION_UI = [
   ["repair_shoulder_seams", "Repair shoulder seams", "Closes gaps that open at the shoulders between the body and a sleeve when the arms go up.",
     [[true, "on (recommended)", "Repaired."], [false, "off", "Left as rigged."]]],
   ["Body and hands"],
+  ["facing", "Front and back", "Which side of the model is its front. The app finds it from the feet; a model it gets wrong is built with the face on the back of the head. After changing this, run again from the survey.",
+    [AUTO("found from which way the toes point"), ["file", "as the file has it", "The model faces the way it was exported: for one the app turned around."]]],
   ["skinning", "Body weights", "How the skin follows the bones when the character moves. With Tripo's rig (Model page) the rig's own weights are used instead.",
     [["heat", "computed (recommended)", "Worked out from the model's shape, with the app's rules for arms and body."],
       ["template", "copied from VRoid (experimental)", "Copies a VRoid body's weights onto this one. Measured worse on a test model (the arms stretched far more)."],

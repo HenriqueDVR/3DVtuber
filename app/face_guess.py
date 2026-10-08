@@ -97,7 +97,7 @@ def base_python(run=subprocess.run):
     found = []
     if os.name == "nt" and shutil.which("py"):
         try:
-            listed = run(["py", "-0p"], capture_output=True, text=True, timeout=30).stdout
+            listed = run(["py", "-0p"], capture_output=True, text=True, errors="replace", timeout=30).stdout
         except (OSError, subprocess.TimeoutExpired):
             listed = ""
         for line in listed.splitlines():
@@ -204,7 +204,7 @@ def guess(picture, python=None, cache=None):
     env = dict(os.environ)
     if cache:
         env["HF_HOME"] = str(cache)  # the weights (273 MB) beside the app's other downloads, not in the user's profile
-    ran = subprocess.run([python, str(SCRIPT), str(picture)], capture_output=True, text=True, env=env, timeout=600)
+    ran = subprocess.run([python, str(SCRIPT), str(picture)], capture_output=True, text=True, errors="replace", env=env, timeout=600)
     line = next((line for line in ran.stdout.splitlines() if line.startswith("FACE_LANDMARKS ")), None)
     if ran.returncode != 0 or line is None:
         raise RuntimeError(f"the face detector failed\n{(ran.stderr or ran.stdout)[-1500:]}")

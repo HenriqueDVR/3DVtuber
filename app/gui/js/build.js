@@ -78,7 +78,7 @@ async function renderDetail() {
       ${s.blend ? `<dt>made</dt><dd>${file(s.blend)}${s.vrm ? `, ${file(s.vrm)}` : ""}</dd>` : s.json ? `<dt>report</dt><dd>${file(s.json)}</dd>` : ""}
       ${s.reason ? `<dt>why</dt><dd class="failed">${esc(plain(s.step, s.reason))}</dd>` : ""}
       ${fail ? `<dt>last try</dt><dd class="failed">${esc(fail.finished.replace("T", " "))}: ${esc(plain(s.step, fail.reason))}</dd>` : ""}
-      ${known ? `<dt>${esc(known.code)}</dt><dd>${esc(known.what)}. What to do: ${esc(known.fix)}</dd>` : ""}</dl>
+      ${known ? `<dt>${esc(known.code)}</dt><dd>${esc(known.what)}${known.detail ? ` (${esc(known.detail)})` : ""}. What to do: ${esc(known.fix)}</dd>` : ""}</dl>
     <div class="row"><button class="act alt small" data-job id="detail-from" ${s.runs ? "" : "disabled"}>Run from here</button>
       <button class="act alt small" data-job id="detail-only" ${s.runs ? "" : "disabled"}>Run only this</button>
       ${log ? `<button class="act alt small" id="detail-reveal">Show log in folder</button>` : ""}</div>
@@ -143,7 +143,9 @@ function renderTodo() {
   // a step that stopped the chain: its last good output stays, the failure rides beside it
   for (const f of S.status.steps.filter((s) => s.runs && s.last_failure)) {
     const k = f.last_failure.known;
-    add(`“${stepName(f.step)}” failed on ${f.last_failure.finished.replace("T", " ")}${k ? `: ${k.what}. ${k.fix}` : `: ${plain(f.step, f.last_failure.reason).split("\n")[0]}`}`,
+    // which file: a tester's good FBX was refused and nothing on the page said what path the character held
+    const named = k?.code === "VM-UNSUPPORTED-FILE" ? `. The model this character names: ${S.manifest.source}` : "";
+    add(`“${stepName(f.step)}” failed on ${f.last_failure.finished.replace("T", " ")}${k ? `: ${k.what}${k.detail ? ` (${k.detail})` : ""}. ${k.fix}` : `: ${plain(f.step, f.last_failure.reason).split("\n")[0]}`}${named}`,
       ...retry(f, k), "failed", true);
   }
   const pageName = (page) => page[0].toUpperCase() + page.slice(1);

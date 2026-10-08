@@ -21,7 +21,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from . import trust
 
@@ -135,7 +135,10 @@ def check(open_url=trust.open_url):
 def _guarded(name):
     """Whether a path of the zip may be written: inside the app, and not among the user's own things."""
     parts = Path(name).parts
-    return bool(parts) and ".." not in parts and not Path(name).is_absolute() and parts[0] not in KEPT and name not in KEPT_FILES
+    # by Windows' reading too: there "/x" and "C:x" are no absolute paths, and REPO / "/x" is E:\x
+    windows = PureWindowsPath(name)
+    inside = ".." not in parts and ".." not in windows.parts and not (windows.drive or windows.root or Path(name).is_absolute())
+    return bool(parts) and inside and parts[0] not in KEPT and name not in KEPT_FILES
 
 
 def apply(on_event=None, open_url=trust.open_url):

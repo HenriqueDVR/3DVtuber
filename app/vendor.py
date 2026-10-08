@@ -76,6 +76,7 @@ def fetch(on_event=None, open_url=trust.open_url):
     Each goes to a .part file, is hashed as it arrives and only takes its name once the hash is
     the pinned one, so a cut connection or a changed file never leaves something a page would load.
     """
+    from . import engine  # here, not above: engine reads this module
     emit = on_event or (lambda event: None)
     fetched = []
     for _, address, files in PACKAGES:
@@ -90,6 +91,8 @@ def fetch(on_event=None, open_url=trust.open_url):
             try:
                 with open_url(request, timeout=120) as response, open(part, "wb") as out:
                     while chunk := response.read(1 << 16):
+                        if engine.CANCEL.is_set():
+                            raise engine.Cancelled("stopped by the user while downloading")
                         digest.update(chunk)
                         out.write(chunk)
                 if digest.hexdigest() != pinned:

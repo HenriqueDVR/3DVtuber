@@ -478,6 +478,55 @@ class Engine(unittest.TestCase):
         finally:
             engine.REPO = real
 
+    def test_deleting_a_character_takes_its_folder_and_leaves_what_others_read(self):
+        (self.root / "model.glb").write_bytes(b"glb")
+        real = engine.REPO, cli.REPO, engine.LOCK
+        engine.REPO, cli.REPO, engine.LOCK = self.root, self.root, self.root / "lock"
+        try:
+            first = Path(cli.duplicate(self.path, "First")["manifest"])
+            patched = first.parent / "face" / "First_face.glb"
+            patched.parent.mkdir()
+            patched.write_bytes(b"patched")
+            data = manifest.load(first)
+            data["source"], data["reference"] = "face/First_face.glb", "../../model.glb"
+            manifest.save(data, first)
+            copy = Path(cli.duplicate(first, "Copy")["manifest"])
+            # the copy is built from the first one's face patch
+            with self.assertRaisesRegex(ValueError, "Copy is built from files in .*First"):
+                engine.delete_character(first)
+            self.assertTrue(patched.exists())
+            would = engine.delete_character(copy, dry=True)
+            self.assertTrue(copy.exists())
+            self.assertEqual((would["folder"], would["model"], would["dry"]), (str(copy.parent), str(self.root / "model.glb"), True))
+            engine.delete_character(copy)
+            self.assertFalse(copy.parent.exists())
+            gone = engine.delete_character(first)
+            self.assertFalse(first.parent.exists())
+            self.assertGreater(gone["freed"], len(b"patched"))
+            self.assertEqual(engine.characters(), [])
+            # an output folder named by hand, anywhere on the disk, is not the app's to delete
+            kept = self.root / "out" / "old.vrm"
+            kept.write_bytes(b"vrm")
+            done = engine.delete_character(self.path)
+            self.assertEqual((done["folder"], done["left"]), (None, str(self.root / "out")))
+            self.assertTrue(kept.exists() and (self.root / "model.glb").exists())
+            self.assertFalse(self.path.exists())
+            with self.assertRaisesRegex(ValueError, "isn't a character"):
+                engine.delete_character(self.root / "model.glb")
+        finally:
+            engine.REPO, cli.REPO, engine.LOCK = real
+
+    def test_a_path_saved_with_its_quotes_reads_as_the_path_meant(self):
+        # what `init` wrote for a path pasted from Explorer's "Copy as path", before it took the quotes off
+        for saved, meant in (('..\\..\\"C:\\Users\\bob\\my oc.fbx"', "C:\\Users\\bob\\my oc.fbx"), ('"C:\\a\\b.fbx', "C:\\a\\b.fbx"),
+                             ("..\\..\\'D:/a/b.glb'", "D:/a/b.glb"), ("/home/bob/bob's oc.fbx", "/home/bob/bob's oc.fbx"),
+                             ("../model.glb", "../model.glb")):
+            data = json.loads(self.path.read_text())
+            data["source"] = data["rig"] = saved
+            self.path.write_text(json.dumps(data))
+            read = manifest.load(self.path)
+            self.assertEqual((read["source"], read["rig"]), (meant, meant))
+
     def test_a_duplicate_is_the_same_character_with_its_own_builds(self):
         (self.root / "face.json").write_text(json.dumps({"size": [8, 8]}))
         data = manifest.load(self.path)
@@ -515,6 +564,70 @@ class Engine(unittest.TestCase):
         project.state_path.with_name("state.json.bak").write_text("", encoding="utf-8")
         with self.assertRaisesRegex(engine.StepFailed, "no usable backup"):
             Project(self.path)
+
+    def test_a_lock_let_go_while_it_was_looked_at_is_taken(self):
+        real, engine.LOCK = engine.LOCK, self.root / ".blender.lock"
+        opened, tries = engine.os.open, []
+
+        def held_once(*args):  # the other build lets go between the refused try and the look at who holds it
+            tries.append(args)
+            if len(tries) == 1:
+                raise FileExistsError
+            return opened(*args)
+        engine.os.open = held_once
+        try:
+            with engine._Lock():
+                self.assertIn(f"pid {engine.os.getpid()}", engine.LOCK.read_text())
+            self.assertEqual(len(tries), 2)
+        finally:
+            engine.os.open, engine.LOCK = opened, real
+
+    def test_a_run_refused_for_another_build_leaves_no_run_folder(self):
+        project = self.project()
+        real, engine.LOCK = engine.LOCK, self.root / ".blender.lock"
+        try:
+            with engine._Lock():
+                with self.assertRaisesRegex(engine.StepFailed, "another build is running"):
+                    project.run(only="survey")
+            self.assertEqual(list((project.out / "runs").glob("*")), [])
+        finally:
+            engine.LOCK = real
+
+    def test_the_arms_error_is_named_with_the_scripts_own_words(self):
+        # scripts/preflight.py says which joint detection gave up on, and how big the model is
+        said = json.dumps({"code": "VM-ARMS-AT-SIDES", "detail": "the arms don't stand clear of the body (the left one); and 1,900,000 triangles is heavy"})
+        known = errors.classify("survey", "MODEL pirate.fbx\nVTUBER_MAKER_ERROR " + said + "\n")
+        self.assertEqual((known["code"], known["options"]), ("VM-ARMS-AT-SIDES", None))
+        self.assertIn("T-pose", known["fix"])
+        self.assertIn("1,900,000 triangles", known["detail"])
+        # ... and the build, which has no such line, is known by the reason alone
+        self.assertEqual(errors.classify("build", "LandmarkError: the arms don't stand clear of the body: they hang")["code"], "VM-ARMS-AT-SIDES")
+        self.assertEqual(errors.classify("survey", "This doesn't read as a standing humanoid: could not find two separate legs")["code"], "VM-NOT-HUMANOID")
+
+    def test_a_model_the_app_turned_around_is_built_as_its_file_has_it(self):
+        project = self.project()
+        self.assertEqual(project.frame(), [])
+        project = self.project(facing="file")
+        self.assertEqual(project.frame(), ["--python-expr", "import os; os.environ['VTUBER_MAKER_FACING'] = 'file'"])
+        data = json.loads(self.path.read_text())
+        data["options"]["facing"] = "back"
+        self.path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "option facing must be one of"):
+            manifest.load(self.path)
+
+    def test_a_step_that_has_not_run_is_said_not_a_key_error(self):
+        project = self.project()
+        for step in ("tpose", "survey"):
+            with self.assertRaisesRegex(engine.StepFailed, f"{step} has no .blend yet"):
+                cli._blend_of(project, step)
+        project.state["steps"]["tpose"] = {"status": "done", "blend": str(self.root / "13_tpose.blend")}
+        self.assertEqual(cli._blend_of(project, "tpose"), self.root / "13_tpose.blend")
+
+    def test_an_installers_output_is_read_whatever_its_bytes(self):
+        # UTF-8 from pip, read in Windows' code page: 0x81 and 0x8d have no letter in cp1252
+        printed = "import sys; sys.stdout.buffer.write(b'C:/Users/J\\x81\\x8d\\xc3\\xa9/site-packages ok')"
+        done = engine.install([sys.executable, "-c", printed], "a package")
+        self.assertIn("site-packages ok", done["log"])
 
     def test_a_lock_left_by_a_dead_process_is_taken(self):
         import subprocess
@@ -1743,6 +1856,13 @@ class Updates(unittest.TestCase):
         with self.assertRaisesRegex(update.UpdateFailed, "wasn't found with this key"):
             update.apply(open_url=self.github(fail=404))
 
+    def test_a_zip_path_that_leaves_the_app_on_windows_is_not_written(self):
+        # "/x" and "C:x" are no absolute paths to Windows, and REPO / "/x" is the drive's own folder
+        for name in ("/x", "\\x", "C:x", "C:/x", "a/../b", "a\\..\\b", "//server/share/x", "..", ""):
+            self.assertFalse(update._guarded(name), name)
+        for name in ("app/server.py", "OC2VRM.bat", "docs/agent/app.md"):
+            self.assertTrue(update._guarded(name), name)
+
     def test_the_testers_zip_holds_the_committed_files_and_says_which_commit(self):
         import shutil
         import zipfile
@@ -1847,6 +1967,9 @@ class Server(unittest.TestCase):
     def test_refuses_a_name_with_a_path(self):
         with self.assertRaisesRegex(ValueError, "path"):
             server.api("init", {}, {"model": "m.glb", "name": "../evil"})
+        for name in ("..", ".", " .. "):  # ".." is its own .name: the character landed in the app's folder
+            with self.assertRaisesRegex(ValueError, "path"):
+                server.api("init", {}, {"model": "m.glb", "name": name})
 
     def test_a_model_that_cant_be_read_is_refused_when_the_character_is_made(self):
         # a tester's good FBX failed the survey as an unsupported type: the path, pasted from
@@ -2304,6 +2427,15 @@ class Vendor(unittest.TestCase):
         self.assertEqual((done["views"], done["tracker"], len(done["fetched"]), len(asked)), (True, True, 3, 3))
         self.assertEqual(vendor.local(page), '"lib": "/gui/vendor/npm/lib@1.0.0/a.js", MODEL = "/gui/vendor/tracker/1/model.task"')
         self.assertEqual(vendor.fetch(open_url=open_url)["fetched"], [])  # kept: nothing is asked for again
+        (vendor.FOLDER / "tracker" / "1" / "model.task").unlink()
+        engine.CANCEL.set()
+        try:
+            with self.assertRaises(engine.Cancelled):  # Stop reaches the download, and leaves no half file
+                vendor.fetch(open_url=open_url)
+        finally:
+            engine.CANCEL.clear()
+        self.assertEqual([p.name for p in (vendor.FOLDER / "tracker" / "1").iterdir()], [])
+        vendor.fetch(open_url=open_url)
         (vendor.FOLDER / "tracker" / "1" / "model.task").unlink()
         # the views alone: the tracker's address must stay the internet's, or the webcam test would find nothing
         self.assertEqual(vendor.local(page), '"lib": "/gui/vendor/npm/lib@1.0.0/a.js", MODEL = "https://models.example/tracker/1/model.task"')

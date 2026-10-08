@@ -129,6 +129,24 @@ $("hide").onclick = async () => {
   try { await call("hide", {}); toast("Off the list. It can be put back from the Characters page."); await app.loadProjects(null); app.go("home"); }
   catch (e) { say("character-msg", e.message, true); }
 };
+// Deleting can't be taken back: what goes and how much is measured first and said, and the name is
+// typed. A character another one is built from is refused by the engine, with that one's name.
+$("delete").onclick = async () => {
+  let goes;
+  try { goes = await call("delete", { dry: true }); } catch (e) { say("character-msg", e.message, true); return; }
+  const typed = await ask(`Delete ${goes.name}`, { text: [goes.folder ? `${goes.folder} is deleted with everything in it (${gb(goes.freed)}): builds, face points, paint, notes.`
+      : `Its settings file is deleted (${goes.manifest}).`,
+    goes.left ? `Its builds are outside the app's folder and stay: ${goes.left}.` : "",
+    goes.model ? `The model stays: ${goes.model}.` : "",
+    "This can't be undone. Type the character's name to delete it."].filter(Boolean).join(" "), input: true, ok: "Delete", danger: true });
+  if (typed === null) return;
+  if (typed !== goes.name) { say("character-msg", "Not deleted: the name typed isn't this character's.", true); return; }
+  try {
+    const gone = await call("delete", {});
+    toast(`${gone.name} is deleted${gone.freed ? `: ${gb(gone.freed)} freed` : ""}.`);
+    await app.loadProjects(null); app.go("home");
+  } catch (e) { say("character-msg", e.message, true); }
+};
 $("duplicate").onclick = async () => {
   const name = await ask("Duplicate this character", { text: "A name for the copy: letters, digits, _ and -. Nothing is built yet in it.",
     input: true, value: `${S.manifest?.name || "copy"}_b`, ok: "Duplicate" });

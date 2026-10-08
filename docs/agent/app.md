@@ -32,6 +32,7 @@ python -m app paint out/MyOC/character.json              # the texture paint kep
 python -m app duplicate out/MyOC/character.json MyOC_b   # the character again with its own builds
 python -m app rename out/MyOC/character.json NewName     # its builds stay where they are
 python -m app hide out/MyOC/character.json               # off the app's list (--show puts it back); nothing is deleted
+python -m app delete out/MyOC/character.json --dry         # what deleting it would remove; without --dry it is gone: folder in out/ and manifest
 
 python -m app render out/MyOC/character.json --pose raised   # PNGs of the rig in a pose
 python -m app sheet out/MyOC/character.json              # contact sheets of the finished .vrm

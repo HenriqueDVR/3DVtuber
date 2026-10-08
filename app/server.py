@@ -166,7 +166,8 @@ def api(route, query, body):
         listing = engine._read_json(Project(m).out / "pieces.json", None)
         return {"listing": listing, "glb": _url(Project(m).out / "pieces.glb")}
     if route == "init":
-        if not body.get("name") or Path(body["name"]).name != body["name"]:
+        # ".." is its own .name: the character landed in the app's folder, off the list
+        if not body.get("name") or Path(body["name"]).name != body["name"] or not body["name"].strip(". "):
             raise ValueError("the name can't contain a path")
         typed = {key: _typed(body.get(key)) for key in ("model", "face", "reference", "rig")}
         if not typed["model"]:
@@ -274,6 +275,10 @@ def api(route, query, body):
         return cli.rename(Path(m), (body.get("name") or "").strip())
     if route == "hide":
         return engine.hide_character(Path(body.get("path") or m), hide=not body.get("show"))
+    if route == "delete":
+        if JOBS.running and not body.get("dry"):
+            raise StepFailed(f"busy: {JOBS.running} is still running")
+        return engine.delete_character(Path(body.get("path") or m), dry=bool(body.get("dry")))
     if route == "duplicate":
         return cli.duplicate(Path(m), (body.get("name") or "").strip())
     if route == "approve":

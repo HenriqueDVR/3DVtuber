@@ -126,6 +126,10 @@ def main(argv=None):
     p.add_argument("manifest", type=Path)
     p.add_argument("--show", action="store_true")
 
+    p = sub.add_parser("delete", help="delete a character: its folder in out/ and its manifest (--dry: what would go)")
+    p.add_argument("manifest", type=Path)
+    p.add_argument("--dry", action="store_true")
+
     p = sub.add_parser("paint", help="the texture paint kept with a character (Paint page): what there is, or --clear it")
     p.add_argument("manifest", type=Path)
     p.add_argument("--clear", action="store_true", help="drop all of it: the build reads the generated texture again")
@@ -416,7 +420,7 @@ def cmd_pieces(args):
                                       "--json", out,
                                       "--manifest", project.manifest_path, "--glb", project.out / "pieces.glb",
                                       "--picture", project.out / engine.FIRST_PICTURE],
-                                     log=project.out / "pieces.log")
+                                     log=project.out / "pieces.log", extra=project.frame())
     if code != 0:
         raise StepFailed(f"list_pieces failed (see {project.out / 'pieces.log'})\n{output[-2000:]}")
     return json.loads(out.read_text(encoding="utf-8"))
@@ -477,7 +481,7 @@ def cmd_render(args):
         blends = sorted((project.out / "runs" / Path(args.run).name).glob("[0-9][0-9]_*.blend"))
         blend = blends[-1] if blends else None
     else:
-        blend = Path(project.state["steps"][args.step]["blend"]) if args.step else project.latest()
+        blend = _blend_of(project, args.step) if args.step else project.latest()
     if blend is None:
         raise StepFailed("nothing built yet")
     # keyed by run too: every run has a 13_tpose.blend, and one run's render replaced another's
@@ -518,11 +522,19 @@ def cmd_sheet(args):
         raise StepFailed(f"sheet: {error}")
 
 
+def _blend_of(project, step):
+    """The .blend a named step left; StepFailed when it hasn't run or leaves none (survey, the checks)."""
+    blend = project.state["steps"].get(step, {}).get("blend")
+    if not blend:
+        raise StepFailed(f"{step} has no .blend yet: run the build up to it first")
+    return Path(blend)
+
+
 def cmd_movement(args):
     """Run scripts/check_movement.py on the modelled pose; the result is also kept as movement.json."""
     project = _project(args)
     # before the T-pose bake: a sleeve left at the ribs is no longer near the arm after it
-    blend = Path(project.state["steps"][args.step]["blend"]) if args.step else project.latest(before="tpose")
+    blend = _blend_of(project, args.step) if args.step else project.latest(before="tpose")
     if blend is None:
         raise StepFailed("nothing rigged yet: run the build first")
     out = project.out / "movement.json"
@@ -539,7 +551,7 @@ def cmd_movement(args):
 def cmd_springs(args):
     """Run scripts/check_springs.py on the finished rig; the result is also kept as springs.json."""
     project = _project(args)
-    blend = Path(project.state["steps"][args.step]["blend"]) if args.step else project.latest()
+    blend = _blend_of(project, args.step) if args.step else project.latest()
     if blend is None:
         raise StepFailed("nothing rigged yet: run the build first")
     out = project.out / "springs.json"
@@ -879,6 +891,10 @@ def cmd_hide(args):
     return engine.hide_character(args.manifest, hide=not args.show)
 
 
+def cmd_delete(args):
+    return engine.delete_character(args.manifest, dry=args.dry)
+
+
 def cmd_duplicate(args):
     return duplicate(args.manifest, args.name)
 
@@ -968,7 +984,7 @@ def cmd_bundle(args):
 
 COMMANDS = {"init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_set, "joint": cmd_joint,
             "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "portraits": cmd_portraits, "sheet": cmd_sheet, "movement": cmd_movement, "springs": cmd_springs,
-            "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "paint": cmd_paint, "duplicate": cmd_duplicate, "rename": cmd_rename, "hide": cmd_hide, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
+            "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "paint": cmd_paint, "duplicate": cmd_duplicate, "rename": cmd_rename, "hide": cmd_hide, "delete": cmd_delete, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
             "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup,
             "regress": cmd_regress, "vendor": cmd_vendor, "update": cmd_update, "pack": cmd_pack, "detector": cmd_detector, "warudo": cmd_warudo}
 

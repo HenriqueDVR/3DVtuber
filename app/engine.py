@@ -258,6 +258,12 @@ class Project:
         source = manifest.path_of(self.data, "source")
         return paint.painted(source, manifest.path_of(self.data, "paint"), self.out, self.name)
 
+    def frame(self):
+        """Blender arguments for the manifest's `facing`: the model taken to face as its file has it
+        (normalize._turn_upright), in every Blender that reads the model."""
+        said = "import os; os.environ['VTUBER_MAKER_FACING'] = 'file'"
+        return ["--python-expr", said] if self.data["options"].get("facing") == "file" else []
+
     def mark_stale(self, start="build"):
         """What was built from `start` on no longer shows the manifest: the app then offers the rebuild."""
         changed = False
@@ -651,8 +657,9 @@ class Project:
         first = NAMES.index(only or start) if (only or start) else 0
         last = NAMES.index(only or stop) if (only or stop) else len(NAMES) - 1
         folder = self.out / "runs" / datetime.now().strftime("%Y%m%d-%H%M%S")
-        folder.mkdir(parents=True, exist_ok=True)
         with _Lock():
+            # inside the lock: refused because another build ran, it left an empty run on the Runs page
+            folder.mkdir(parents=True, exist_ok=True)
             # what built this run, so "it was good last week" can be traced to a Blender, add-on and commit
             made_by = provenance(self.blender, self.manifest_path)
             _write_json(folder / "run.json", {**made_by, "steps": NAMES[first:last + 1]})
@@ -727,6 +734,7 @@ class Project:
             known = errors.describe("VM-DISK-FULL")
             raise StepFailed(f"{name}: only {free / 2**20:.0f} MB free on {folder.anchor} [VM-DISK-FULL] {known['fix']}", known)
         args, extra = self._arguments(name, stem, blend_in)
+        extra = [*extra, *self.frame()]
         prints = _fingerprint_of(stem.with_suffix(".blend"))
         if kind == "blend":
             # the numbers the step's file is judged by (contracts), written as the step saves it
@@ -750,7 +758,7 @@ class Project:
             if known is None and free_disk(folder) < DISK_FLOOR:
                 # Blender words a save that didn't fit many ways; on a full drive that is the reason
                 known = errors.describe("VM-DISK-FULL")
-            said = f" [{known['code']}] {known['what']}; {known['fix']}" if known else ""
+            said = f" [{known['code']}] {known['what']}{' (' + known['detail'] + ')' if known.get('detail') else ''}; {known['fix']}" if known else ""
             if OUT_OF_MEMORY in output:
                 raise StepFailed(f"{name}: Blender ran out of memory (see {log}){said}", known)
             raise StepFailed(f"{name}: failed with exit code {code} (see {log}){said}\n{_tail(output)}", known)
@@ -981,6 +989,54 @@ def hide_character(manifest_path, hide=True):
     return {"hidden": settings["hidden"]}
 
 
+def delete_character(manifest_path, dry=False):
+    """Delete a character: its output folder (builds, face points, paint, notes) and its manifest.
+
+    Only a folder inside the app's own `out` is deleted: an `out_dir` written by hand can name any
+    folder on the disk, and that one is left where it is and named (`left`). The model the
+    character was made from stays unless it lies in the folder (a face patch does). Refuses while a
+    build runs, and while another character reads a file in the folder: a copy (`duplicate`) is
+    built from the original's face patch. `dry`: what would go, nothing touched.
+    """
+    path = Path(manifest_path).resolve()
+    data = _read_json(path, None)
+    if not isinstance(data, dict) or not {"source", "options"} <= set(data):
+        raise ValueError(f"{path} isn't a character")
+    data["_path"] = str(path)
+    name = data.get("name") or path.stem
+    out = (manifest.path_of(data, "out_dir") or REPO / "out" / name).resolve()
+    inside = lambda p, folder: folder in Path(p).resolve().parents  # noqa: E731
+    folder = out if out.parent == (REPO / "out").resolve() and out.is_dir() else None
+    if folder is not None:
+        for other in {*characters(), *map(Path, hidden_characters())}:
+            theirs = _read_json(other, None) or {}
+            if other.resolve() == path or inside(other, folder):
+                continue
+            theirs["_path"] = str(other.resolve())
+            read = [key for key in manifest.PATHS if key != "out_dir" and theirs.get(key) and inside(manifest.path_of(theirs, key), folder)]
+            if read:
+                raise ValueError(f"{theirs.get('name') or other.stem} is built from files in {folder} ({', '.join(read)}): "
+                                 "delete that character first, or take this one off the list instead")
+    freed = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file()) if folder else 0
+    freed += path.stat().st_size if folder is None or not inside(path, folder) else 0
+    model = manifest.path_of(data, "reference") or manifest.path_of(data, "source")
+    done = {"name": name, "folder": str(folder) if folder else None, "manifest": str(path), "freed": freed, "dry": dry,
+            "left": str(out) if folder is None and out.is_dir() else None,
+            "model": str(model) if model and model.exists() and not (folder and inside(model, folder)) else None}
+    if dry:
+        return done
+    with _Lock():
+        # the manifest last: a folder that wouldn't go (a file open in another program) leaves the
+        # character on the list, to be deleted again
+        if folder is not None:
+            try:
+                shutil.rmtree(folder)
+            except OSError as error:
+                raise StepFailed(f"{folder} couldn't be deleted whole ({error}): close what has its files open and delete it again") from None
+        path.unlink(missing_ok=True)
+    return done
+
+
 def run_script(blender, script, args, blend_in=None, log=None, extra=()):
     """Run any scripts/ file in Blender outside the chain (renders, checks); returns (code, output)."""
     log = Path(log) if log else Path(os.environ.get("TEMP", "/tmp")) / f"vtuber_{os.getpid()}.log"
@@ -1102,9 +1158,12 @@ class _Lock:
         try:
             handle = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            held = LOCK.read_text(errors="replace").strip()
+            try:
+                held = LOCK.read_text(errors="replace").strip()
+            except FileNotFoundError:  # let go between our try and this look: free, as a dead holder's
+                held = "pid 0"
             found = re.match(r"pid (\d+)", held)
-            if not found or _alive(int(found.group(1))):
+            if not found or (int(found.group(1)) and _alive(int(found.group(1)))):
                 raise StepFailed(f"another build is running ({held}); if none is, delete {LOCK}") from None
             # left by a process that crashed or was killed: without this the user had to find and
             # delete the file by hand. A second taker racing us still loses on O_EXCL.
@@ -1665,7 +1724,9 @@ def install(command, what, on_event=None, timeout=900):
     emit = on_event or (lambda event: None)
     emit({"step": what, "status": "running"})
     try:
-        done = subprocess.run(command, capture_output=True, text=True, timeout=timeout, cwd=REPO)
+        # errors="replace": pip and Blender print paths as UTF-8, and read strictly in Windows' own
+        # code page a user name with an accent turned a good install into a traceback
+        done = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=timeout, cwd=REPO)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise StepFailed(f"{what}: {error}") from error
     log = (done.stdout or "") + (done.stderr or "")
