@@ -40,6 +40,15 @@ LEG_GAP = 0.04
 # Confidence: the feet have to stand out past the hips by this share of the body's depth,
 # and the up end has to beat the other one by this much score.
 FACING_MARGIN = 0.04
+# The two feet: floor-level surface in cells this share of the height, a patch counting as a foot
+# from this share of that surface; the ankle is read in the band just above. A pair is two patches
+# whose places, widths and lengths differ by no more than this share of the distance between them,
+# and the toes must reach past the ankle by this share of the foot's length on both.
+FOOT_CELL = 0.012
+FOOT_SHARE = 0.05
+ANKLE_BAND = (0.08, 0.16)
+FEET_ALIKE = 0.5
+TOE_MARGIN = 0.08
 UP_MARGIN = 0.4
 MIRROR_WEIGHT = 2.0
 
@@ -152,12 +161,84 @@ def _facing(points, up):
 
     along = points @ up
     low, height = float(along.min()), float(np.ptp(along))
+    # The two feet by themselves first. Everything at foot height counted as "the feet" before: a
+    # fox tail hanging to the floor behind a pirate outweighed his boots' toes, his coat pushed the
+    # hips forward, and the model was turned to face backwards, marked sure.
+    toes = _toes(points, along, low, height, depth_axis, np.cross(up, depth_axis))
+    if toes is not None:
+        return depth_axis * np.sign(toes), True
     feet = _band_centre(points, along, low, height, FOOT_BAND, depth_axis)
     hips = _band_centre(points, along, low, height, HIP_BAND, depth_axis)
     if feet is None or hips is None:
         return -AXES[1], False
     overhang = feet - hips
     return depth_axis * np.sign(overhang or 1.0), abs(overhang) > FACING_MARGIN * depth
+
+
+def _toes(points, along, low, height, depth_axis, width_axis):
+    """How far the toes reach past the ankles along `depth_axis`, as a share of the foot's length
+    (signed), read on the two feet alone; None when the model shows no pair of feet that agree.
+
+    The feet are the two patches of floor-level surface that mirror each other across the body's
+    middle: a tail's tip, a cape's hem or a sword's point is a patch of its own with no twin. Each
+    foot is measured against the ankle standing on it, so nothing behind or beside the legs counts.
+    A robe to the floor is one patch: no pair, and the caller falls back to feet against hips.
+    """
+    wide, deep = points @ width_axis, points @ depth_axis
+    cell = FOOT_CELL * height
+    cells = np.stack([np.floor(wide / cell), np.floor(deep / cell)], axis=1).astype(np.int64)
+    keys = cells[:, 0] * 100_003 + cells[:, 1]
+    foot = (along >= low + FOOT_BAND[0] * height) & (along <= low + FOOT_BAND[1] * height)
+    ankle = (along > low + ANKLE_BAND[0] * height) & (along <= low + ANKLE_BAND[1] * height)
+    if foot.sum() < 50:
+        return None
+    patches = _patches(cells[foot])
+    middle = float(np.median(wide))
+    found = []
+    for patch in patches:
+        on = foot & np.isin(keys, patch)
+        if on.sum() < FOOT_SHARE * foot.sum():
+            continue
+        span = np.percentile(deep[on], [2, 98])
+        found.append({"cells": patch, "offset": float(np.mean(wide[on])) - middle, "width": float(np.ptp(wide[on])),
+                      "span": span, "length": float(span[1] - span[0])})
+    pairs = [(abs(a["offset"] + b["offset"]) + abs(a["width"] - b["width"]) + abs(a["length"] - b["length"]), a, b)
+             for a in found if a["offset"] < 0 for b in found if b["offset"] > 0]
+    if not pairs:
+        return None
+    mismatch, left, right = min(pairs, key=lambda pair: pair[0])
+    if mismatch > FEET_ALIKE * (right["offset"] - left["offset"]):
+        return None
+    reach = []
+    for side in (left, right):
+        above = ankle & np.isin(keys, side["cells"])
+        if above.sum() < 30 or side["length"] <= 0:
+            return None
+        shin = np.percentile(deep[above], [2, 98])
+        reach.append(float(side["span"].mean() - shin.mean()) / side["length"])
+    if reach[0] * reach[1] <= 0 or min(map(abs, reach)) < TOE_MARGIN:
+        return None
+    return float(np.mean(reach))
+
+
+def _patches(cells):
+    """Occupied grid cells grouped into patches that touch (corners count); each a key array."""
+    keys = np.unique(cells[:, 0] * 100_003 + cells[:, 1])
+    group = {int(k): int(k) for k in keys}
+
+    def root(k):
+        while group[k] != k:
+            group[k] = group[group[k]]
+            k = group[k]
+        return k
+    for k in group:
+        for step in (1, 100_003, 100_004, 100_002):
+            if k + step in group:
+                group[root(k)] = root(k + step)
+    patches = {}
+    for k in group:
+        patches.setdefault(root(k), []).append(k)
+    return [np.array(patch) for patch in patches.values()]
 
 
 def _band_centre(points, along, low, height, band, axis):

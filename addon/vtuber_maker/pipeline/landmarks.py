@@ -77,6 +77,10 @@ LEG_SPREAD_PRIOR = 0.055
 CROTCH_RANGE = (0.38, 0.62)
 
 
+# What both arm finders failing means, in the user's words; scripts/preflight.py names its error code by it.
+ARMS_AT_SIDES = "the arms don't stand clear of the body: they hang against the sides or inside the clothing's outline"
+
+
 class LandmarkError(RuntimeError):
     """The mesh doesn't look like a standing A-pose humanoid."""
 
@@ -124,7 +128,13 @@ def detect_body(verts, tris, warnings=None):
             try:
                 arms[side] = _arm(bands, points, side, center_x)
             except LandmarkError:
-                arms[side] = _arm_out(bands, points, side, center_x, warnings)
+                try:
+                    arms[side] = _arm_out(bands, points, side, center_x, warnings)
+                except LandmarkError:
+                    # neither hanging clear of the body nor held out: said as what it is. "No arm
+                    # found" sent a tester looking for a missing arm on a pirate whose arms hung
+                    # inside his coat's outline from shoulder to cuff
+                    raise LandmarkError(f"{ARMS_AT_SIDES} (the {name} one)") from None
             continue
         # A model this wide is held out or has something wide beside the arms (wings): the
         # hanging-arm finder read model C's wing edge as an arm dropping to the hip, so it isn't

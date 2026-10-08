@@ -53,6 +53,46 @@ class DetectOrientation(unittest.TestCase):
         self.assertGreater(back[np.argmax(self.verts[:, 0])][0], 0.0)
 
 
+def with_tail(verts, tris):
+    """The fixture with a tail behind it: a block from the small of the back down to the floor,
+    longer behind the heels than the toes are in front of them."""
+    low, high = np.array([-0.08, 0.10, 0.0]), np.array([0.14, 0.50, 0.75])
+    corners = np.array([[x, y, z] for x in (low[0], high[0]) for y in (low[1], high[1]) for z in (low[2], high[2])])
+    faces = np.array([[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1],
+                      [2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]])
+    return np.concatenate([verts, corners]), np.concatenate([tris, faces + len(verts)])
+
+
+class ATailDoesNotTurnTheModelRound(unittest.TestCase):
+    """A tester's pirate had a fox tail hanging to the floor behind him: at foot height it reached
+    further back than his boots reached forward, and the model was built facing backwards."""
+
+    @classmethod
+    def setUpClass(cls):
+        mesh, _ = load_fixture("synthetic_character_parts")
+        cls.verts, cls.tris = with_tail(meshdata.world_vertices(mesh), meshdata.triangles(mesh.data))
+
+    def test_the_feet_alone_say_which_way_it_faces(self):
+        found = orient.detect(self.verts, self.tris)
+        self.assertTrue(found.is_identity, found.describe())
+        self.assertTrue(found.confident)
+
+    def test_everything_at_foot_height_would_have_turned_it(self):
+        # the rule before: the tail counted among "the feet"
+        real, orient._toes = orient._toes, lambda *args: None
+        try:
+            self.assertFalse(orient.detect(self.verts, self.tris).is_identity)
+        finally:
+            orient._toes = real
+
+    def test_turned_any_way_it_comes_back_with_its_tail_behind(self):
+        for name, (axis, degrees) in TURNS.items():
+            with self.subTest(turn=name):
+                verts = turned(self.verts, axis, degrees)
+                back = verts @ orient.detect(verts, self.tris).matrix.T
+                self.assertLess(float(np.abs(back - self.verts).max()), 1e-6, name)
+
+
 class DetectOrientationOfATPose(unittest.TestCase):
     """A T-pose is about as wide as it is tall, so legs and soles alone barely told up from sideways."""
 
@@ -95,6 +135,17 @@ class PrepareTurnsTheModelUpright(unittest.TestCase):
         feet = verts[verts[:, 2] < 0.1 * 1.6]
         hips = verts[(verts[:, 2] > 0.72) & (verts[:, 2] < 0.96)]
         self.assertLess(float(np.median(feet[:, 1])), float(np.median(hips[:, 1])))
+
+    def test_told_to_trust_the_file_it_leaves_the_facing_as_filed(self):
+        import os
+        os.environ[normalize.FACING_AS_FILED] = "file"
+        try:
+            found = normalize.orientation_of(self.prepared("Z", 180))
+            self.assertEqual((found["facing"], found["turned"], found["facing_sure"]), ([0.0, -1.0, 0.0], False, True))
+            # a model lying down has no "as filed" to keep: it is still stood up
+            self.assertTrue(normalize.orientation_of(self.prepared("X", -90))["turned"])
+        finally:
+            del os.environ[normalize.FACING_AS_FILED]
 
     def test_records_what_it_found(self):
         mesh = self.prepared("X", 0)

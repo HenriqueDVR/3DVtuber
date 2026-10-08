@@ -1,8 +1,10 @@
 """Put an imported character into the shape the rest of the pipeline expects."""
 
+import os
 from pathlib import Path
 
 import bpy
+import numpy as np
 from mathutils import Matrix
 
 from . import compat, manifest, orient
@@ -12,6 +14,10 @@ from .rig import make_active
 # Custom property left on the mesh: which way the import was standing and facing, and
 # whether the detection was sure. Written into the .blend, and read back for the build report.
 ORIENTATION_KEY = "vtuber_orientation"
+# Set to "file" for a Blender run (app/engine.py, from the manifest's `facing`): see _turn_upright.
+# An environment variable, not an argument: five scripts prepare the model, and one that missed
+# the word would build the character facing the other way from the rest.
+FACING_AS_FILED = "VTUBER_MAKER_FACING"
 
 IMPORTERS = {
     ".glb": lambda path: bpy.ops.import_scene.gltf(filepath=path),
@@ -132,6 +138,10 @@ def _turn_upright(mesh, upright):
     orientation = upright if isinstance(upright, orient.Orientation) else orient.detect(
         world_vertices(mesh), triangles(mesh.data)
     )
+    if os.environ.get(FACING_AS_FILED) == "file" and orientation is not upright and np.allclose(orientation.up, orient.AXES[2]):
+        # the user's word against the detector's (manifest option `facing`): a model standing
+        # upright in its file faces the way the file has it. One lying down has no such way.
+        orientation = orient.Orientation(orientation.up, -orient.AXES[1], orientation.up_sure, True)
     if not orientation.is_identity:
         rotation = Matrix([list(row) for row in orientation.matrix]).to_4x4()
         mesh.data.transform(rotation)

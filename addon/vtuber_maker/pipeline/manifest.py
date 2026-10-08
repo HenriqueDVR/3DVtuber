@@ -17,6 +17,7 @@ Plain Python, no bpy: the desktop app and agents read and write manifests outsid
 import copy
 import json
 import os
+import re
 import struct
 from pathlib import Path
 
@@ -71,7 +72,10 @@ OPTIONS = {
     "chest": False,           # chest bounce: two spring bones on the chest (pipeline/chest.py)
     "chest_amount": 1.0,      # how much it bounces, 0.25 (barely) to 2 (a lot)
     "hair_hits_body": True,   # false: hair springs collide with the head alone (hair lying on the shoulders)
+    "facing": None,           # None: front and back are found from the feet (orient.py); "file": the model
+                              # faces the way its file has it, for one the app turned around
 }
+FACING = (None, "file")
 EYES = (None, "none", "iris", "slide", "hidden")
 CHEST_AMOUNT = (0.25, 2.0)  # chest.AMOUNT_RANGE (this module stays plain Python)
 FINGERS = ("guides", "auto", "none")
@@ -176,10 +180,25 @@ def load(path):
     data.setdefault("joints", {})
     data.setdefault("pieces", [])
     for key in PATHS:
-        data.setdefault(key, None)
+        data[key] = _unquoted(data.get(key))
     validate(data)
     data["_path"] = str(path.resolve())
     return data
+
+
+QUOTED = re.compile(r"""^.*?(["'])((?:[A-Za-z]:[\\/]|/).*?)\1?\s*$""")
+
+
+def _unquoted(value):
+    """A manifest path without the quotes it was pasted in (Explorer's "Copy as path").
+
+    The app once took `"C:\\art\\oc.fbx"`, quotes and all, as a path beside the manifest and wrote
+    `..\\..\\"C:\\art\\oc.fbx"`: the survey then refused the file's type, `.fbx"`. What follows the
+    quote is the path that was meant. Only a whole path after the quote counts: an apostrophe in a
+    file's name is left alone.
+    """
+    found = QUOTED.match(value) if isinstance(value, str) else None
+    return found.group(2) if found else value
 
 
 def migrate(data):
@@ -231,7 +250,7 @@ def validate(data):
     for key in options:
         if key not in OPTIONS:
             problems.append(f"unknown option {key!r}")
-    for key, allowed in (("eyes", EYES), ("fingers", FINGERS), ("tpose", TPOSE), ("skinning", SKINNING)):
+    for key, allowed in (("eyes", EYES), ("fingers", FINGERS), ("tpose", TPOSE), ("skinning", SKINNING), ("facing", FACING)):
         if options.get(key, OPTIONS[key]) not in allowed:
             problems.append(f"option {key} must be one of {', '.join('null (automatic)' if a is None else a for a in allowed)}")
     for key in ("chest", "hair_hits_body"):

@@ -52,12 +52,24 @@ def main():
     try:
         report = survey.survey(mesh)
     except landmarks.LandmarkError as error:
+        # the size too: a model that fails here never reaches the survey's notes, and a tester's
+        # was Tripo's high-poly export, twenty times what any build here has been made from
+        triangles = sum(len(p.vertices) - 2 for p in mesh.data.polygons)
+        heavy = (f"; and {triangles:,} triangles is heavy: export the low-poly version, about 50k"
+                 if triangles > survey.HEAVY_TRIANGLES else "")
+        arms = landmarks.ARMS_AT_SIDES in str(error)
         print()
         print(f"MODEL {model.name}")
         print(f"  standing   {_orientation_line(orientation)}")
-        print(f"  This doesn't read as a standing humanoid: {error}")
-        print("  Check it stands upright and apart in the viewer, that it is one character, and")
-        print("  that it isn't posed. Nothing else here can run until joint detection works.")
+        print(f"  mesh       {triangles:,} triangles")
+        print(f"  This doesn't read as a standing humanoid: {error}{heavy}")
+        if arms:
+            print("  Generate the model in a T-pose (arms straight out to the sides): the arms have to")
+            print("  show apart from the body for their joints to be found.")
+        else:
+            print("  Check it stands upright and apart in the viewer, that it is one character, and")
+            print("  that it isn't posed. Nothing else here can run until joint detection works.")
+        print("VTUBER_MAKER_ERROR " + json.dumps({"code": "VM-ARMS-AT-SIDES" if arms else "VM-NOT-HUMANOID", "detail": f"{error}{heavy}"}))
         sys.exit(2)
     report["orientation"] = orientation
     report["model"] = str(model)
