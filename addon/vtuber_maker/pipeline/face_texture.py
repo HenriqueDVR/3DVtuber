@@ -14,6 +14,7 @@ from . import face_points, meshdata, texture_space
 # The rest of the head is matched to the patch across its edge within this share of the
 # head's size, fading out beyond; the change also bleeds this many texels past the surface.
 SEAM_BLEND = 0.35
+EDGE_AGREES = 0.2  # see _edge_spread
 SEAM_BLEED = 3
 # With extend_patch, head polygons facing the front more than this (cosine) take the face patch.
 EXTEND_FACING = 0.55
@@ -86,20 +87,13 @@ def extend_patch(mesh_obj, head, min_facing=EXTEND_FACING):
     return moved
 
 
-def blend_patch_seam(mesh_obj, head, smooth=False):
-    """Match the texture on the rest of the `head` vertices' surface to the face patch across its edge.
-
-    The patch is left as drawn. The rest of the head is shifted by the colour difference at the
-    nearest stretch of the patch's edge, fading out over SEAM_BLEND of the head's size, so its
-    own detail (ears, a painted neck) stays. With `smooth` (a solid head like a mascot's, with no
-    detail of its own) it becomes a smooth continuation of the patch's edge colours everywhere,
-    which also clears stripes and smudges the generator painted on it. Returns the texels changed.
-    """
+def _seam(mesh_obj, head):
+    """What blend_patch_seam and solid_head read along the patch's outer edge, or None without one."""
     mesh = mesh_obj.data
     slot = mesh.materials.find(face_points.FACE_PATCH_MATERIAL)
     patch_image = face_points._patch_image(mesh_obj)
     if slot < 0 or patch_image is None:
-        return 0
+        return None
     head = np.asarray(head, dtype=bool)
     verts = meshdata.world_vertices(mesh_obj)
     weld, _a, _b = meshdata.welded_edges(mesh_obj, verts)
@@ -123,7 +117,7 @@ def blend_patch_seam(mesh_obj, head, smooth=False):
     seam = _outer_loop(mesh, weld, border, verts)
     print("SMOOTHDBG border", len(border), "loop", len(seam))
     if not seam:
-        return 0
+        return None
     rest = _outside_patch(rest, weld, seam)
     patch_pixels = texture_space.image_rgb(patch_image)
     cache = {}
@@ -136,7 +130,49 @@ def blend_patch_seam(mesh_obj, head, smooth=False):
         patch_colours.append(here)
         if np.linalg.norm(there - here) <= SEAM_MAX_DIFFERENCE:
             deltas.append((len(points) - 1, here - there))
-    points, patch_colours = np.array(points), np.array(patch_colours)
+    return mesh, verts, weld, inside, rest, patch_pixels, np.array(points), np.array(patch_colours), deltas
+
+
+def extend_if_solid(mesh_obj, head):
+    """extend_patch for a head that is one plain surface round its face; returns whether it is.
+
+    A solid head (a mascot's) is told by the patch's edge once the patch covers its front: one colour
+    all round (`_edge_spread`). The edge as the patch step left it doesn't tell (0.54 on the slime
+    girl's, across her fringe; 0.22 on a tester's pirate), so the patch is extended, the edge read, and
+    the extension taken back on a head that isn't: it drew the front view's hat trim again on his crown.
+    """
+    mesh = mesh_obj.data
+    slots = np.empty(len(mesh.polygons), dtype=np.int32)
+    mesh.polygons.foreach_get("material_index", slots)
+    uvs = np.empty(len(mesh.loops) * 2, dtype=np.float32)
+    mesh.uv_layers.active.data.foreach_get("uv", uvs)
+    extend_patch(mesh_obj, head)
+    seam = _seam(mesh_obj, np.asarray(head, dtype=bool))
+    spread = None if seam is None else _edge_spread(seam[7])
+    solid = spread is not None and spread < EDGE_AGREES
+    print("face patch edge: " + ("none found" if spread is None else f"colours spread {spread:.2f}")
+          + f" (a solid head under {EDGE_AGREES}): " + ("the head continues the patch" if solid else "the head keeps its own texture"))
+    if not solid:
+        mesh.polygons.foreach_set("material_index", slots)
+        mesh.uv_layers.active.data.foreach_set("uv", uvs)
+        mesh.update()
+    return solid
+
+
+def blend_patch_seam(mesh_obj, head, smooth=False):
+    """Match the texture on the rest of the `head` vertices' surface to the face patch across its edge.
+
+    The patch is left as drawn. The rest of the head is shifted by the colour difference at the
+    nearest stretch of the patch's edge, fading out over SEAM_BLEND of the head's size, so its
+    own detail (ears, a painted neck) stays. With `smooth` (a solid head like a mascot's, with no
+    detail of its own) it becomes a smooth continuation of the patch's edge colours everywhere,
+    which also clears stripes and smudges the generator painted on it. Returns the texels changed.
+    """
+    head = np.asarray(head, dtype=bool)
+    seam = _seam(mesh_obj, head)
+    if seam is None:
+        return 0
+    mesh, verts, weld, inside, rest, patch_pixels, points, patch_colours, deltas = seam
     head_size = float(np.ptp(verts[head], axis=0).max())
     # per head vertex off the patch: its correction, blended from the seam by inverse distance
     targets = np.nonzero(head)[0]
@@ -167,6 +203,18 @@ def blend_patch_seam(mesh_obj, head, smooth=False):
         _store(image, rgba)
         changed += int(covered.sum())
     return changed
+
+
+def _edge_spread(colours):
+    """How far the patch's edge colours stand from their median, at the upper quartile (0-1 RGB distance).
+
+    Painting the rest of the head as a continuation of that edge is for a mascot's ball of a head, one
+    colour all round. A head called solid for its hat (a tester's pirate: hat, ears and brow are the
+    surface his eyes sit in, and no hair shows above them) has skin, hair and hat on that edge, and the
+    hat came out in flat light brown blocks. 0.14 on the slime girl's head, 0.29 on his.
+    """
+    colours = np.asarray(colours, dtype=float)
+    return float(np.quantile(np.linalg.norm(colours - np.median(colours, axis=0), axis=1), 0.75))
 
 
 def _outside_patch(rest, weld, seam):

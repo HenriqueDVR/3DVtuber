@@ -12,7 +12,7 @@ back to what the model looked like going in.
 
 import numpy as np
 
-from . import face_points, landmarks, parts, texture_space
+from . import face_points, landmarks, orient, parts, texture_space
 from .face import _dominant_color
 from .meshdata import pieces, sample_surface, triangles, world_vertices
 
@@ -145,8 +145,9 @@ def _symmetry(points):
 def _head(points, verts, joints, found):
     """What the head is made of: hair to swing, or one solid piece, and whether it comes to a tip."""
     head_z = float(joints["head"][2])
-    top = float(points[:, 2].max())
-    head = points[points[:, 2] > head_z]
+    # a tail held up above the head is not the head's tip
+    top = orient.head_top(points, joints["head"][1]) or float(points[:, 2].max())
+    head = points[(points[:, 2] > head_z) & (points[:, 2] <= top)]
     centre = np.array([float(joints["head"][0]), float(np.median(head[:, 1]))]) if len(head) else np.zeros(2)
     radius = np.linalg.norm(head[:, :2] - centre, axis=1) if len(head) else np.zeros(1)
     tip_band = head[:, 2] > top - TIP_BAND * (top - head_z) if len(head) else np.zeros(0, dtype=bool)
@@ -176,7 +177,7 @@ def _hair_hang(verts, joints, found):
     if found is None or not found.hair.any():
         return 0.0 if found is not None else None
     head_z = float(joints["head"][2])
-    head_height = max(float(verts[:, 2].max()) - head_z, 1e-6)
+    head_height = max((orient.head_top(verts, joints["head"][1]) or float(verts[:, 2].max())) - head_z, 1e-6)
     hair_labels = found.labels[found.hair]
     hang = 0.0
     for piece in np.unique(hair_labels):

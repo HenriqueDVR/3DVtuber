@@ -11,8 +11,8 @@ Detection is geometric, so it needs no texture:
 - **Up** runs along the model's longest side, pointed away from the end that looks like
   feet: the legs split into two clusters there, and a standing character's soles are flat
   and wide while the crown of the head comes to a point.
-- **Facing** is the horizontal axis the body is thinnest along (people are wider than they
-  are deep), pointed the way the feet stick out past the hips.
+- **Facing** is the horizontal axis the body does not mirror across (left and right match,
+  front and back don't), pointed the way the feet stick out past the hips.
 
 Both are reported with a confidence; a model that doesn't read as a standing body keeps
 the pipeline's own frame and the caller warns instead of rigging something wrong.
@@ -55,6 +55,22 @@ UP_MARGIN = 0.4
 # a coat and a tail between the legs, a head with more surface on top than his soles have below)
 # scored legs 0.08 and soles 0 standing, legs 0.50 lying on his side, and was laid on his side.
 MIRROR_WEIGHT = 4.0
+# The side-on silhouette mirrors less than the front one by at least this much before it names the
+# depth axis: 0.12 to 0.53 less on every model measured, with a tail in ten poses or without.
+MIRROR_CLEAR = 0.05
+# A tail held up behind the back can end above the head. The head's top is looked for no further
+# behind the body's middle than this share of the height, and what stands above it by more than
+# this share of the body is not the head (hair tips, a hat's point bent back and a thin ahoge on
+# every model measured: under 0.005).
+TOP_REACH = 0.05
+ABOVE_HEAD = 0.04
+# Horns, tall ears and antennae stand above the crown too, either side of it: the head's top is read
+# no further from the head's middle, left or right, than this share of the height. A tester's demon
+# girl had her head joint, and with it the face patch's frame, up among her horns; model A with horns
+# 15% of her height added failed as arms at the sides.
+TOP_STRIP = 0.025
+# The head's middle, left to right, is the median of the surface this far down from the top.
+TOP_BAND = 0.25
 # The way the file stands counts for this much: importers hand nearly every model over upright, so
 # it takes the shape's clear word to turn one. Without it the same pirate, upright in his file,
 # read as standing on his head by 0.09 (the soles cue, on hair against boots).
@@ -106,6 +122,41 @@ def detect(verts, tris):
     return Orientation(up, facing, up_sure, facing_sure)
 
 
+def head_top(points, middle=None, verts=None):
+    """The height of the top of the head when something stands higher behind it (a tail held up
+    over the back) or beside its crown (horns, tall ears), else None: the model's top is the head's.
+
+    For a character in the pipeline's frame (+Z up, facing -Y). `middle` is the body's depth, the
+    surface's median when not given: pass the head joint's once joints are known. A tail that
+    curls forward over the crown is not told from a hat. With `verts` the height is read on them:
+    surface samples end a few millimetres under a pointed top, differently on each copy of a
+    model, and a rig scaled by one no longer sat on its source scaled by another.
+    """
+    points = np.asarray(points, dtype=float)
+    low, top = float(points[:, 2].min()), float(points[:, 2].max())
+    middle = float(np.median(points[:, 1])) if middle is None else float(middle)
+    reach = middle + TOP_REACH * (top - low)
+    front = points[points[:, 1] < reach]
+    if not len(front):
+        return None
+    # what a tail leaves is the body: its crown lies about the middle of its upper part
+    body_top = float(front[:, 2].max())
+    centre = float(np.median(front[front[:, 2] > body_top - TOP_BAND * (body_top - low), 0]))
+    strip = TOP_STRIP * (body_top - low)
+    crown = front[np.abs(front[:, 0] - centre) < strip, 2]
+    # ears and hair tips a little over the crown are the head's still: the strip counts only when
+    # what stands beside it is as far above it as a tail has to be
+    beside = bool(len(crown)) and body_top - float(crown.max()) > ABOVE_HEAD * (float(crown.max()) - low)
+    head = float(crown.max()) if beside else body_top
+    if top - head <= ABOVE_HEAD * (head - low):
+        return None
+    if verts is None:
+        return head
+    verts = np.asarray(verts, dtype=float)
+    kept = verts[:, 1] < reach
+    return float(verts[kept & (np.abs(verts[:, 0] - centre) < strip) if beside else kept, 2].max())
+
+
 def _standing_score(points, up):
     """How much the model looks like a body standing along `up`: higher is better."""
     along = points @ up
@@ -122,12 +173,25 @@ def _standing_score(points, up):
     # A T-pose is about as wide as it is tall, and on a mascot in a robe legs and soles barely
     # told +Z from +X (1.34 against 1.17). A body is a mirror image left to right, never head
     # to foot, so that decides; both ends of one axis score it alike, so it can't flip one.
-    return 2.0 * _legs_share(flat, along, low, height, width) + flatness + MIRROR_WEIGHT * _mirror_share(flat, along)
+    # Both read across the body's width: its widest side before, and a tail held up behind an
+    # A-pose makes a body deeper than it is wide. Seen from the side, head and tail stood apart
+    # like two legs and nothing mirrored: OC3 and Slime with such a tail stood on their heads.
+    spread, mirror = _across(flat, along)
+    return 2.0 * _legs_share(spread, along, low, height, width) + flatness + MIRROR_WEIGHT * mirror
 
 
-def _mirror_share(flat, along, cells=40):
-    """How much the silhouette across the widest side matches its mirror image: 1 is exactly."""
-    spread = flat[:, int(np.argmax(np.ptp(flat, axis=0)))]
+def _across(flat, along):
+    """The body's left-to-right coordinate among the two of `flat`, and how much its silhouette
+    matches its mirror image there (1 is exactly): the one that mirrors best, the widest when
+    they mirror about alike."""
+    shares = [_mirrored(flat[:, i], along) for i in (0, 1)]
+    clear = abs(shares[0] - shares[1]) > MIRROR_CLEAR
+    i = int(np.argmax(shares)) if clear else int(np.argmax(np.ptp(flat, axis=0)))
+    return flat[:, i], shares[i]
+
+
+def _mirrored(spread, along, cells=40):
+    """How much the silhouette across `spread` matches its mirror image: 1 is exactly."""
     side = spread - np.median(spread)
     reach = max(float(np.abs(side).max()), 1e-9)
     grid = np.histogram2d(side, along, bins=cells, range=[[-reach, reach], [along.min(), along.max()]])[0] > 0
@@ -141,16 +205,20 @@ def _plane(points, up):
     return np.stack([points @ u, points @ np.cross(up, u)], axis=1)
 
 
-def _legs_share(flat, along, low, height, width):
-    """Share of slices above the feet where the body splits in two, like legs."""
-    spread = flat[:, int(np.argmax(np.ptp(flat, axis=0)))]
+def _legs_share(spread, along, low, height, width):
+    """Share of slices above the feet where the body splits in two across `spread`, like legs."""
     edges = np.linspace(low + LEG_BAND[0] * height, low + LEG_BAND[1] * height, BAND_SLICES + 1)
+    # Legs stand either side of the body's middle. Any two clusters counted before: lying on his
+    # side, a T-pose pirate's arm and a thin tail beside it were legs in every slice.
+    middle, reach = float(np.median(spread)), LEG_GAP * width
     split = 0
     for bottom, top in zip(edges[:-1], edges[1:]):
         band = np.sort(spread[(along >= bottom) & (along < top)])
         if len(band) < 50:
             continue
-        if np.diff(band).max(initial=0.0) > LEG_GAP * width:
+        gaps = np.diff(band)
+        widest = int(np.argmax(gaps))
+        if gaps[widest] > reach and band[widest] - reach < middle < band[widest + 1] + reach:
             split += 1
     return split / BAND_SLICES
 
@@ -164,11 +232,18 @@ def _facing(points, up):
     """
     flat_axes = [AXES[i] for i in range(3) if not np.isclose(abs(up @ AXES[i]), 1.0)]
     extents = [float(np.ptp(points @ axis)) for axis in flat_axes]
-    depth_axis = flat_axes[int(np.argmin(extents))]
-    depth = min(extents)
-
     along = points @ up
     low, height = float(along.min()), float(np.ptp(along))
+    # Left and right mirror each other, front and back don't: that names the depth axis. The
+    # thinner axis did before ("people are wider than they are deep"), and a tail held out behind
+    # an A-pose made the body deeper than wide: it was turned to face sideways. The thinner one
+    # still decides when the two silhouettes mirror about alike.
+    mirrored = [_mirrored(points @ axis, along) for axis in flat_axes]
+    clear = abs(mirrored[0] - mirrored[1]) > MIRROR_CLEAR
+    depth_index = int(np.argmin(mirrored)) if clear else int(np.argmin(extents))
+    depth_axis = flat_axes[depth_index]
+    depth = extents[depth_index]
+
     # The two feet by themselves first. Everything at foot height counted as "the feet" before: a
     # fox tail hanging to the floor behind a pirate outweighed his boots' toes, his coat pushed the
     # hips forward, and the model was turned to face backwards, marked sure.

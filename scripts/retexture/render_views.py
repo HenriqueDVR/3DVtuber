@@ -26,6 +26,9 @@ RES = int(argv[2]) if len(argv) > 2 and not argv[2].startswith("--") else 1024
 # Placed by proportion (0.88) it framed the top of whatever is highest: over model C's tall tail the
 # face sat at the frame's bottom edge, cut at the mouth.
 HEAD_AT = float(argv[argv.index("--head-at") + 1]) if "--head-at" in argv else 0.88
+# --body F: the body's share of the model's height, when horns or a tail stand over the head: the head
+# and face views are sized by the body, or the face is small in a picture of mostly horns.
+BODY = float(argv[argv.index("--body") + 1]) if "--body" in argv else 1.0
 os.makedirs(OUT, exist_ok=True)
 
 def _upstream_texture(node, depth=4):
@@ -99,7 +102,7 @@ scene.collection.objects.link(cam)
 scene.camera = cam
 
 # (name, height fraction of tile centre, ortho scale as fraction of height)
-TILES = [("head", HEAD_AT, 0.26), ("torso", 0.64, 0.36), ("hips", 0.40, 0.36), ("legs", 0.15, 0.34)]
+TILES = [("head", HEAD_AT, 0.26 * BODY), ("torso", 0.64, 0.36), ("hips", 0.40, 0.36), ("legs", 0.15, 0.34)]
 YAWS = [0, 45, 90, 135, 180, 225, 270, 315]
 distance = height * 3
 
@@ -109,7 +112,7 @@ for tile, frac, scale in TILES:
         a = math.radians(yaw)
         loc = Vector((center.x + math.sin(a) * distance, center.y - math.cos(a) * distance, lo.z + frac * height))
         views.append((f"{tile}_{yaw:03d}", loc, (math.radians(90), 0, a), scale * height, tile, yaw))
-views.append(("face_000", Vector((center.x, center.y - distance, lo.z + (HEAD_AT - 0.01) * height)), (math.radians(90), 0, 0), 0.13 * height, "face", 0))
+views.append(("face_000", Vector((center.x, center.y - distance, lo.z + (HEAD_AT - 0.01) * height)), (math.radians(90), 0, 0), 0.13 * BODY * height, "face", 0))
 views.append(("top", Vector((center.x, center.y + 0.02 * height, hi.z + distance)), (0, 0, 0), 0.3 * height, "top", 0))
 
 

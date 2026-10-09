@@ -48,7 +48,13 @@ SPOT_CLIP = 0.08
 # The ring drawn round a spot in its close-ups (m, its outer radius): a fifth of the picture's width.
 SPOT_RING = 0.03
 # A build is worth looking at by hand when it is over one of these.
-LIMITS = {"unweighted": 0, "stretch_cm": 6.0, "squash": 0.35}
+LIMITS = {"unweighted": 0, "stretch_cm": 6.0, "squash": 0.35, "arm_follows": 0.5}
+# An arm that moves has to take the surface round it along: of the vertices within ARM_NEAR (m) of
+# the middle of an upper arm's bone, the share that moves ARM_MOVED (m) or more when the arms are
+# raised. A tester's pirate, his whole body put on the head bone: every arm pose measured "0 edges
+# stretch", nothing over a limit, and only his hands and cuffs went up.
+ARM_NEAR = 0.07
+ARM_MOVED = 0.03
 
 
 def main():
@@ -103,6 +109,7 @@ def main():
             posed_mesh = evaluated.to_mesh()
             posed = np.array([v.co for v in posed_mesh.vertices]) @ matrix[:3, :3].T + matrix[:3, 3]
             evaluated.to_mesh_clear()
+            stretch.posed = posed
             length = np.linalg.norm(posed[edges[:, 0]] - posed[edges[:, 1]], axis=1)
             worst = np.maximum(worst, length - rest_length)
             np.minimum(squashed, np.where(rest_length > SQUASH_MIN, length / np.maximum(rest_length, 1e-9), 1.0), out=squashed)
@@ -165,8 +172,21 @@ def main():
         report("head turn", stretch([{"Head": r} for r in HEAD_TURNS]))
     if "LeftUpperArm" in arm.pose.bones:
         for label, direction in ARM_POSES.items():
+            ends = {side: (np.array(arm.matrix_world @ arm.pose.bones[f"{side}UpperArm"].head),
+                           np.array(arm.matrix_world @ arm.pose.bones[f"{side}LowerArm"].head))
+                    for side in ("Left", "Right") if f"{side}LowerArm" in arm.pose.bones}
             report(f"arms {label}", stretch([point_arms(direction)]))
             report_squash(f"arms {label}")
+            if label == "raised":
+                moved = np.linalg.norm(stretch.posed - rest, axis=1)
+                for side, (start, end) in ends.items():
+                    along = (rest - start) @ (end - start) / max(float((end - start) @ (end - start)), 1e-9)
+                    off = np.linalg.norm(rest - (start + np.clip(along, 0, 1)[:, None] * (end - start)), axis=1)
+                    near = (along > 0.4) & (along < 0.9) & (off < ARM_NEAR)
+                    if near.sum() >= 20:
+                        share = float((moved[near] > ARM_MOVED).mean())
+                        measured.setdefault("arm_follows", {})[side] = round(share, 2)
+                        print(f"CHECK {side.lower()} upper arm: {share:.0%} of the surface round it moves with it")
     for label, (bone, axis, angle) in BODY_POSES.items():
         if bone in arm.pose.bones:
             report(label, stretch([lambda: turn(bone, Vector(axis), angle), lambda: turn(bone, Vector(axis), -angle)]))
@@ -334,6 +354,10 @@ def failures(measured):
     if worst.get("stretch_cm", 0.0) > LIMITS["stretch_cm"]:
         failed.append(f"an edge stretches {worst['stretch_cm']:.1f} cm with the {worst['stretch_pose']}: "
                       "something is weighted to the wrong bone")
+    for side, share in measured.get("arm_follows", {}).items():
+        if share < LIMITS["arm_follows"]:
+            failed.append(f"the {side.lower()} upper arm takes only {share:.0%} of the surface round it along when it is "
+                          "raised: the sleeve is weighted to another bone")
     if worst.get("squash", 1.0) < LIMITS["squash"]:
         failed.append(f"an edge shrinks to {worst['squash']:.0%} with the {worst['squash_pose']}: "
                       "a limb's weights reach onto the body it folds into")

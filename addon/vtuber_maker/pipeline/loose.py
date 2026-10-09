@@ -367,6 +367,12 @@ def rigidify_props(mesh_obj, armature_obj, verts=None):
         holders = [mesh_obj.vertex_groups[index].name for index in np.nonzero(average >= HOLDS)[0]]
         if not _torn(armature_obj, holders):
             continue
+        # a bit of hair on two chains of its strand swings with both, as the strand round it does
+        # (see fix_weight_islands). Put on the head, their shared bone, model A's 180-vertex bit
+        # near the tips of her back hair stood still while the hair round it swung 30 cm away
+        strands = [_STRAND_CHAIN.match(name) for name in holders]
+        if all(strands) and len({strand.group(1) for strand in strands}) == 1:
+            continue
         # one bone for the whole piece: the one every holder hangs off, so a fin reaching from
         # one arm to the other rides the chest rather than being pulled in two directions. On one
         # chain that is the torso (a cuff trim partly on the hips it rests on), which would leave

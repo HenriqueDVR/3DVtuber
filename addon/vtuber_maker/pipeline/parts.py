@@ -11,7 +11,7 @@ from typing import NamedTuple
 import numpy as np
 from mathutils.kdtree import KDTree
 
-from . import meshdata, texture_space
+from . import meshdata, orient, texture_space
 from .face import _dominant_color
 from .meshdata import world_vertices
 
@@ -39,6 +39,24 @@ SKIN_AS_HAIR = 0.3
 SHADED_DISTANCE = 0.3
 SHADED_SHARE = 0.25
 SHADED_SIZE = 0.05
+
+
+# Ears and horns: a pair standing over the crown, one either side of it, each rising at least
+# EAR_RISE of the height above it and holding EAR_MIN vertices. Walked down from its tip in steps
+# of EAR_STEP of the height until it runs into the middle of the head or into the other one.
+EAR_RISE = 0.015
+EAR_MIN = 20
+EAR_STEP = 0.004
+# The two of a pair are alike: neither over this many times the other's size.
+EAR_ALIKE = 3.0
+# Where an ear is welded to what it stands beside (the pirate's to his hat's dome, 6 mm under its
+# crown) the walk down stops at its tip. It then goes on by colour: over the surface no further in
+# colour than this from the tip's, and the ear is that when it stays smaller than EAR_MAX of the
+# height (a cat ear of the hair's own colour runs out into the hair, and only its tip is offered).
+EAR_COLOUR = 0.2
+EAR_MAX = 0.14
+# How far behind the frontmost surface at the mouth still counts as the lips (m).
+LIP_DEPTH = 0.005
 
 
 class MeshParts(NamedTuple):
@@ -101,7 +119,7 @@ def find(mesh_obj, joints):
     labels = split(verts, edges.reshape(-1, 2))
     ids = np.unique(labels)
 
-    top = float(verts[:, 2].max())
+    top = orient.head_top(verts, joints["head"][1]) or float(verts[:, 2].max())
     head_height = top - float(joints["neck"][2])
     head = verts[:, 2] > joints["head"][2]
     head_centre_y = float(np.median(verts[head, 1])) if head.any() else float(joints["head"][1])
@@ -125,7 +143,7 @@ def find(mesh_obj, joints):
         face = int(labels[nearest[0]])
 
     colors = texture_space.vertex_colors(mesh_obj, texture_space.base_color_image(mesh_obj))
-    hair_color = _dominant_color(colors[verts[:, 2] > top - CROWN * head_height])
+    hair_color = _dominant_color(colors[(verts[:, 2] > top - CROWN * head_height) & (verts[:, 2] <= top)])
     hair_colored = np.linalg.norm(colors - hair_color, axis=1) < HAIR_COLOR_DISTANCE
     share = np.bincount(labels, weights=hair_colored, minlength=labels.max() + 1) / np.maximum(
         np.bincount(labels, minlength=labels.max() + 1), 1
@@ -151,6 +169,115 @@ def find(mesh_obj, joints):
             hair |= fused
         face_area &=(verts[:, 2] > joints["neck"][2]) & ~hair
     return MeshParts(labels, hair, face, eyes, mouth, hair_color, face_area)
+
+
+def with_marked_mouth(found, verts, mouth, width, neck_z, behind):
+    """`found` with its face area grown to the surface a marked mouth lies on, for the face rig.
+
+    The face part is the one the eye inserts sit in. A tester's pirate has his eyes, hat and brow in
+    one surface and his lips, beard and jaw in the body's: the mouth patch was hung in front of a
+    hidden layer of the first, 2 cm under his lips, and jawOpen moved none of the face one sees. The
+    frontmost surface in the mouth's window (the one `face_rig._add_mouth_cover` reads the lips in)
+    is taken, hair and inserts aside; when most of it is another part, that part's head end joins the
+    face, as far back as `behind` (the head joint's depth: the jaw turns all that is under the mouth, and
+    took the nape of his neck up 1 cm with it). A face that holds its own lips is returned as it is.
+    """
+    verts = np.asarray(verts, dtype=float)
+    labels, mouth = found.labels, np.asarray(mouth, dtype=float)
+    window = ((np.abs(verts[:, 0] - mouth[0]) < 0.6 * width) & (np.abs(verts[:, 2] - mouth[2]) < 0.3 * width)
+              & ~found.hair & ~np.isin(labels, list(found.eyes.values()) + [found.mouth]))
+    if not window.any():
+        return found
+    lips = window & (verts[:, 1] < verts[window, 1].min() + LIP_DEPTH)
+    if found.face_area[lips].mean() >= 0.5:
+        return found
+    part = np.bincount(labels[lips & ~found.face_area]).argmax()
+    return found._replace(face_area=found.face_area | ((labels == part) & (verts[:, 2] > neck_z)
+                                                       & (verts[:, 1] < behind) & ~found.hair))
+
+
+def ears(mesh_obj, verts, joints, skip=None, colours=None):
+    """{"left": mask, "right": mask} of a pair of ears or horns standing over the crown, or {}.
+
+    For a character in the pipeline's frame. They need no piece of their own: a tester's pirate has
+    his fox ears, his hat and the top of his face in one surface, so nothing on the Parts page could
+    be given a role and they stood still. Each is found from its tip, the surface above the crown
+    (read in the strip `orient.head_top` reads it in) to one side of it, and taken down to where it
+    runs into the middle of the head or the other one, or to the head joint when it is a piece of its
+    own. `skip` masks what is known to be something else (hair). One alone, or two unlike in size,
+    are not a pair: a feather in a hat, a bun on one side. Ears are not told from horns.
+    With `colours` (per vertex) an ear welded to what is beside it is followed down by its colour.
+    """
+    verts = np.asarray(verts, dtype=float)
+    low, top = float(verts[:, 2].min()), float(verts[:, 2].max())
+    head_z = float(joints["head"][2])
+    height = top - low
+    skip = np.zeros(len(verts), dtype=bool) if skip is None else np.asarray(skip, dtype=bool)
+    upper = verts[:, 2] > head_z
+    front = verts[:, 1] < float(joints["head"][1]) + orient.TOP_REACH * height  # not a tail held up behind
+    if not (upper & front).any():
+        return {}
+    centre = float(np.median(verts[upper & front, 0]))
+    strip = np.abs(verts[:, 0] - centre) < orient.TOP_STRIP * height
+    if not (strip & upper & front).any():
+        return {}
+    crown = float(verts[strip & upper & front, 2].max())
+    crown_at = int(np.flatnonzero(strip & upper & front)[np.argmax(verts[strip & upper & front, 2])])
+    if float(verts[upper & front & ~skip, 2].max(initial=crown)) - crown < EAR_RISE * height:
+        return {}
+    weld, a, b = meshdata.welded_edges(mesh_obj, verts)
+    tips = upper & front & ~strip & ~skip & (verts[:, 2] > crown)
+    found = {}
+    for side, sign in (("left", 1), ("right", -1)):
+        mine = tips & (sign * (verts[:, 0] - centre) > 0)
+        if mine.any():
+            found[side] = int(np.flatnonzero(mine)[np.argmax(verts[mine, 2])])
+    if len(found) < 2:
+        return {}
+    masks = {}
+    for level in np.arange(crown, head_z, -EAR_STEP * height):
+        inside = upper & (verts[:, 2] > level)
+        member = np.zeros(len(verts), dtype=bool)
+        member[weld[inside]] = True
+        keep = member[a] & member[b]
+        cluster = _components(len(verts), a[keep], b[keep])[weld]
+        # the head is what the crown is part of (an ear's own foot can lie in the strip)
+        middle = {int(cluster[crown_at])} if inside[crown_at] else set()
+        own = {side: int(cluster[tip]) for side, tip in found.items()}
+        done = True
+        for side, tip in found.items():
+            if side in masks and masks[side][1]:
+                continue
+            if own[side] in middle or own[side] == own["right" if side == "left" else "left"]:
+                masks[side] = (masks.get(side, (None, False))[0], True)  # ran into the head: the last free one stands
+                continue
+            masks[side] = (inside & (cluster == own[side]), False)
+            done = False
+        if done:
+            break
+    pair = {side: mask for side, (mask, _) in masks.items() if mask is not None and mask.sum() >= EAR_MIN
+            and float(verts[mask, 2].max()) - crown >= EAR_RISE * height}
+    if len(pair) < 2:
+        return {}
+    if colours is not None:
+        other = {"left": "right", "right": "left"}
+        grown = {side: _same_colour(verts, colours, weld, a, b, mask, upper & ~skip & ~strip) for side, mask in pair.items()}
+        if all(np.ptp(verts[g], axis=0).max() <= EAR_MAX * height and not (g & grown[other[side]]).any()
+               for side, g in grown.items()):
+            pair = grown
+    sizes = sorted(float(np.ptp(verts[mask, 2])) for mask in pair.values())
+    return pair if sizes[1] <= EAR_ALIKE * sizes[0] else {}
+
+
+def _same_colour(verts, colours, weld, a, b, seed, allowed):
+    """`seed` grown over edges to the vertices of `allowed` whose colour is near the seed's own."""
+    tone = np.median(colours[seed], axis=0)
+    like = allowed & (np.linalg.norm(colours - tone, axis=1) < EAR_COLOUR)
+    member = np.zeros(len(verts), dtype=bool)
+    member[weld[like | seed]] = True
+    keep = member[a] & member[b]
+    cluster = _components(len(verts), a[keep], b[keep])[weld]
+    return (like | seed) & np.isin(cluster, np.unique(cluster[seed]))
 
 
 def fused_hair(mesh_obj, verts, labels, candidates, joints):

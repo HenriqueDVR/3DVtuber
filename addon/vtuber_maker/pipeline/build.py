@@ -82,9 +82,10 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
     if points is not None and modelled_face and face_points._patch_image(mesh) is not None:
         # a solid head (a mascot) has no detail of its own round the face: the patch covers all of
         # its front, and the rest continues the face smoothly
-        if rigid_head:
-            face_texture.extend_patch(mesh, found.face_area)
-        face_texture.blend_patch_seam(mesh, found.face_area, smooth=rigid_head)
+        # ... which a head called solid for its hat is not (a tester's pirate: his hat came out in flat
+        # light brown blocks, with the front view's trim drawn again on its crown)
+        solid = bool(rigid_head) and face_texture.extend_if_solid(mesh, found.face_area)
+        face_texture.blend_patch_seam(mesh, found.face_area, smooth=solid)
         if not rigid_head:
             face_texture.clean_head_top(mesh, found.face_area)
     if mouth_color is not None:
@@ -119,14 +120,20 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
         if modelled_face:
             rig.weight_head(mesh, armature, found.face_area, found.labels, chin_z=chin)
     elif adopted is None and modelled_face:
-        before = found.labels
+        before, was = found.labels, meshdata.world_vertices(mesh)
         found = rig.skin(mesh, armature, found, solver=skinning)
-        named = roles.carry(named, before, found.labels, meshdata.world_vertices(mesh))
+        named = roles.carry(named, before, found.labels, meshdata.world_vertices(mesh), was)
         rig.weight_head(mesh, armature, found.face_area, found.labels, chin_z=chin)
+        # the rest of the head, when it is one surface with the body
+        rig.follow_head_column(mesh, armature, chin_z=chin, skip=found.hair)
     elif adopted is None:
         rig.skin(mesh, armature, solver=skinning)
     if modelled_face:
-        face_rig.set_eyelids_from_inserts(mesh, features, found, closed_eyes_image, lids=not keep_eyes)
+        # the face the shapes move reaches to the lips the user marked, whichever surface they are on
+        facial = found if points is None else parts.with_marked_mouth(
+            found, meshdata.world_vertices(mesh), features["mouth"], float(features["mouth_width"]), float(joints["neck"][2]),
+            float(joints["head"][1]))
+        face_rig.set_eyelids_from_inserts(mesh, features, facial, closed_eyes_image, lids=not keep_eyes)
     face_rig.add_shape_keys(mesh, features, blink=not keep_eyes)
     if points is not None and face_points.has_eyes(points):
         face_rig.store_painted_eyes(mesh, features)

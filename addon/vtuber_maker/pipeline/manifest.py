@@ -70,7 +70,7 @@ OPTIONS = {
     # user: the best mouth on every character tried); a manifest written before says null itself.
     "mouth_fix": {"scale": 1.0, "free": True},
     "chest": False,           # chest bounce: two spring bones on the chest (pipeline/chest.py)
-    "chest_amount": 1.0,      # how much it bounces, 0.25 (barely) to 2 (a lot)
+    "chest_amount": 0.5,      # how much it bounces, 0.25 (barely) to 2 (a lot); 1 read as too much (the user, 2026-10-08)
     "hair_hits_body": True,   # false: hair springs collide with the head alone (hair lying on the shoulders)
     "licence_read": False,    # a .vrm whose licence has to be read before it is changed (VRM 0.x): the user has, and may
     "facing": None,           # None: front and back are found from the feet (orient.py); "file": the model

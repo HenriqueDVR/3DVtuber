@@ -251,6 +251,18 @@ class Roles(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "whole part"):
             roles.carry({"b": np.array([True, False, False, False, False])}, before, after)
 
+    def test_a_region_is_carried_by_place_when_the_cut_renumbers_the_vertices(self):
+        # a tester's pirate: his ears, marked on his head, came out as vertices of his sleeves
+        before = np.array([1, 1, 1, 1])
+        was = np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]], dtype=float)
+        region = {"ear": np.array([False, False, True, True])}
+        # the cut put a new vertex first and the old ones after it, turned round
+        verts = np.array([[0, 0, 0], [3, 0, 0], [2, 0, 0], [1, 0, 0], [0, 0, 0]], dtype=float)
+        after = np.array([1, 1, 1, 1, 1])
+        self.assertEqual(roles.carry(region, before, after, verts, was)["ear"].tolist(), [False, True, True, False, False])
+        # by index alone the ear lands on other vertices
+        self.assertNotEqual(roles.carry(region, before, after, verts)["ear"].tolist(), [False, True, True, False, False])
+
     def test_listed_pieces_overrule_detected_hair(self):
         hair = np.array([True, True, False, False])
         pieces = [piece("hat", (0, 0, 0), 1, "hat"), piece("lock", (0, 0, 0), 1, "hair")]

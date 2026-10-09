@@ -8,7 +8,7 @@ import numpy as np
 from mathutils import Matrix
 
 from . import compat, manifest, orient
-from .meshdata import triangles, world_vertices
+from .meshdata import sample_surface, triangles, world_vertices
 from .rig import make_active
 
 # Custom property left on the mesh: which way the import was standing and facing, and
@@ -77,6 +77,8 @@ def export_glb(path, rig=None):
 def prepare(objects, height=1.6, upright=True):
     """Join the imported meshes into one object, `height` metres tall, standing on z=0 over the origin.
 
+    The height is the head's: a tail held up above it (orient.head_top) stands over `height`.
+
     Transforms are baked into the vertices, and non-mesh objects from the import
     (parent empties, cameras, lights, a rig) are removed. A rig that came with the model (Tripo's
     rigged FBX) goes with its weights and modifier: adopt.py reads it from the file on its own.
@@ -126,7 +128,10 @@ def prepare(objects, height=1.6, upright=True):
     low, high = verts.min(axis=0), verts.max(axis=0)
     center = (low + high) / 2
     to_origin = Matrix.Translation((-center[0], -center[1], -low[2]))
-    mesh.data.transform(Matrix.Scale(height / float(high[2] - low[2]), 4) @ to_origin)
+    # to the top of the head: a fox tail ending 37 cm above it made the body four fifths its size,
+    # and every joint placed by a share of the height (hips, neck, head) sat 25 to 40 cm off
+    top = orient.head_top(sample_surface(verts, triangles(mesh.data), orient.SAMPLES), verts=verts) or float(high[2])
+    mesh.data.transform(Matrix.Scale(height / float(top - low[2]), 4) @ to_origin)
     mesh.data.update()
     return mesh
 

@@ -14,7 +14,7 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from . import texture_space
+from . import orient, texture_space
 from .face import HAIR_DISTANCE
 from .meshdata import world_vertices
 from .rig import BONE_NAMES, make_active
@@ -137,7 +137,7 @@ class _Head:
     def __init__(self, verts, joints, features):
         base = np.asarray(joints["head"], dtype=float)
         eyes = (np.asarray(features["left_eye"]) + np.asarray(features["right_eye"])) / 2
-        top = float(verts[:, 2].max())
+        top = orient.head_top(verts, base[1]) or float(verts[:, 2].max())
         self.radius = (top - base[2]) / 2
         self.center = np.array([base[0], eyes[1] + self.radius, (top + base[2]) / 2])
 

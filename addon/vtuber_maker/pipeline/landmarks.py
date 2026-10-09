@@ -9,6 +9,7 @@ pin a joint down, typical body proportions fill in.
 
 import numpy as np
 
+from . import orient
 from .meshdata import sample_surface
 
 BAND_COUNT = 160
@@ -75,6 +76,17 @@ HEAD_ALONG_NECK_TO_TOP = 0.24
 HIP_JOINT_PRIOR = 0.49
 LEG_SPREAD_PRIOR = 0.055
 CROTCH_RANGE = (0.38, 0.62)
+# Legs behind which something hangs (a tail, a cape, a coat's back) are one cluster from the front
+# and two seen from above. A slice's blobs are a pair of legs when neither crosses the centre line,
+# each holds this share of the slice, and their depths and widths differ by no more than LEGS_ALIKE
+# of the height. Not their distances from the centre line: that is the surface's median, 4 cm off
+# the legs' own middle on a pirate with a sword at one hip.
+LEG_BLOB_SHARE = 0.03
+LEGS_ALIKE = 0.05
+# No leg is wider than this share of the height (a boot top: 0.11), and a leg read from the front
+# stands when it lies within LEG_SAME of the one read from above.
+LEG_WIDTH = 0.16
+LEG_SAME = 0.02
 
 
 # What both arm finders failing means, in the user's words; scripts/preflight.py names its error code by it.
@@ -83,6 +95,48 @@ ARMS_AT_SIDES = "the arms don't stand clear of the body: they hang against the s
 
 class LandmarkError(RuntimeError):
     """The mesh doesn't look like a standing A-pose humanoid."""
+
+
+# The body's middle, left to right, is the surface's median unless the front silhouette is a
+# clearly better mirror image of itself about another line (looked for within CENTRE_SEARCH of the
+# height either side, in steps of CENTRE_STEP of it): further than CENTRE_KEEP of the height off, and
+# matching its mirror image at least CENTRE_GAIN better.
+CENTRE_SEARCH = 0.06
+CENTRE_STEP = 0.0025
+CENTRE_KEEP = 0.015
+CENTRE_GAIN = 0.05
+CENTRE_CELL = 0.00625
+
+
+def centre_line(points):
+    """The x of the line the body is a mirror image about.
+
+    The surface's median, which a sword at one hip and a tail swept to one side pull with them: a
+    tester's pirate had his skeleton 4.3 cm to his right of his body (his T-pose arms end at -0.84
+    and +0.84, his median is -0.043), so his left arm's bones began inside his chest and moved it.
+    Then the line his front silhouette mirrors best about. Every known model keeps its median.
+    """
+    points = np.asarray(points, dtype=float)
+    median = float(np.median(points[:, 0]))
+    low = float(points[:, 2].min())
+    height = float(np.ptp(points[:, 2]))
+    cell = CENTRE_CELL * height
+    span = float(np.abs(points[:, 0] - median).max()) + (CENTRE_SEARCH + CENTRE_CELL) * height
+    columns = int(np.ceil(span / cell))
+    rows = ((points[:, 2] - low) / cell).astype(int)
+
+    def mirrors(centre):
+        across = np.floor((points[:, 0] - centre) / cell).astype(int) + columns
+        grid = np.zeros((rows.max() + 1, 2 * columns), dtype=bool)
+        grid[rows, np.clip(across, 0, 2 * columns - 1)] = True
+        return float((grid & grid[:, ::-1]).sum() / max((grid | grid[:, ::-1]).sum(), 1))
+
+    offsets = np.arange(-CENTRE_SEARCH, CENTRE_SEARCH + 1e-9, CENTRE_STEP) * height
+    scores = np.array([mirrors(median + offset) for offset in offsets])
+    best = int(np.argmax(scores))
+    if abs(offsets[best]) < CENTRE_KEEP * height or scores[best] - mirrors(median) < CENTRE_GAIN:
+        return median
+    return float(median + offsets[best])
 
 
 def detect_body(verts, tris, warnings=None):
@@ -95,8 +149,15 @@ def detect_body(verts, tris, warnings=None):
     """
     warnings = warnings if warnings is not None else []
     points = sample_surface(np.asarray(verts, dtype=float), np.asarray(tris), SAMPLE_COUNT)
+    # A tail held up above the head isn't the body's height: the bands and every proportion are
+    # measured to the head's top. With it in, A-pose models read as "arms at the sides".
+    top = orient.head_top(points, verts=verts)
+    if top is not None:
+        points = points[points[:, 2] <= top]
+        warnings.append("something stands higher than the head (a tail, horns, tall ears?): the body was measured "
+                        "to the top of the head; check the head and neck on the Joints page")
     bands = _Bands(points)
-    center_x = float(np.median(points[:, 0]))
+    center_x = centre_line(points)
     height = bands.height
 
     crotch_z = _hip_height(bands, center_x, warnings)
@@ -187,7 +248,20 @@ class _Bands:
         order = np.argsort(band, kind="stable")
         bounds = np.searchsorted(band[order], np.arange(BAND_COUNT + 1))
         gap = CLUSTER_GAP * self.height
-        self.clusters = [_split_along_x(verts[order[bounds[i] : bounds[i + 1]]], gap) for i in range(BAND_COUNT)]
+        self.slices = [verts[order[bounds[i] : bounds[i + 1]]] for i in range(BAND_COUNT)]
+        self.clusters = [_split_along_x(band, gap) for band in self.slices]
+        self._legs = {}
+
+    def legs(self, index, center_x):
+        """{side: cluster} of the two legs in a band, told apart from above; None when it shows no pair.
+
+        The band's surface is grouped into blobs that touch in X and Y. Whatever hangs behind the
+        legs is a blob of its own (or one crossing the centre line, like a tail), so it no longer
+        joins them; the pair is the innermost blob on each side, and has to match.
+        """
+        if index not in self._legs:
+            self._legs[index] = _leg_pair(self.slices[index], center_x, CLUSTER_GAP * self.height, self.height)
+        return self._legs[index]
 
     def z(self, index):
         return self.bottom + (index + 0.5) * self.thickness
@@ -422,6 +496,45 @@ def _split_along_x(points, gap):
     return [points[run] for run in np.split(order, breaks)]
 
 
+def _blobs(points, gap):
+    """`points` grouped into blobs whose cells of size `gap` touch in X and Y (corners count).
+
+    Legs under two cells apart are one blob (thighs); cells half the size told them apart and
+    broke a boot into pieces, which measured worse (a pirate's feet 7 to 11 cm off).
+    """
+    if len(points) == 0:
+        return []
+    cells = np.floor(points[:, :2] / gap).astype(np.int64)
+    keys = cells[:, 0] * 100_003 + cells[:, 1]
+    return [points[np.isin(keys, patch)] for patch in orient._patches(cells)]
+
+
+def _leg_pair(points, center_x, gap, height):
+    found = {}
+    # each blob split across X as well: thighs under two cells apart are one blob with a gap in it
+    blobs_here = [c for b in _blobs(points, gap) for c in _split_along_x(b, gap)
+                  if len(c) >= LEG_BLOB_SHARE * len(points)]
+    for side in (1, -1):
+        blobs = [b for b in blobs_here
+                 if not _spans(b, center_x)
+                 and np.ptp(b[:, 0]) < LEG_WIDTH * height
+                 and 0 < _offset(b, side, center_x) < LEG_MAX_OFFSET * height]
+        if not blobs:
+            return None
+        found[side] = min(blobs, key=lambda b: _offset(b, side, center_x))
+    left, right = _middle(found[1]), _middle(found[-1])
+    mismatch = max(abs(left[1] - right[1]), abs(np.ptp(found[1][:, 0]) - np.ptp(found[-1][:, 0])))
+    if mismatch >= LEGS_ALIKE * height:
+        return None
+    # the body between them at their own depth: these are the hands beside the hips, not legs.
+    # (A coat around the legs crosses the centre line too, and reaches out past them.)
+    depth, inner = (left[1] + right[1]) / 2, (found[-1][:, 0].max(), found[1][:, 0].min())
+    if any(_spans(b, center_x) and b[:, 1].min() < depth < b[:, 1].max()
+           and inner[0] < b[:, 0].min() and b[:, 0].max() < inner[1] for b in blobs_here):
+        return None
+    return found
+
+
 def _spans(cluster, x):
     return cluster[:, 0].min() <= x <= cluster[:, 0].max()
 
@@ -439,13 +552,24 @@ def _hip_height(bands, center_x, warnings):
     placed from proportions are close, not exact.
     """
     prior = bands.bottom + HIP_JOINT_PRIOR * bands.height - HIP_JOINT_ABOVE_CROTCH * bands.height
+    low, high = (bands.bottom + f * bands.height for f in CROTCH_RANGE)
     try:
         crotch_z = _crotch_height(bands, center_x)
     except LandmarkError:
+        crotch_z = None
+    if crotch_z is None or not low <= crotch_z <= high:
+        # Hidden from the front, the legs may still stand apart seen from above: a fox tail hanging
+        # behind a pirate's legs, his coat around them, put his hips and legs on proportions.
+        try:
+            behind = _crotch_height(bands, center_x, from_above=True)
+        except LandmarkError:
+            behind = None
+        if behind is not None and low <= behind <= high:
+            return behind
+    if crotch_z is None:
         warnings.append("the legs never stand apart (a long skirt or a robe?): "
                         "hips and legs placed from typical proportions; check them, or pass --joints")
         return prior
-    low, high = (bands.bottom + f * bands.height for f in CROTCH_RANGE)
     if not low <= crotch_z <= high:
         warnings.append(
             f"the legs only stand apart at {(crotch_z - bands.bottom) / bands.height:.0%} of the height, "
@@ -455,8 +579,9 @@ def _hip_height(bands, center_x, warnings):
     return crotch_z
 
 
-def _crotch_height(bands, center_x):
-    """Top of the lowest run of bands where the legs are separate."""
+def _crotch_height(bands, center_x, from_above=False):
+    """Top of the lowest run of bands where the legs are separate: in the front silhouette, or
+    `from_above` (see _Bands.legs)."""
     top = None
     for i, clusters in enumerate(bands.clusters):
         z = bands.z(i)
@@ -465,7 +590,7 @@ def _crotch_height(bands, center_x):
         if not clusters:
             continue
         near = [c for c in clusters if abs(c[:, 0].mean() - center_x) < LEG_SEARCH_WIDTH * bands.height]
-        legs_apart = (
+        legs_apart = bands.legs(i, center_x) is not None if from_above else (
             not any(_spans(c, center_x) for c in clusters)
             and any(_offset(c, 1, center_x) > 0 for c in near)
             and any(_offset(c, -1, center_x) > 0 for c in near)
@@ -490,8 +615,15 @@ def _leg_centroid(bands, z, side, center_x, warnings=None):
         c for c in clusters
         if 0 < _offset(c, side, center_x) < LEG_MAX_OFFSET * bands.height and not _spans(c, center_x)
     ]
+    pair = bands.legs(bands.index(z), center_x)
+    above = None if pair is None else _middle(pair[side])
     if candidates:
-        return _middle(min(candidates, key=lambda c: _offset(c, side, center_x)))
+        front = _middle(min(candidates, key=lambda c: _offset(c, side, center_x)))
+        # the cluster beside the centre line can be the coat around the leg, or the leg with what
+        # hangs behind it: a pirate's knee sat 21 cm behind his leg
+        return front if above is None or np.abs(front - above).max() < LEG_SAME * bands.height else above
+    if above is not None:
+        return above
     covering = [c for c in clusters if _spans(c, center_x)]
     if not covering:
         raise LandmarkError(f"no body found on side {side} at z={z:.3f}")

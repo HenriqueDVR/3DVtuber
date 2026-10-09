@@ -93,6 +93,212 @@ class ATailDoesNotTurnTheModelRound(unittest.TestCase):
                 self.assertLess(float(np.abs(back - self.verts).max()), 1e-6, name)
 
 
+def box(low, high):
+    """Vertices and triangles of a block."""
+    corners = np.array([[x, y, z] for x in (low[0], high[0]) for y in (low[1], high[1]) for z in (low[2], high[2])])
+    faces = np.array([[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1],
+                      [2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]])
+    return corners, faces
+
+
+def with_raised_tail(verts, tris, top):
+    """The fixture with a tail held up behind it: out from the small of the back, then up to `top`."""
+    for low, high in (((-0.07, 0.08, 0.88), (0.07, 0.62, 1.0)), ((-0.07, 0.48, 1.0), (0.07, 0.62, top))):
+        corners, faces = box(low, high)
+        verts, tris = np.concatenate([verts, corners]), np.concatenate([tris, faces + len(verts)])
+    return verts, tris
+
+
+class ARaisedTailDoesNotTurnTheModel(unittest.TestCase):
+    """A tail held up behind an A-pose makes the body deeper than it is wide. The thinner axis was
+    taken for its depth, the side view for its front: such a model faced sideways or stood on its head."""
+
+    @classmethod
+    def setUpClass(cls):
+        mesh, _ = load_fixture("synthetic_character_parts")
+        cls.plain = meshdata.world_vertices(mesh), meshdata.triangles(mesh.data)
+        cls.height = float(cls.plain[0][:, 2].max())
+        cls.tails = {"to the shoulders": 0.8 * cls.height, "over the head": 1.25 * cls.height}
+
+    def test_the_tail_makes_it_deeper_than_wide(self):
+        verts, _ = with_raised_tail(*self.plain, self.tails["to the shoulders"])
+        self.assertGreater(float(np.ptp(verts[:, 1])), float(np.ptp(verts[:, 0])))
+
+    def test_it_stands_and_faces_as_it_did(self):
+        for name, top in self.tails.items():
+            with self.subTest(tail=name):
+                found = orient.detect(*with_raised_tail(*self.plain, top))
+                self.assertTrue(found.is_identity, found.describe())
+                self.assertTrue(found.confident)
+
+    def test_turned_any_way_it_comes_back(self):
+        for name, top in self.tails.items():
+            verts, tris = with_raised_tail(*self.plain, top)
+            for turn, (axis, degrees) in TURNS.items():
+                with self.subTest(tail=name, turn=turn):
+                    there = turned(verts, axis, degrees)
+                    back = there @ orient.detect(there, tris).matrix.T
+                    self.assertLess(float(np.abs(back - verts).max()), 1e-6)
+
+    def test_the_head_top_is_found_under_a_tail_that_ends_above_it(self):
+        points = meshdata.sample_surface(*with_raised_tail(*self.plain, self.tails["over the head"]), orient.SAMPLES)
+        self.assertAlmostEqual(orient.head_top(points), self.height, delta=0.01)
+
+    def test_no_head_top_is_named_when_the_head_is_the_top(self):
+        self.assertIsNone(orient.head_top(meshdata.sample_surface(*self.plain, orient.SAMPLES)))
+        lower = with_raised_tail(*self.plain, self.tails["to the shoulders"])
+        self.assertIsNone(orient.head_top(meshdata.sample_surface(*lower, orient.SAMPLES)))
+
+
+class ATailAboveTheHeadIsNotTheBodysHeight(unittest.TestCase):
+    """A fox tail ending 37 cm above the head made the body four fifths its size and put the hips,
+    neck and head 25 to 40 cm off; A-pose models read as arms at the sides."""
+
+    def prepared(self, tail):
+        import bmesh
+        mesh, _ = load_fixture("synthetic_character_parts")
+        if tail:
+            verts, tris = meshdata.world_vertices(mesh), meshdata.triangles(mesh.data)
+            added, faces = with_raised_tail(verts[:0], tris[:0], 1.25 * float(verts[:, 2].max()))
+            bm = bmesh.new()
+            bm.from_mesh(mesh.data)
+            new = [bm.verts.new(v) for v in added]
+            for face in faces:
+                bm.faces.new([new[i] for i in face])
+            bm.to_mesh(mesh.data)
+            bm.free()
+        mesh = normalize.prepare([mesh], height=1.6)
+        return meshdata.world_vertices(mesh), meshdata.triangles(mesh.data)
+
+    def test_the_body_is_as_tall_and_its_joints_are_where_they_were(self):
+        from vtuber_maker.pipeline import landmarks
+        plain = landmarks.detect_body(*self.prepared(tail=False))
+        verts, tris = self.prepared(tail=True)
+        self.assertAlmostEqual(float(verts[:, 2].max()), 1.25 * 1.6, delta=0.02)
+        warnings = []
+        joints = landmarks.detect_body(verts, tris, warnings)
+        self.assertTrue(any("stands higher" in w for w in warnings), warnings)
+        # the tail widens the box the model is centred by: joints compared from the hips
+        for key in ("head", "neck", "left_upper_arm", "right_hand", "left_upper_leg", "right_foot"):
+            with self.subTest(joint=key):
+                moved = (joints[key] - joints["hips"]) - (plain[key] - plain["hips"])
+                self.assertLess(float(np.linalg.norm(moved)), 0.03, key)
+        self.assertAlmostEqual(float(joints["hips"][2]), float(plain["hips"][2]), delta=0.03)
+
+
+def with_horns(verts, tris, share):
+    """The fixture with two horns: blocks either side of the crown, ending `share` of its height above it."""
+    top, low = float(verts[:, 2].max()), float(verts[:, 2].min())
+    height = top - low
+    crown = verts[verts[:, 2] > top - 0.05 * height]
+    x, y = float(np.median(crown[:, 0])), float(np.median(crown[:, 1]))
+    for sign in (-1, 1):
+        inner, outer = sorted((x + sign * 0.035 * height, x + sign * 0.06 * height))
+        corners, faces = box((inner, y - 0.012 * height, top - 0.04 * height), (outer, y + 0.012 * height, top + share * height))
+        verts, tris = np.concatenate([verts, corners]), np.concatenate([tris, faces + len(verts)])
+    return verts, tris
+
+
+class HornsAreNotTheBodysHeight(unittest.TestCase):
+    """A tester's demon girl: her horns were the model's top, so every joint placed by a share of the
+    height sat too high and the face patch was framed among the horns. Model A with horns 15% of
+    her height added failed as arms at the sides."""
+
+    @classmethod
+    def setUpClass(cls):
+        mesh, _ = load_fixture("synthetic_character_parts")
+        cls.plain = meshdata.world_vertices(mesh), meshdata.triangles(mesh.data)
+        cls.height = float(cls.plain[0][:, 2].max())
+
+    def test_the_head_top_is_found_between_horns(self):
+        horned = with_horns(*self.plain, 0.15)
+        self.assertAlmostEqual(float(horned[0][:, 2].max()), 1.15 * self.height, delta=0.01)
+        points = meshdata.sample_surface(*horned, orient.SAMPLES)
+        self.assertAlmostEqual(orient.head_top(points), self.height, delta=0.01)
+        self.assertAlmostEqual(orient.head_top(points, verts=horned[0]), self.height, delta=0.01)
+
+    def test_small_ears_are_still_the_head(self):
+        # under ABOVE_HEAD of the body: the model's top is the head's, as it was
+        self.assertIsNone(orient.head_top(meshdata.sample_surface(*with_horns(*self.plain, 0.03), orient.SAMPLES)))
+
+    def test_it_stands_and_faces_as_it_did(self):
+        found = orient.detect(*with_horns(*self.plain, 0.15))
+        self.assertTrue(found.is_identity, found.describe())
+
+    def test_the_body_is_as_tall_and_its_joints_are_where_they_were(self):
+        import bmesh
+        from vtuber_maker.pipeline import landmarks
+
+        def prepared(horns):
+            mesh, _ = load_fixture("synthetic_character_parts")
+            if horns:
+                verts, tris = meshdata.world_vertices(mesh), meshdata.triangles(mesh.data)
+                added, faces = with_horns(verts, tris, 0.15)
+                bm = bmesh.new()
+                bm.from_mesh(mesh.data)
+                new = [bm.verts.new(v) for v in added[len(verts):]]
+                for face in faces[len(tris):]:
+                    bm.faces.new([new[i - len(verts)] for i in face])
+                bm.to_mesh(mesh.data)
+                bm.free()
+            mesh = normalize.prepare([mesh], height=1.6)
+            return meshdata.world_vertices(mesh), meshdata.triangles(mesh.data)
+
+        plain = landmarks.detect_body(*prepared(False))
+        verts, tris = prepared(True)
+        self.assertAlmostEqual(float(verts[:, 2].max()), 1.15 * 1.6, delta=0.02)
+        warnings = []
+        joints = landmarks.detect_body(verts, tris, warnings)
+        self.assertTrue(any("stands higher" in w for w in warnings), warnings)
+        for key in ("hips", "head", "neck", "left_upper_arm", "right_hand", "left_upper_leg", "right_foot"):
+            with self.subTest(joint=key):
+                self.assertLess(float(np.linalg.norm(joints[key] - plain[key])), 0.03, key)
+
+
+class ATailBehindTheLegsDoesNotHideThem(unittest.TestCase):
+    """From the front, a tail hanging to the floor behind the legs fills the gap between them: the
+    crotch was not found and hips, knees and ankles went to typical proportions, 15 to 33 cm from
+    where they sat without the tail, at the depth of legs and tail together."""
+
+    @classmethod
+    def setUpClass(cls):
+        from vtuber_maker.pipeline import landmarks
+        mesh, _ = load_fixture("synthetic_character_parts")
+        cls.landmarks = landmarks
+        cls.plain = meshdata.world_vertices(mesh), meshdata.triangles(mesh.data)
+        cls.tailed = with_tail(*cls.plain)
+        cls.legs = [f"{side}_{part}" for side in ("left", "right") for part in ("upper_leg", "lower_leg", "foot")]
+
+    def test_the_legs_are_found_where_they_are_without_it(self):
+        plain = self.landmarks.detect_body(*self.plain)
+        warnings = []
+        joints = self.landmarks.detect_body(*self.tailed, warnings)
+        self.assertFalse([w for w in warnings if "typical proportions" in w], warnings)
+        for key in self.legs + ["hips"]:
+            with self.subTest(joint=key):
+                self.assertLess(float(np.linalg.norm(joints[key] - plain[key])), 0.03)
+
+    def test_read_from_the_front_alone_they_went_to_proportions(self):
+        real, self.landmarks._leg_pair = self.landmarks._leg_pair, lambda *args: None
+        try:
+            warnings = []
+            self.landmarks.detect_body(*self.tailed, warnings)
+            self.assertTrue([w for w in warnings if "typical proportions" in w])
+        finally:
+            self.landmarks._leg_pair = real
+
+    def test_legs_nothing_hides_are_read_as_before(self):
+        real = self.landmarks._leg_pair
+        after = self.landmarks.detect_body(*self.plain)
+        self.landmarks._leg_pair = lambda *args: None
+        try:
+            before = self.landmarks.detect_body(*self.plain)
+        finally:
+            self.landmarks._leg_pair = real
+        for key in before:
+            self.assertTrue(np.array_equal(before[key], after[key]), key)
+
+
 class DetectOrientationOfATPose(unittest.TestCase):
     """A T-pose is about as wide as it is tall, so legs and soles alone barely told up from sideways."""
 

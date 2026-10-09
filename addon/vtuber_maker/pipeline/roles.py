@@ -159,13 +159,16 @@ def pad(mask, count):
     return np.concatenate([mask, np.zeros(count - len(mask), dtype=bool)]) if len(mask) < count else mask[:count]
 
 
-def carry(masks, before, after, verts=None):
+def carry(masks, before, after, verts=None, was=None):
     """Masks moved onto a new vertex list, given each vertex's part label before and after.
 
     rig.skin cuts sleeves free, which adds vertices but carries every part label with them;
     a manifest piece is a whole part, so it is the same labels afterwards. A region (part of a
     piece) isn't: the vertices the cut added take the mask of the old vertex where they sit, which
-    needs `verts`, the mesh's vertices after the cut (the old ones keep their indices).
+    needs `verts`, the mesh's vertices after the cut. With `was`, the vertices before it, every
+    vertex is found by its place: the cut renumbers them (a tester's pirate: two ears marked on his
+    head came out as 199 and 121 vertices of his sleeves and coat); without it the old ones are
+    taken to keep their indices.
     """
     carried = {}
     for name, mask in masks.items():
@@ -178,9 +181,12 @@ def carry(masks, before, after, verts=None):
         from mathutils.kdtree import KDTree
         old = len(before)
         tree = KDTree(old)
-        for i, p in enumerate(verts[:old]):
+        for i, p in enumerate(verts[:old] if was is None else was):
             tree.insert(p, i)
         tree.balance()
+        if was is not None:
+            carried[name] = np.array([mask[tree.find(p)[1]] for p in verts], dtype=bool)
+            continue
         grown = np.concatenate([mask, np.zeros(len(after) - old, dtype=bool)])
         for i in range(old, len(after)):
             grown[i] = mask[tree.find(verts[i])[1]]

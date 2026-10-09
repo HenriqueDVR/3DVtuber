@@ -239,6 +239,31 @@ class ChainsAreNotTornFromWhatTheyHangOn(unittest.TestCase):
         self.assertEqual(self.weights(obj, 0), {"Cloth0_0": 1.0})
         self.assertEqual(self.weights(obj, 3), {"LeftLowerArm": 1.0})
 
+    def bit(self, weights):
+        """A triangle of its own beside a body of 200 vertices on the hips."""
+        body = [(x * .02 - .2, 0, z * .02 + .8) for z in range(10) for x in range(20)]
+        faces = [(z * 20 + x, z * 20 + x + 1, (z + 1) * 20 + x + 1, (z + 1) * 20 + x) for z in range(9) for x in range(19)]
+        data = bpy.data.meshes.new("Body")
+        data.from_pydata(body + [(-.08, .1, .6), (-.07, .1, .6), (-.08, .1, .61)], [], faces + [(200, 201, 202)])
+        obj = bpy.data.objects.new("Body", data)
+        bpy.context.scene.collection.objects.link(obj)
+        obj.vertex_groups.new(name="Hips").add(list(range(200)), 1, "REPLACE")
+        for name, weight in weights.items():
+            obj.vertex_groups.new(name=name).add([200, 201, 202], weight, "REPLACE")
+        return obj
+
+    def test_a_bit_on_two_chains_of_its_strand_keeps_swinging_with_both(self):
+        # model A: a 180-vertex bit of her back hair on Hair2 and Hair3 was put on the head, the bone
+        # both hang from, and stood still while the hair round it swung 30 cm away
+        obj = self.bit({"Cloth0_1": .5, "Cloth1_1": .5})
+        self.assertEqual(loose.rigidify_props(obj, self.arm), [])
+        self.assertEqual(self.weights(obj, 200), {"Cloth0_1": .5, "Cloth1_1": .5})
+
+    def test_a_bit_on_a_chain_and_an_arm_still_gets_one_bone(self):
+        obj = self.bit({"Cloth0_1": .5, "LeftLowerArm": .5})
+        self.assertEqual(len(loose.rigidify_props(obj, self.arm)), 1)
+        self.assertEqual(len(self.weights(obj, 200)), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

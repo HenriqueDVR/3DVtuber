@@ -1279,7 +1279,12 @@ def make_head_rigid(mesh_obj, armature_obj):
     for label in np.unique(labels):
         members = labels == label
         above = verts[members, 2].mean() > neck_z and abs(verts[members, 0].mean() - centre_x) < reach
-        if share[members].mean() > MOSTLY_HEAD or above:
+        # no piece reaching a head's height under the neck is headwear: a body that is one surface
+        # with its head (a tester's pirate) has most of its vertices in the head, so its mean is
+        # above the neck and most of its weight the head's, and it went on the head whole: arms,
+        # coat and legs
+        hangs = verts[members, 2].min() < neck_z - (float(verts[:, 2].max()) - neck_z)
+        if (share[members].mean() > MOSTLY_HEAD or above) and not hangs:
             rigid |= members
     low = ~rigid & (verts[:, 2] < neck_z) & (head_w > 0)
     for index in np.nonzero(rigid | low)[0]:
@@ -1343,6 +1348,53 @@ def weight_head(mesh_obj, armature_obj, face_mask, labels=None, chin_z=None, beh
             groups[g].remove([i])
         current = next((g.weight for g in vertex.groups if g.group == head.index), 0.0)
         head.add([i], current + moved, "REPLACE")
+
+
+# The height (m) about the head joint over which the rest of the head is handed to it.
+COLUMN_BLEND = 0.06
+
+
+def follow_head_column(mesh_obj, armature_obj, chin_z=None, skip=None):
+    """Whatever stands above the head joint, between the shoulders, follows the head alone.
+
+    `weight_head` does this for the face part. On a model whose jaw, beard, hair and the back of
+    its skull are one surface with the body (a tester's pirate: hat, ears and eyes a piece of their
+    own on the head, the rest of the head in the body's piece at 49 to 86% on the head by bone
+    heat) the top half of the head turned and the lower half lagged behind it. Vertices from
+    half of COLUMN_BLEND above the joint (or the chin, when lower) take the head fully, fading in
+    from as far below it; what the head holds already stays. Only within the shoulder joints' width of the neck:
+    hands and sleeves held up beside the head are not it. `skip` masks vertices left as they are
+    (hair, which gets its own chains). Returns the number of vertices changed.
+    """
+    groups = mesh_obj.vertex_groups
+    head = groups.get(BONE_NAMES["head"]) or groups.new(name=BONE_NAMES["head"])
+    world = armature_obj.matrix_world
+    bones = armature_obj.data.bones
+    joint = world @ bones[BONE_NAMES["head"]].head_local
+    head_z = joint.z if chin_z is None else min(joint.z, chin_z)
+    reach = abs((world @ bones[BONE_NAMES["left_upper_arm"]].head_local).x - joint.x)
+    verts = world_vertices(mesh_obj)
+    # hair and a beard hang on past the jaw: handed over across COLUMN_BLEND about the joint, not
+    # the face's 2 cm above it (the pirate's hair beside his jaw: 90 edges over 3 cm on a head turn)
+    share = np.clip((verts[:, 2] - head_z + COLUMN_BLEND / 2) / COLUMN_BLEND, 0.0, 1.0)
+    share[np.abs(verts[:, 0] - joint.x) >= reach] = 0.0
+    if skip is not None:
+        share[np.asarray(skip, dtype=bool)[:len(share)]] = 0.0
+    changed = 0
+    for index in np.nonzero(share > 0)[0]:
+        i = int(index)
+        vertex = mesh_obj.data.vertices[i]
+        others = {g.group: g.weight for g in vertex.groups if g.group != head.index}
+        total = sum(others.values())
+        if total <= 1e-6:
+            continue
+        held = sum(g.weight for g in vertex.groups if g.group == head.index)
+        target = held + total * float(share[i])
+        for g, w in others.items():
+            groups[g].add([i], w * (1.0 - float(share[i])), "REPLACE")
+        head.add([i], target, "REPLACE")
+        changed += 1
+    return changed
 
 
 def make_active(obj):

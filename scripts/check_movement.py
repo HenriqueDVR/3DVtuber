@@ -12,7 +12,8 @@ The arms are pointed about world axes (raised, forward, T-pose, at the sides) an
 turned and nodded. Every piece of the source (labelled as scripts/list_pieces.py labels them)
 is followed where it touches another piece at rest: when the other piece moves away and this
 one stays, it is left behind -- a sleeve the arm leaves hanging in the air, a hat the head
-turns out from under. Nearness to a bone can't tell that apart: an A-pose arm hangs beside the
+turns out from under. A piece under the neck that goes with the head while what it lies on stays
+is found the same way. Nearness to a bone can't tell that apart: an A-pose arm hangs beside the
 chest, and model B's brooch and model A's corset trims sat nearer the upper arm than any torso bone
 while rightly staying with the chest they sit on. A piece whose own edges stretch is torn
 (part goes, part stays: a skirt pulled up by the hands resting on it). Each finding gets the
@@ -213,8 +214,13 @@ def main():
             drape_bone = None
             # a collar rightly stays on the chest while the head turns out of it: only what sits
             # on the head (a hat, hair) should turn with it
+            taken_along = np.zeros(len(contact), dtype=bool)
             if pose.startswith("head") and rest[members, 2].mean() < neck_z:
                 behind = False
+                # the other way round is wrong: something under the neck that goes with the head while
+                # what it lies on stays. Model A's shirt panels under her front locks, put on the head
+                # by the tidy-up, turned 14 to 22 cm out of her shirt and no check here said so
+                taken_along = (gap > SEPARATE * scale) & (-lag > LAG * gap) & (on_springs[other] < SWINGING)
             seen = contacts.setdefault(int(label), [len(contact), 0])
             seen[1] = max(seen[1], int(left.sum()))
             for side, over in (rigid.get(pose) or {}).items():
@@ -239,6 +245,11 @@ def main():
                     bone = drape_bone
                 row["findings"].append({"pose": pose, "kind": "stays behind", "bone": bone, "taken_by": taken,
                                         "share": round(float(left.mean()), 2) if left.any() else None})
+            elif (taken_along.sum() >= max(MIN_LEFT, LEFT_SHARE * len(contact)) and row.get("role") not in SWINGS
+                  and looks.get(int(label)) != "hair" and np.median(on_springs[members]) < SWINGING):
+                bones, votes = np.unique(nearest[other[taken_along]], return_counts=True)
+                row["findings"].append({"pose": pose, "kind": "goes with the head", "bone": str(bones[np.argmax(votes)]),
+                                        "share": round(float(taken_along.mean()), 2)})
             elif entry["stretch_cm"] > TORN * scale * 100:
                 row["findings"].append({"pose": pose, "kind": "torn", "stretch_cm": entry["stretch_cm"]})
         if row["findings"]:
@@ -278,6 +289,11 @@ def _suggest(row, points, shoulder_x, hips_z, looks=None, named=None):
     """(role, why): the manifest role that fixed this kind of finding before, or "" for none."""
     behind = [f for f in row["findings"] if f["kind"] == "stays behind"]
     torn = [f for f in row["findings"] if f["kind"] == "torn"]
+    carried = [f for f in row["findings"] if f["kind"] == "goes with the head"]
+    if carried and not behind:
+        # no role offered: the app's follow-a-bone fix is for arms, and the build should not have put it there
+        return "", (f"sits on the body but turns with the head: it should follow {carried[0]['bone']} "
+                    f"(Follows a bone, on Parts); gather it for an agent (Stuck?)")
     if any(f["pose"].startswith("head") for f in behind):
         if looks == "hair":
             return "hair", "hair that stays when the head turns: its strands need their own springs"

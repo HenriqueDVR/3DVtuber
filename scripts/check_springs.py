@@ -9,7 +9,7 @@ armature, with spring_sim, which follows three-vrm) while the body stands still 
 head and sways, poses the mesh from them, and reports:
 
 - chains that droop from their modelled shape at rest (gravity beating stiffness),
-- pieces that don't swing but touch one that does, and are left in the air as it swings (a
+- pieces that don't swing but lie on one that does, and are left in the air as it swings (a
   decoration its wing leaves behind); a swinging piece's own tearing is check_avatar.py's,
 - how deep swinging surfaces sink into the body (hair_physics.clipping_report).
 
@@ -43,6 +43,8 @@ CONTACT = 0.015
 SEPARATE = 0.04
 MIN_LEFT = 8
 LEFT_SHARE = 0.3
+# A piece lies on a swinging one when at least this share of its touching vertices touch one.
+LIES_ON = 0.5
 # Every this many frames is measured, over at most this many vertices of the swinging parts.
 FRAME_STEP = 6
 MAX_VERTICES = 40000
@@ -144,6 +146,12 @@ def main():
         # cloth swinging off the legs is what it is for: what matters is a piece that doesn't swing
         # left in the air by one that does (a decoration its wing leaves behind)
         if swinging[labels == label].any():
+            continue
+        # nor is what lies on the body with hair or a cape hanging over it: that swings off it by
+        # design. Model A's shirt under her front locks, and her whole body (13,652 vertices, "left
+        # 18.8 cm behind"), stood in every report, and the list was no longer read
+        touching = (labels == label) & (partner >= 0)
+        if swinging[partner[touching]].mean() < LIES_ON:
             continue
         mine = (labels[watch[a]] == label) & swinging[watch[b]]
         left = widest[mine] > SEPARATE * args.height / 1.6

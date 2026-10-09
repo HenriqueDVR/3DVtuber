@@ -110,6 +110,15 @@ def build_cloth_chains(mesh_obj, armature, joints, skip=None, force=None, detect
         # and head has its middle far from the leg bones (model D), and its legs went onto chains
         if not forced and np.median(leg_distance[hanging]) < OFF_LEGS * height:
             continue
+        if not forced:
+            # ... each stretch of it by itself: a coat that is one surface with the body it is worn
+            # on (a tester's pirate) hangs beside the legs it joins only above the hips, and the
+            # trousers and boots went onto the coat's chains with it, 100% at the thighs
+            stretch = _connected_stretches(mesh_obj, verts, hanging)
+            legs = [s for s in np.unique(stretch) if np.median(leg_distance[hanging[stretch == s]]) < OFF_LEGS * height]
+            hanging = hanging[~np.isin(stretch, legs)]
+            if len(hanging) < MIN_CHAIN_VERTICES:
+                continue
         mid = _circular_mean(angle[hanging])
         offsets = _angle_between(angle[hanging], mid)
         low, high = float(offsets.min()), float(offsets.max())
@@ -306,6 +315,8 @@ APPENDAGE_FORK = 0.6
 # in the viewer); her hair flowers and ears, beside the top tail, lie 4 cm and more away.
 RIDER_SIZE = 0.15
 RIDER_GAP = 0.035
+# What a piece lies on is read at up to this many of its vertices.
+RIDER_SAMPLE = 200
 
 
 def build_appendage_chain(mesh_obj, armature, joints, members, index, bone=None):
@@ -338,6 +349,12 @@ def build_appendage_chain(mesh_obj, armature, joints, members, index, bone=None)
     if bone is None:
         bone = BONE_NAMES[segments[int(np.argmin(distance[closest]))][0]]
     follow_bone(mesh_obj, armature, piece, bone)
+    head_z = float(np.asarray(joints["head"], dtype=float)[2])
+    on_head = bool(verts[piece, 2].min() > head_z)
+    if on_head:
+        # an ear or a horn standing on the head grows from its foot: the head bone runs up through
+        # the crown beside it, the ear's middle was nearest to it, and a chain ran each way from there
+        near = verts[piece, 2] - verts[piece, 2].min()
     seeds = piece[near <= near.min() + APPENDAGE_ROOT * height / 1.6]
     along = _surface_distance(mesh_obj, verts, seeds, piece)
     reach = along[piece]
@@ -350,7 +367,8 @@ def build_appendage_chain(mesh_obj, armature, joints, members, index, bone=None)
     tips = [int(piece[np.argmax(reach)])]
     from_first = _surface_distance(mesh_obj, verts, tips, piece)[piece]
     far = np.where(np.isfinite(from_first) & (reach > APPENDAGE_FORK * reach.max()), from_first, -1.0)
-    if far.max() > APPENDAGE_FORK * reach.max():
+    # an ear is one thing, wide as it is: forked, a fox ear swung as a tip and a lobe
+    if far.max() > APPENDAGE_FORK * reach.max() and not on_head:
         tips.append(int(piece[np.argmax(far)]))
         from_second = _surface_distance(mesh_obj, verts, [tips[1]], piece)[piece]
         branch = (from_second < from_first).astype(int)
@@ -386,12 +404,18 @@ def attach_riders(mesh_obj, carriers, skip, anchors=None):
     """Small pieces stuck onto `carriers` (anything on a spring) take the weights of the carrier under them.
 
     Model C's tails carry some twenty painted patches as separate pieces; left on the body bones
-    they would stay while the tail swings. A piece rides when it is smaller than RIDER_SIZE and
-    its median vertex lies within RIDER_GAP of a carrier. `skip` masks pieces the user
-    named (they keep what they were given). `anchors` masks a surface that doesn't swing (the
-    face): a piece lying nearer to it than to any carrier stays where it is. Model A's T-pose FBX has
-    her eyes and eyebrows as pieces under her fringe; on the fringe's chains they swung out of her
-    face. Returns the number of vertices moved.
+    they would stay while the tail swings. A piece rides when it is smaller than RIDER_SIZE, its
+    median vertex lies within RIDER_GAP of a carrier, and what it lies on swings: of the vertices of
+    other pieces nearest its own, most are carriers. Model A's front locks hang down over her chest:
+    by nearness to them alone the shirt panels and trims under them (12 pieces, up to 9 cm across)
+    went onto the locks' chains, swung over her chest with them, and the two chains pulling each had
+    the tidy-up put it on the head, which turned them out of the shirt. A piece lying on one that
+    rides (a button on a ribbon on a tail) rides in a later pass.
+
+    `skip` masks pieces the user named (they keep what they were given). `anchors` masks a surface
+    that doesn't swing (the face): a piece lying nearer to it than to any carrier stays where it is.
+    Model A's T-pose FBX has her eyes and eyebrows as pieces under her fringe; on the fringe's chains
+    they swung out of her face. Returns the number of vertices moved.
     """
     from mathutils.kdtree import KDTree
 
@@ -404,36 +428,80 @@ def attach_riders(mesh_obj, carriers, skip, anchors=None):
 
     verts = world_vertices(mesh_obj)
     height = float(np.ptp(verts[:, 2]))
-    carriers = np.flatnonzero(np.asarray(carriers, dtype=bool))
-    if not len(carriers):
+    riding = np.asarray(carriers, dtype=bool).copy()
+    if not riding.any():
         return 0
-    tree = tree_of(carriers)
     anchors = np.flatnonzero(np.asarray(anchors, dtype=bool)) if anchors is not None else ()
     anchored = tree_of(anchors) if len(anchors) else None
     labels = pieces(mesh_obj, verts)
-    carried = set(np.unique(labels[carriers]).tolist())
+    carried = set(np.unique(labels[riding]).tolist())
     skip = np.asarray(skip, dtype=bool)
-    groups = mesh_obj.vertex_groups
-    moved = 0
+    waiting = {}
     for label in np.unique(labels):
         members = np.flatnonzero(labels == label)
         if label in carried or skip[members].any() or np.ptp(verts[members], axis=0).max() > RIDER_SIZE * height:
             continue
-        found = [tree.find(verts[v]) for v in members]
-        gap = np.median([f[2] for f in found])
-        if gap > RIDER_GAP * height / 1.6:
-            continue
-        if anchored is not None and np.median([anchored.find(verts[v])[2] for v in members]) < gap:
-            continue
-        for vertex, (_, i, _) in zip(members, found):
-            source = mesh_obj.data.vertices[int(carriers[i])]
-            weights = {groups[g.group].name: g.weight for g in source.groups}
-            for g in list(mesh_obj.data.vertices[int(vertex)].groups):
-                groups[g.group].remove([int(vertex)])
-            for name, w in weights.items():
-                groups[name].add([int(vertex)], w, "REPLACE")
-            moved += 1
+        waiting[int(label)] = members
+    everything = tree_of(np.arange(len(verts)))
+    groups = mesh_obj.vertex_groups
+    moved = 0
+    stuck = False
+    while waiting:
+        carriers = np.flatnonzero(riding)
+        tree = tree_of(carriers)
+        rides, settled = [], []
+        for label, members in waiting.items():
+            # what it lies on: the nearest vertex of another piece. Pieces lying on each other (two
+            # beads on model B's hat tip) wait for one another for ever: then what lies under them all
+            apart = (lambda i: int(labels[i]) not in waiting) if stuck else (lambda i: int(labels[i]) != label)
+            sample = members[::max(1, len(members) // RIDER_SAMPLE)]
+            under = [everything.find(verts[v], filter=apart)[1] for v in sample]
+            under = np.array([i for i in under if i is not None], dtype=int)
+            undecided = np.array([int(labels[i]) in waiting for i in under], dtype=bool)
+            if len(under) and undecided.mean() > 0.5:
+                continue
+            settled.append(label)
+            found = [tree.find(verts[v]) for v in members]
+            gap = np.median([f[2] for f in found])
+            if (gap > RIDER_GAP * height / 1.6 or not len(under) or riding[under[~undecided]].mean() <= 0.5
+                    or anchored is not None and np.median([anchored.find(verts[v])[2] for v in members]) < gap):
+                continue
+            rides.append((members, found))
+        for members, found in rides:
+            for vertex, (_, i, _) in zip(members, found):
+                source = mesh_obj.data.vertices[int(carriers[i])]
+                weights = {groups[g.group].name: g.weight for g in source.groups}
+                for g in list(mesh_obj.data.vertices[int(vertex)].groups):
+                    groups[g.group].remove([int(vertex)])
+                for name, w in weights.items():
+                    groups[name].add([int(vertex)], w, "REPLACE")
+                moved += 1
+            riding[members] = True
+        if stuck and not settled:
+            break
+        stuck = not settled
+        for label in settled:
+            del waiting[label]
     return moved
+
+
+def _connected_stretches(mesh_obj, verts, members):
+    """A label for each of `members` (indices): the stretch of surface it is joined to over edges
+    between members, vertices sharing a place as one."""
+    weld, a, b = welded_edges(mesh_obj, verts)
+    inside = np.zeros(len(verts), dtype=bool)
+    inside[weld[members]] = True
+    keep = inside[a] & inside[b]
+    a, b = a[keep], b[keep]
+    labels = np.arange(len(verts))
+    while True:
+        updated = labels.copy()
+        np.minimum.at(updated, a, labels[b])
+        np.minimum.at(updated, b, labels[a])
+        updated = updated[updated]
+        if np.array_equal(updated, labels):
+            return labels[weld[members]]
+        labels = updated
 
 
 def _connected(mesh_obj, verts, members, seed):

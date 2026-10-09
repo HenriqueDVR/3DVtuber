@@ -22,6 +22,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "addon"))
 
 from vtuber_maker.pipeline import cloth, landmarks, manifest, meshdata, normalize, parts, preview, texture_space  # noqa: E402
+from vtuber_maker.pipeline.rig import BONE_NAMES  # noqa: E402
 
 # Pieces smaller than this share of the vertices are listed only when named in the manifest,
 # or when they are hair or a face insert: a model can have hundreds of specks.
@@ -125,7 +126,19 @@ def main():
         listed.append(row)
     # what the user most likely has to decide about first: named pieces, then the suggestions
     listed.sort(key=lambda row: ("manifest" not in row, row["suggested"] == "body", -row["count"]))
-    report = {"model": str(args.model.resolve()), "vertices": len(verts), "pieces": listed,
+    # parts found inside pieces: ears or horns standing over the crown, which may have no piece of
+    # their own. Asked, not applied: an ear swings and a horn doesn't, and shape doesn't tell them
+    found_parts = []
+    for side, mask in parts.ears(mesh, verts, joints, skip=found.hair, colours=colours).items():
+        points = verts[mask]
+        at = points[np.argmin(np.linalg.norm(points - points.mean(axis=0), axis=1))]
+        found_parts.append({"name": f"ear_{side}", "label": int(np.bincount(labels[mask]).argmax()), "count": int(mask.sum()),
+                            "point": [round(float(v), 9) for v in at], "min": points.min(axis=0).round(4).tolist(),
+                            "max": points.max(axis=0).round(4).tolist(), "region": np.flatnonzero(mask).tolist(),
+                            "suggested": "appendage", "bone": BONE_NAMES["head"], "where": f"head, {side}",
+                            "why": "stands over the top of the head on one side, with its like on the other: "
+                                   "an animal ear (it swings) or a horn (it stays still)?"})
+    report = {"model": str(args.model.resolve()), "vertices": len(verts), "pieces": listed, "parts": found_parts,
               "joints": {k: np.asarray(v, dtype=float).round(4).tolist() for k, v in joints.items()}}
     args.json.write_text(json.dumps(report, indent=2), encoding="utf-8")
     if args.glb:
@@ -142,6 +155,10 @@ def _where(points, joints, centre_x, body_y, height):
     """Where a piece is, in words: "head, left", "back", "right leg, front"..."""
     x, y, z = np.median(points, axis=0)
     neck, hips, knee = (float(joints[k][2]) for k in ("neck", "hips", "left_lower_leg"))
+    if points[:, 2].max() > neck and points[:, 2].min() < knee:
+        # a tester's pirate: body, head, hair, coat and legs in one surface, its vertices mostly in the
+        # dense head, listed as "head"
+        return "whole body"
     side = "left" if x - centre_x > 0.04 * height else "right" if x - centre_x < -0.04 * height else ""
     if z > neck:
         area = "head"
