@@ -983,6 +983,17 @@ def cmd_bundle(args):
         for key in ("json", "log"):
             if entry.get(key) and Path(entry[key]).exists():
                 shutil.copy2(entry[key], folder / f"{name}{Path(entry[key]).suffix}")
+        # a step that failed has its log there and nowhere else: "it won't build" came with no build log
+        failed = (entry.get("last_failure") or {}).get("log")
+        if entry.get("status") != "done" and failed and Path(failed).exists():
+            shutil.copy2(failed, folder / f"{name}_failed.log")
+    # the model as the face patch's views drew it, front and back: before a first build there are no
+    # renders, and the bundle said "hat" and "A-pose" of a character nobody reading it could see
+    views = sorted(p for p in (project.out / "face" / "views").glob("color_*.png") if p.stem.endswith(("_000", "_180")))
+    if views:
+        (folder / "model").mkdir()
+        for picture in views:
+            shutil.copy2(picture, folder / "model" / picture.name)
     for extra in ("pieces.json", "movement.json", "springs.json", "face.json"):
         if (project.out / extra).exists():
             shutil.copy2(project.out / extra, folder / extra)

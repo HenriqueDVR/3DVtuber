@@ -54,6 +54,24 @@ class Engine(unittest.TestCase):
         self.assertEqual(o["mouth_colour"], "skin")
         self.assertNotIn("ahoge", self.runs(project))  # a rigid head has no ahoge
 
+    def test_a_bundle_of_a_build_that_failed_shows_the_model_and_the_failure(self):
+        # a tester's bundle of a character that would not build held no picture of it and no build
+        # log: the pictures were only the renders of a finished build, the log only a done step's
+        project = self.project({"options": {}, "triangles": 40000})
+        views = project.out / "face" / "views"
+        views.mkdir(parents=True)
+        for name in ("color_head_000.png", "color_torso_000.png", "color_torso_180.png", "color_torso_045.png", "z_head_000.exr"):
+            (views / name).write_bytes(b"picture")
+        log = self.root / "01_build.log"
+        log.write_text("the face patch has no polygons")
+        project.state["steps"]["build"] = {"status": "not run", "last_failure": {"reason": "...", "log": str(log)}}
+        project._save_state()
+        found = cli.cmd_bundle(SimpleNamespace(manifest=self.path, blender="blender", note="It won't build"))
+        folder = Path(found["bundle"])
+        self.assertEqual(sorted(p.name for p in (folder / "model").iterdir()),
+                         ["color_head_000.png", "color_torso_000.png", "color_torso_180.png"])
+        self.assertEqual((folder / "build_failed.log").read_text(), "the face patch has no polygons")
+
     def test_manifest_overrules_the_survey(self):
         project = self.project({"options": {"rigid_head": True}, "triangles": 40000}, rigid_head=False)
         self.assertFalse(project.options()["rigid_head"])
