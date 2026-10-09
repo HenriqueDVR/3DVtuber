@@ -259,6 +259,68 @@ class Engine(unittest.TestCase):
             self.assertEqual(sorted(archive.namelist()), ["NOTE.txt", "app_errors.log", "report.json"])
             self.assertNotIn(str(self.root), archive.read("app_errors.log").decode())
 
+    def test_a_report_that_came_in_is_checked_before_it_is_opened(self):
+        # the address reports go to is in every tester's copy: what arrives may be from anyone
+        import zipfile
+        from unittest import mock
+        from app import report
+        project = self.project({"options": {}, "triangles": 40000})
+        (self.root / "model.glb").write_bytes(b"glTF" + b"\0" * 40)
+        (project.out / "face" / "views").mkdir(parents=True)
+        (project.out / "face" / "views" / "color_torso_000.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"picture")
+        real = Path(report.make(self.path, note="mine", pictures=True, model=True, blender="blender")["report"])
+        found = report.check(real)
+        self.assertEqual((found["ok"], found["problems"]), (True, []))
+        self.assertTrue(found["headline"][0].startswith("**Test** | "))
+
+        def forged(name, **files):
+            path = self.root / f"{name}.zip"
+            with zipfile.ZipFile(real) as old, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as new:
+                for entry in old.infolist():
+                    if entry.filename not in files:
+                        new.writestr(entry, old.read(entry))
+                for inside, data in files.items():
+                    if data is not None:
+                        new.writestr(inside, data)
+            return path
+
+        cases = {
+            "program": ({"runs/setup.exe": b"MZ\x90\0"}, "a .exe file"),
+            "script": ({"fix.bat": b"@echo off"}, "a .bat file"),
+            "renamed": ({"renders/x/sheet_face.jpg": b"MZ\x90\0 not a picture"}, "is a Windows program"),
+            "not_a_picture": ({"renders/x/sheet_face.png": b"<html>"}, "not a .png file inside"),
+            "blend": ({"model/source/model.glb": b"BLENDER-v402"}, "a .blend file"),
+            "outside": ({"../../startup/run.json": b"{}"}, "outside the folder"),
+            "drive": ({"C:/Users/x/run.json": b"{}"}, "outside the folder"),
+            "stray_model": ({"runs/model.glb": b"glTF" + b"\0" * 8}, "a model outside model/"),
+            "odd_folder": ({"tools/readme.txt": b"hello"}, "not a folder a report has"),
+            "archive": ({"feedback/more.txt": b"PK\x03\x04"}, "is another archive"),
+            "long_log": ({"runs/big.log": b"a" * (3 * 2**20)}, None),
+            "no_summary": ({"report.json": None}, "no report.json"),
+            "binary_text": ({"runs/x.log": b"ok\0\0\0"}, "not text inside"),
+        }
+        for name, (files, said) in cases.items():
+            with self.subTest(name):
+                path = forged(name, **files)
+                found = report.check(path)
+                if said is None:  # a spinning Blender's log is one line a million times: a log all the same
+                    self.assertTrue(found["ok"], found["problems"])
+                    with mock.patch.object(report, "TEXT_MOST", 2**20):
+                        self.assertIn("more than such a file is in a report", " ".join(report.check(path)["problems"]))
+                    continue
+                self.assertFalse(found["ok"])
+                self.assertIn(said, " ".join(found["problems"]))
+                with self.assertRaisesRegex(ValueError, "was not unpacked"):
+                    report.unpack(path, self.root / "received" / name)
+                self.assertFalse((self.root / "received" / name).exists())
+        self.assertFalse(report.check(self.root / "character.json")["ok"])
+        # a real one is unpacked into a folder of its own, once
+        made = report.unpack(real, self.root / "received" / "real")
+        self.assertEqual(json.loads((Path(made["folder"]) / "report.json").read_text())["note"], "mine")
+        self.assertTrue((Path(made["folder"]) / "model" / "source" / "model.glb").is_file())
+        with self.assertRaisesRegex(ValueError, "there already"):
+            report.unpack(real, self.root / "received" / "real")
+
     def test_manifest_overrules_the_survey(self):
         project = self.project({"options": {"rigid_head": True}, "triangles": 40000}, rigid_head=False)
         self.assertFalse(project.options()["rigid_head"])

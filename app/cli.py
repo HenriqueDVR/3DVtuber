@@ -170,6 +170,8 @@ def main(argv=None):
     p.add_argument("--model", action="store_true", help="also the model the build reads, its rig, reference and paint (sent: textures made smaller to fit)")
     p.add_argument("--send", action="store_true", help="post it to the developers' channel (the address in update.json)")
     p.add_argument("--address", help="keep this Discord webhook as where reports are sent ('' forgets it)")
+    p.add_argument("--check", type=Path, metavar="ZIP", help="a report that came in: is it one this app writes? Nothing in it is opened or run")
+    p.add_argument("--unpack", action="store_true", help="with --check: unpack it into out/received/<name>/ when nothing is wrong with it")
 
     p = sub.add_parser("regress", help="rebuild characters in a scratch folder and compare each with its good build")
     p.add_argument("manifests", type=Path, nargs="*", help="which characters (default: every one with a finished build)")
@@ -1022,6 +1024,8 @@ def cmd_bundle(args):
 def cmd_report(args):
     if args.address is not None:
         return report.use_address(args.address)
+    if args.check is not None:
+        return report.unpack(args.check) if args.unpack else report.check(args.check)
     if args.send:
         return report.send(args.manifest, note=args.note, pictures=args.pictures, model=args.model, about=args.about,
                            blender=getattr(args, "blender", None))
