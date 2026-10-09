@@ -48,7 +48,14 @@ SPOT_CLIP = 0.08
 # The ring drawn round a spot in its close-ups (m, its outer radius): a fifth of the picture's width.
 SPOT_RING = 0.03
 # A build is worth looking at by hand when it is over one of these.
-LIMITS = {"unweighted": 0, "stretch_cm": 6.0, "squash": 0.35, "arm_follows": 0.5}
+LIMITS = {"unweighted": 0, "stretch_cm": 6.0, "squash": 0.35, "arm_follows": 0.5, "mouth_on_head": 0.5}
+# A shape key moves a vertex when it takes it further than this (m), as scripts/_fingerprint.py counts
+KEY_MOVED = 1e-5
+# The key the mouth is placed by, the surface within MOUTH_NEAR (m) of it seen from the front, and
+# how deep behind the frontmost of that surface still counts as the face
+MOUTH_KEY = "aa"
+MOUTH_NEAR = 0.02
+MOUTH_DEPTH = 0.03
 # An arm that moves has to take the surface round it along: of the vertices within ARM_NEAR (m) of
 # the middle of an upper arm's bone, the share that moves ARM_MOVED (m) or more when the arms are
 # raised. A tester's pirate, his whole body put on the head bone: every arm pose measured "0 edges
@@ -199,6 +206,12 @@ def main():
         poses = [{name: r for name in bones[:1]} for r in [(s, 0, 0), (-s, 0, 0), (0, 0, s), (0, 0, -s)]]
         report(f"swing {chain}", stretch(poses))
 
+    face = face_shapes(arm, mesh_obj)
+    if face:
+        measured["face"] = face
+        if "mouth_on_head" in face:
+            print(f"CHECK mouth: the surface under it follows the head by {face['mouth_on_head']:.0%}")
+
     measured["failed"] = failures(measured)
     if args.spots:
         measured["spots"] = render_spots(args.spots, measured, posed_by, arm, mesh_obj, edges, rest, reset, weights)
@@ -345,6 +358,53 @@ def render_spots(folder, measured, posed_by, arm, mesh_obj, edges, rest, reset, 
     return spots
 
 
+def face_shapes(arm, mesh_obj):
+    """Where each shape key works and how far ({"keys": {name: {"moved", "max_mm", "at"}}}, `at` the
+    middle of what it moves, world metres, weighted by how far), and `mouth_on_head`: how much of
+    the surface under the mouth the head bone and its children hold. Read-only, in the rest pose.
+
+    Model D's mouth points were saved again 30 cm down her picture: the mouth opened on her throat
+    for two days of rebuilds while every pose measured as before. Height can't tell (a mascot's
+    mouth sits 6 cm under its head joint, hers on the throat 7): the weights under it can, 1.00 to
+    0.75 on five good characters and 0.03 on her throat.
+    """
+    mesh = mesh_obj.data
+    if not mesh.shape_keys or len(mesh.shape_keys.key_blocks) < 2:
+        return None
+    matrix = np.array(mesh_obj.matrix_world)
+    blocks = mesh.shape_keys.key_blocks
+
+    def positions(block):
+        co = np.zeros(len(block.data) * 3)
+        block.data.foreach_get("co", co)
+        return co.reshape(-1, 3) @ matrix[:3, :3].T + matrix[:3, 3]
+
+    basis = positions(blocks[0])
+    found, mouth = {"keys": {}}, None
+    for block in blocks[1:]:
+        far = np.linalg.norm(positions(block) - basis, axis=1)
+        moved = far > KEY_MOVED
+        if not moved.any():
+            found["keys"][block.name] = {"moved": 0, "max_mm": 0.0}
+            continue
+        at = (basis[moved] * far[moved, None]).sum(0) / far[moved].sum()
+        found["keys"][block.name] = {"moved": int(moved.sum()), "max_mm": round(float(far.max()) * 1000, 2),
+                                     "at": [round(float(v), 4) for v in at]}
+        if block.name == MOUTH_KEY:
+            mouth = (at, moved)
+    if mouth is not None and "Head" in arm.data.bones:
+        at, moved = mouth
+        beside = (np.hypot(basis[:, 0] - at[0], basis[:, 2] - at[2]) < MOUTH_NEAR) & ~moved
+        # the frontmost layer alone: behind it are the back of the head and the hair
+        beside &= basis[:, 1] < (basis[beside, 1].min() + MOUTH_DEPTH if beside.any() else 0.0)
+        if beside.any():
+            head = {"Head", *(b.name for b in arm.data.bones["Head"].children_recursive)}
+            groups = {g.index for g in mesh_obj.vertex_groups if g.name in head}
+            held = [sum(g.weight for g in mesh.vertices[i].groups if g.group in groups) for i in np.flatnonzero(beside)]
+            found["mouth_on_head"] = round(float(np.mean(held)), 2)
+    return found
+
+
 def failures(measured):
     """Which measurements are over the limits, in plain language."""
     failed = []
@@ -358,6 +418,10 @@ def failures(measured):
         if share < LIMITS["arm_follows"]:
             failed.append(f"the {side.lower()} upper arm takes only {share:.0%} of the surface round it along when it is "
                           "raised: the sleeve is weighted to another bone")
+    on_head = measured.get("face", {}).get("mouth_on_head")
+    if on_head is not None and on_head < LIMITS["mouth_on_head"]:
+        failed.append(f"the head bone holds only {on_head:.0%} of the surface under the mouth: the mouth isn't on "
+                      "the face (look at the face points)")
     if worst.get("squash", 1.0) < LIMITS["squash"]:
         failed.append(f"an edge shrinks to {worst['squash']:.0%} with the {worst['squash_pose']}: "
                       "a limb's weights reach onto the body it folds into")

@@ -98,6 +98,11 @@ compare_checks = _compare_module()
 APPROVED = ("check", "vrm_check", "movement", "springs")
 # Spring findings this much worse than the approved build's (cm) count as a change.
 SPRING_NOISE = 1.0
+# Between two builds, a shape key has changed when its furthest move differs by this share of
+# itself, or the middle of what it moves is this far (m) from where it was. Rebuilds of three
+# characters with nothing changed: 0% and 0 mm; the mouth marked on a throat: 42% and 6 cm.
+KEY_REACH = 0.25
+KEY_PLACE = 0.01
 
 
 class StepFailed(Exception):
@@ -933,9 +938,10 @@ def changes(before, now):
             w, b = compare_checks.changes(old, new)
             worse += [f"{label}, {line}" for line in w]
             better += [f"{label}, {line}" for line in b]
+    worse += _face_changes(_face_keys(before), _face_keys(now))
     old, new = read(before, "movement"), read(now, "movement")
     if old is not None and new is not None:
-        named = lambda report: {str(r.get("name") or r["label"]) for r in report.get("pieces", [])}  # noqa: E731
+        named =lambda report: {str(r.get("name") or r["label"]) for r in report.get("pieces", [])}  # noqa: E731
         worse += [f"movement: {n} newly flagged" for n in sorted(named(new) - named(old))]
         better += [f"movement: {n} no longer flagged" for n in sorted(named(old) - named(new))]
     old, new = read(before, "springs"), read(now, "springs")
@@ -973,6 +979,60 @@ def changes(before, now):
             elif was - now_ > SPRING_NOISE:
                 better.append(f"physics: worst {what} {was} -> {now_} cm")
     return {"worse": worse, "better": better}
+
+
+def _face_keys(reports):
+    """{shape key: {"moved", "max_mm", maybe "at"}} of a build, from its rig check; of a build older
+    than that part of the check, from the numbers kept beside its last .blend (no places in those).
+    A build marked good is read where its reports came from."""
+    check = reports.get("check")
+    if check is None:
+        return {}
+    keys = ((_read_json(check, None) or {}).get("face") or {}).get("keys")
+    if keys is not None:
+        return keys
+    folder = Path(check).parent
+    if folder.name == "approved":
+        source = ((_read_json(folder / "approved.json", None) or {}).get("reports") or {}).get("check")
+        folder = Path(source).parent if source else folder
+    prints = sorted(folder.glob("*_fingerprint.json"))
+    found = {}
+    for mesh in (_read_json(prints[-1], None) or {}).get("keys", {}).values() if prints else ():
+        found.update(mesh)
+    return found
+
+
+def _face_changes(old, new):
+    """One line when shape keys both builds have no longer do what they did: gone, moving under half
+    or over twice the vertices, reaching KEY_REACH further or less, or working KEY_PLACE (m) away.
+
+    Model D's face points were saved again with the mouth on her throat: jawOpen went from 1116
+    vertices and 18.5 mm to 133 and 10.8, through two days of regress runs that said "nothing worse".
+    Which way is better can't be told from numbers, so every such change counts as worse: look.
+    """
+    changed = []
+    for name in sorted(set(old) & set(new)):
+        was, now = old[name], new[name]
+        if not was.get("moved"):
+            continue
+        if not now.get("moved"):
+            changed.append((9.0, f"{name} no longer moves anything (it moved {was['moved']} vertices)"))
+            continue
+        count = max(now["moved"], was["moved"]) / min(now["moved"], was["moved"])
+        reach = abs(now["max_mm"] - was["max_mm"]) / max(was["max_mm"], 1e-9)
+        place = (sum((a - b) ** 2 for a, b in zip(was["at"], now["at"])) ** 0.5 if "at" in was and "at" in now else 0.0)
+        if place > KEY_PLACE:
+            changed.append((place / KEY_PLACE, f"{name} works {place * 100:.1f} cm from where it did"))
+        elif count > 2 or reach > KEY_REACH:
+            changed.append((max(count / 2, reach / KEY_REACH),
+                            f"{name} moves {now['moved']} vertices by up to {now['max_mm']} mm, was {was['moved']} by {was['max_mm']}"))
+    gone = sorted(name for name, was in old.items() if was.get("moved") and name not in new)
+    if gone and new:
+        changed.append((9.0, f"{gone[0]} is gone"))
+    if not changed:
+        return []
+    return [f"face shapes: {len(changed)} of {len(set(old) & set(new)) + len(gone) * bool(new)} changed, "
+            f"{max(changed)[1]}"]
 
 
 def _same_piece(a, b, reach=0.05):
