@@ -9,7 +9,7 @@ import bmesh
 import bpy
 import numpy as np
 
-from vtuber_maker.pipeline import face_points
+from vtuber_maker.pipeline import face_points, texture_space
 
 SIZE = 1000
 # The patch image spans x -0.1..0.1 and z 1.3..1.5 on a flat face at y = -0.1.
@@ -103,6 +103,21 @@ class FacePoints(unittest.TestCase):
                 face_points.apply(self.obj, {}, self.points)
         finally:
             self.obj.data.materials[0].name = face_points.FACE_PATCH_MATERIAL
+
+
+class PatchAfterTheFaceIsRead(unittest.TestCase):
+    def test_polygons_stay_on_the_patch_through_the_position_bake(self):
+        # a tester's painted face (no eye inserts): face.detect_features bakes positions with the
+        # materials taken off, every polygon came back on the first one and the patch had none
+        obj = make_face()
+        mesh = obj.data
+        mesh.materials.append(bpy.data.materials.new("body"))
+        for poly in mesh.polygons:
+            poly.material_index = poly.index % 2
+        before = [poly.material_index for poly in mesh.polygons]
+        texture_space.bake_position_map(obj, 64)
+        self.assertEqual([m.name for m in mesh.materials], [face_points.FACE_PATCH_MATERIAL, "body"])
+        self.assertEqual([poly.material_index for poly in mesh.polygons], before)
 
 
 if __name__ == "__main__":

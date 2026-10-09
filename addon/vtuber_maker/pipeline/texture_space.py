@@ -121,6 +121,10 @@ def bake_position_map(obj, width, height=None):
     nodes.active = target
 
     original_materials = [slot.material for slot in obj.material_slots]
+    # clearing the materials puts every polygon on the first: a painted face's patch came back
+    # with no polygons ("the face patch has no polygons"), its hair's picture too
+    slots = np.empty(len(obj.data.polygons), dtype=np.int32)
+    obj.data.polygons.foreach_get("material_index", slots)
     obj.data.materials.clear()
     obj.data.materials.append(material)
 
@@ -143,6 +147,8 @@ def bake_position_map(obj, width, height=None):
     obj.data.materials.clear()
     for original in original_materials:
         obj.data.materials.append(original)
+    obj.data.polygons.foreach_set("material_index", slots)
+    obj.data.update()
     bpy.data.materials.remove(material)
     bpy.data.images.remove(image)
     return positions, covered
