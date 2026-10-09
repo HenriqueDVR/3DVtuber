@@ -958,12 +958,29 @@ def changes(before, now):
                           f"({gone[0]} was {sag_was[gone[0]]} cm)")
         rows.append((max((r["gap_cm"] for r in old.get("coming_away", [])), default=0.0),
                      max((r["gap_cm"] for r in new.get("coming_away", [])), default=0.0), "left behind by a swing"))
+        # and piece by piece, each known by where it sits: the worst gap alone hid model A's chest
+        # panels, newly turning with her head (22.5 and 14.4 cm), behind a bit of hair that had stood
+        # still since September (29.8 cm)
+        for found, others, where, what in ((new, old, worse, "newly"), (old, new, better, "no longer")):
+            pieces = sorted((r for r in found.get("coming_away", []) if not any(_same_piece(r, o) for o in others.get("coming_away", []))),
+                            key=lambda r: -r["gap_cm"])
+            if pieces:
+                where.append(f"physics: {len(pieces)} piece{'s' if len(pieces) > 1 else ''} {what} left behind by a swing "
+                             f"({pieces[0]['count']} vertices, {pieces[0]['gap_cm']} cm)")
         for was, now_, what in rows:
             if now_ - was > SPRING_NOISE:
                 worse.append(f"physics: worst {what} {was} -> {now_} cm")
             elif was - now_ > SPRING_NOISE:
                 better.append(f"physics: worst {what} {was} -> {now_} cm")
     return {"worse": worse, "better": better}
+
+
+def _same_piece(a, b, reach=0.05):
+    """Whether two builds' spring reports name one piece: by its place (labels are vertex numbers,
+    which a rebuild changes), or by its size in a report without places."""
+    if "point" in a and "point" in b:
+        return sum((x - y) ** 2 for x, y in zip(a["point"], b["point"])) < reach ** 2
+    return a.get("count") == b.get("count")
 
 
 def characters():

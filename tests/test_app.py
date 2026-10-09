@@ -113,7 +113,7 @@ class Engine(unittest.TestCase):
         project = self.project({"options": {}, "triangles": 40000}, chest=True)
         self.assertIn("chest", self.runs(project))
         args, extra = project._arguments("chest", self.root / "10_chest", None)
-        self.assertEqual([str(a) for a in args[:1] + args[3:]], ["add_chest_jiggle.py", "--height", "1.6", "--amount", "1.0"])
+        self.assertEqual([str(a) for a in args[:1] + args[3:]], ["add_chest_jiggle.py", "--height", "1.6", "--amount", "0.5"])
         self.assertEqual(extra, engine.NO_EXPORT)
         # on the finished T-pose, before the face steps; a chest it can't find leaves the avatar without it
         self.assertEqual(engine.NAMES.index("chest"), engine.NAMES.index("tpose") + 1)
@@ -374,6 +374,26 @@ class Engine(unittest.TestCase):
         # the chain that droops further is the one named, though another droops more
         self.assertEqual(engine.changes(before, report("further", {"HatTip": 6.0, "Skirt": 9.2})),
                          {"worse": ["physics: worst droop at rest 4.0 -> 6.0 cm"], "better": []})
+
+    def test_pieces_left_behind_are_compared_one_by_one(self):
+        # model A: a bit of hair had stood still since September (29.8 cm); chest panels newly turning
+        # with the head (22.5, 14.4 cm) were under that worst gap, and regress said "nothing worse"
+        def report(name, pieces):
+            path = self.root / f"{name}.json"
+            path.write_text(json.dumps({"sagging": [], "coming_away": [
+                {"label": i, "count": count, "gap_cm": gap, "point": point} for i, (count, gap, point) in enumerate(pieces)]}))
+            return {"springs": path}
+
+        hair = (180, 29.8, [0.224, 0.133, 1.023])
+        before = report("before", [hair])
+        now = report("now", [hair, (315, 22.5, [-0.107, -0.183, 1.111]), (280, 14.4, [-0.05, -0.144, 1.19])])
+        self.assertEqual(engine.changes(before, now),
+                         {"worse": ["physics: 2 pieces newly left behind by a swing (315 vertices, 22.5 cm)"], "better": []})
+        self.assertEqual(engine.changes(now, before),
+                         {"worse": [], "better": ["physics: 2 pieces no longer left behind by a swing (315 vertices, 22.5 cm)"]})
+        # the same piece a rebuild numbered otherwise and found a few millimetres off is no news
+        moved = report("moved", [(181, 29.6, [0.226, 0.131, 1.02])])
+        self.assertEqual(engine.changes(before, moved), {"worse": [], "better": []})
 
     def test_only_a_finished_build_can_be_marked_good(self):
         with self.assertRaisesRegex(engine.StepFailed, "build to the end"):
@@ -2255,6 +2275,19 @@ class Paint(unittest.TestCase):
         paint.write_glb(self.root / "patched.glb", gltf, binary)
         self.assertTrue(cli._patched(self.root / "patched.glb"))
         self.assertFalse(cli._patched(self.root / "model.fbx"))
+
+    def test_the_face_view_is_framed_on_the_body_under_horns_or_a_tail(self):
+        # eyes at 1.37 of a body 1.6 tall: by the body's share the view sat 23 cm too high on a model
+        # 1.84 tall with its horns, the face at the picture's lower edge
+        plain = {"size": [0.6, 0.4, 1.6], "eyes": [0, -0.12, 1.368], "joints": {"head": [0, -0.09, 1.347]}}
+        self.assertEqual(cli._frame(plain, 1.6), (0.835, 1.0))
+        horned = dict(plain, size=[0.6, 0.4, 1.84])
+        at, body = cli._frame(horned, 1.6)
+        self.assertEqual((at, body), (0.726, 0.87))
+        self.assertAlmostEqual(at * 1.84, 0.835 * 1.6, delta=0.002)  # the same place on the body
+        # without modelled eyes, from the head joint; with no survey, the script's own proportion
+        self.assertEqual(cli._frame({"size": [0.6, 0.4, 1.84], "joints": {"head": [0, 0, 1.347]}}, 1.6)[0], 0.767)
+        self.assertEqual(cli._frame(None, 1.6), (None, 1.0))
 
     def test_unsaved_paint_is_kept_as_a_draft_until_it_is_saved(self):
         project = Project(self.path, blender="blender")

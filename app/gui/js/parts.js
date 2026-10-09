@@ -294,7 +294,8 @@ export function renderPieces() {
   if (!S.listing) { body.innerHTML = `<tr><td colspan="6" class="msg">Not listed yet: press List pieces (one Blender run, about a minute).</td></tr>`; return; }
   const rows = sorted(S.listing.pieces.filter(visible));
   const hidden = S.listing.pieces.length - rows.length;
-  body.innerHTML = rows.map((row) => {
+  // questions first: a row waiting for an answer is lost under hundreds of pieces
+  body.innerHTML = foundRows() + rows.map((row) => {
     const named = namedFor(row) || {};
     const role = named.role || "";
     const others = S.manifest.pieces.filter((p) => p.name !== named.name).map((p) => p.name);
@@ -329,6 +330,17 @@ export function renderPieces() {
       } catch (e) { say("pieces-msg", e.message, true); }
     };
   });
+  body.querySelectorAll("tr[data-found]").forEach((tr) => {
+    const part = foundParts().find((p) => p.name === tr.dataset.found);
+    tr.querySelectorAll("[data-use-found]").forEach((button) => button.onclick = async () => {
+      const [role, what] = FOUND_AS[button.dataset.useFound];
+      try {
+        await call("piece", { name: part.name, label: part.label, role, region: part.region, ...(role === "appendage" ? { bone: part.bone } : {}) });
+        pushUndo(`${what} on ${part.name}`, async () => { await call("piece", { name: part.name, remove: true }); await changed(); });
+        await changed(); saved(`${part.name}: ${what}. Rebuild from “${ROLE_STAGE(role)}” for it to count.`);
+      } catch (e) { say("pieces-msg", e.message, true); }
+    });
+  });
   body.querySelectorAll("tr[data-label]").forEach((tr) => {
     const label = +tr.dataset.label, row = S.listing.pieces.find((r) => r.label === label);
     const named = namedFor(row);
@@ -354,6 +366,19 @@ export function renderPieces() {
 }
 const wholeOf = (p) => S.listing?.pieces.find((r) => r.count === p.count && Math.hypot(...p.point.map((v, i) => v - r.point[i])) < 1e-6);
 // parts of pieces (a twin-tail fused into the body) are listed after the pieces, each on its own row
+// Parts the listing found inside pieces (ears or horns over the crown, with no piece of their own):
+// asked about in a row each until answered; then it is a saved part like a painted one. Shape doesn't
+// tell an ear from a horn, and one swings while the other must not: the user says which.
+const FOUND_AS = { ear: ["appendage", "ear (swings)"], horn: ["hat", "horn (rigid on head)"] };
+const foundParts = () => (S.listing?.parts || []).filter((p) => !S.manifest.pieces.some((m) => m.name === p.name));
+function foundRows() {
+  return foundParts().map((p) => `<tr data-found="${esc(p.name)}"><td><span class="swatch" style="background:${hex(0x9a9a9a)}"></span></td>
+      <td>${esc(p.name)}<span class="sub">found in #${p.label}: ${esc(p.where)}</span></td>
+      <td>${p.count.toLocaleString()}</td><td title="${esc(p.why)}">ear or horn?</td><td><span class="sub">${esc(p.why)}</span></td>
+      <td><button class="act alt small" data-use-found="ear" title="an animal ear: gets a spring and sways when the head moves">ear: swings</button>
+        <button class="act alt small" data-use-found="horn" title="a horn: ${ROLE_INFO.hat[1]}">horn: stays still</button></td></tr>`).join("");
+}
+
 function regionRows() {
   return S.manifest.pieces.filter((p) => p.region?.length).map((p) => {
     const whole = wholeOf(p);

@@ -55,7 +55,9 @@ function renderMovement(selectedLabel) {
       <td><b class="done">Nothing to fix</b><span class="sub">${esc(row.why[0].toUpperCase() + row.why.slice(1))}. It is listed so you know the test looked at it.</span></td><td></td></tr>`;
     // one line per kind of problem, with the poses it shows in
     const behind = row.findings.filter((f) => f.kind === "stays behind"), torn = row.findings.filter((f) => f.kind === "torn");
+    const carried = row.findings.filter((f) => f.kind === "goes with the head");
     const what = [behind.length ? `stays where it is while the body moves away (${behind.map((f) => f.pose).join(", ")})` : "",
+      carried.length ? `turns with the head while the body under it stays (${carried.map((f) => f.pose).join(", ")})` : "",
       torn.length ? `stretches up to ${Math.max(...torn.map((f) => f.stretch_cm))} cm between the part that moves and the part that stays (${torn.map((f) => f.pose).join(", ")})` : ""]
       .filter(Boolean).join("<br>");
     const has = row.role && row.role === row.suggested;

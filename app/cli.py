@@ -578,28 +578,25 @@ def cmd_face_patch(args):
     if folder.resolve() in before.resolve().parents or _patched(before):
         before = reference  # remaking: from the model before the last patch, never a patch of a patch
     views, image, patched = folder / "views", folder / "face_patch_head_000.png", folder / f"{project.name}_face.glb"
-    head_at = []
-    survey = project.survey()
-    height = project.options()["height"]
-    if survey and survey.get("eyes"):
-        # the modelled eyes, a little under the face's middle, as a share of the height
-        head_at = ["--head-at", round((survey["eyes"][2] - FACE_BELOW_EYES * height) / height, 3)]
-    elif survey and "head" in survey.get("joints", {}):
-        # the face, a little above the head joint (a guess where clothing or a tail hides the neck)
-        head_at = ["--head-at", round((survey["joints"]["head"][2] + FACE_ABOVE_HEAD * height) / height, 3)]
+    at, body = _frame(project.survey(), project.options()["height"])
+    head_at = [] if at is None else ["--head-at", at]
     # a remake frames the head as the patch before it did: the face points are pixels in that picture,
     # and a survey of the patched model put the frame a millimetre lower (8 px) than the first one
+    kept_in = folder
     kept = _framing(folder) if project.data.get("face") else None
     if kept is None and project.data.get("face") and _patched(manifest.path_of(project.data, "source")):
         # a copy of a character (`duplicate`) wears the original's patch and has its points and
         # paint: its first patch of its own is framed as that one was. Framed anew, the mouth of
         # model D's copy opened at the nose and the paint lay a face part too high
-        kept = _framing(manifest.path_of(project.data, "source").parent)
+        kept_in = manifest.path_of(project.data, "source").parent
+        kept = _framing(kept_in)
     if kept is not None:
         head_at = ["--head-at", kept]
+        body = (engine._read_json(kept_in / "head_at.json", None) or {}).get("body", 1.0)
     if head_at:
+        head_at += ["--body", body]
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / "head_at.json").write_text(json.dumps({"head_at": head_at[1]}), encoding="utf-8")
+        (folder / "head_at.json").write_text(json.dumps({"head_at": head_at[1], "body": body}), encoding="utf-8")
     code, output = engine.run_script(project.blender, "retexture/render_views.py", [before, views, 1024, *head_at],
                                      log=folder / "render_views.log")
     if code != 0 or not (views / "color_head_000.png").exists():
@@ -641,6 +638,25 @@ def _keep(project):
         px, py = KEEP_PAD[0] * (x1 - x0), KEEP_PAD[1] * max(y1 - y0, 0.3 * (x1 - x0))
         boxes += ["--keep", ",".join(f"{v:.4f}" for v in ((x0 - px) / width, 1 - (y1 + py) / height, (x1 + px) / width, 1 - (y0 - py) / height))]
     return boxes
+
+
+def _frame(survey, height):
+    """(where the head view is centred, the body's share of the model's height) from a survey; the
+    first None without a head to go by.
+
+    The views are framed by shares of the whole model, and horns or a tail stand over the body's
+    `height` (orient.head_top): by a share of the body a demon girl's patch was framed up among her
+    horns, her mouth at the picture's lower edge. The head view is sized by the body too.
+    """
+    whole = max(float((survey or {}).get("size", [0, 0, height])[2]), height)
+    body = round(height / whole, 3)
+    if survey and survey.get("eyes"):
+        # the modelled eyes, a little under the face's middle
+        return round((survey["eyes"][2] - FACE_BELOW_EYES * height) / whole, 3), body
+    if survey and "head" in survey.get("joints", {}):
+        # the face, a little above the head joint (a guess where clothing or a tail hides the neck)
+        return round((survey["joints"]["head"][2] + FACE_ABOVE_HEAD * height) / whole, 3), body
+    return None, body
 
 
 def _framing(folder):

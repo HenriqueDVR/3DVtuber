@@ -28,7 +28,7 @@ const OPTION_UI = [
   ["chest", "Chest bounce", "Two spring bones on the front of the chest, as VRoid avatars have: it bounces and settles when the body moves. Hair hanging over the chest keeps its own springs.",
     [[false, "off", "The chest moves with the body only."], [true, "on", "It bounces in Warudo/VNyan, as much as the slider below says."]]],
   ["chest_amount", "Chest bounce amount", "How much the chest bounces when chest bounce is on: softer springs that move more of the chest, or stiffer ones that move less.",
-    { min: 0.25, max: 2, step: 0.05, fallback: 1, low: "barely", high: "a lot" }],
+    { min: 0.25, max: 2, step: 0.05, fallback: 0.5, low: "barely", high: "a lot" }],
   ["loose_pieces", "Repair torn straps", "Straps, belts and chains that cross between two limbs are weighted so they don't tear apart when the limbs move apart.",
     [[true, "on (recommended)", "Repaired."], [false, "off", "Left as rigged: they can stretch into long spikes."]]],
   ["repair_shoulder_seams", "Repair shoulder seams", "Closes gaps that open at the shoulders between the body and a sleeve when the arms go up.",
