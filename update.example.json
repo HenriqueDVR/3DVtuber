@@ -2,5 +2,5 @@
   "repo": "Owner/Name",
   "ref": "testers",
   "token": "a read-only key for that one repository: never commit the real file",
-  "reports": "optional: the Discord webhook testers' reports are posted to (https://discord.com/api/webhooks/...); never commit the real one"
+  "reports": "optional: another Discord webhook for this copy's reports, in place of the one in app/reports.json"
 }

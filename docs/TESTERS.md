@@ -111,8 +111,7 @@ To send a report:
 2. Write what happened and what you expected, tick what may go with it, and press **Send**. It
    posts one zip to our private Discord channel with a few lines saying where it stopped. Nothing
    is ever sent without that press. **Only make the zip** writes it
-   (`out/<name>/reports/<name>_<date>.zip`) and sends nothing: give it to us yourself. A copy from
-   before v8 asks once for the address reports go to: we give it to you.
+   (`out/<name>/reports/<name>_<date>.zip`) and sends nothing: give it to us yourself.
 
 What is in it: that character's settings, each step's log and timing, the checks' numbers, the app
 and Blender versions and what kind of computer it ran on (system, processor, memory, graphics

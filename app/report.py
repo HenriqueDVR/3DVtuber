@@ -1,11 +1,11 @@
 """A tester's report: what a character's build did on their computer, in one zip.
 
     python -m app report out/MyOC/character.json [--note "..."] [--pictures] [--model] [--send]
-    python -m app report --address https://discord.com/api/webhooks/...     # where --send posts, kept in update.json
+    python -m app report --address https://discord.com/api/webhooks/...     # another channel for this copy, kept in update.json
 
 Plain Python. The zip is written to <out>/reports/ and stays there; it leaves the computer only when
 the tester sends it: by hand, or with --send (the page's "Send to the developers"), which posts it
-to the developers' Discord channel through the webhook named in update.json ("reports"). A webhook
+to the developers' Discord channel through the webhook that comes with the app (app/reports.json). A webhook
 can be posted to and not read from. --model adds the files the build reads; sent, their textures are
 written smaller until the zip fits what Discord takes. Without --pictures it holds numbers and text only (settings, step logs, checks,
 shape key numbers, timings, the computer's kind): no picture of the character, no model. Paths in
@@ -54,6 +54,12 @@ NOTE_MOST = 1500
 TEXTURES = ((4096, 85), (2048, 85), (1024, 80))
 # Left free in a sent zip for the summary, written last (bytes)
 SUMMARY_ROOM = 256 * 1024
+
+
+# The developers' webhook, shipped with the app. The repository is private and so is this address:
+# whoever has it can post to the reports channel (not read it). Before the repository is ever made
+# public, delete that webhook in Discord and make another.
+SHIPPED = Path(__file__).with_name("reports.json")
 
 
 class NotSent(ValueError):
@@ -290,9 +296,19 @@ def smaller_model(path, most, quality):
 
 
 def address():
-    """The webhook reports are posted to (update.json "reports"), or None: then they are sent by hand."""
-    found = (update.config() or {}).get("reports")
-    return found if found and ADDRESS.fullmatch(found) else None
+    """The webhook reports are posted to, or None: then they are sent by hand. update.json's "reports"
+    when it names one (another channel for one copy), else the one that comes with the app (SHIPPED).
+
+    v8 kept it in update.json alone, which an update never writes over: every tester who had a copy
+    was asked to paste a link on their first Send."""
+    try:
+        shipped = json.loads(SHIPPED.read_text(encoding="utf-8")).get("address")
+    except (OSError, ValueError):
+        shipped = None
+    for found in ((update.config() or {}).get("reports"), shipped):
+        if found and ADDRESS.fullmatch(found):
+            return found
+    return None
 
 
 def use_address(url):

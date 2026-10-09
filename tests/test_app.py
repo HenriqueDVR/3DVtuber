@@ -150,7 +150,8 @@ class Engine(unittest.TestCase):
             posted.append(request)
             return Answer()
 
-        with mock.patch.object(update, "CONFIG", self.root / "update.json"):
+        shipped = self.root / "reports.json"
+        with mock.patch.object(update, "CONFIG", self.root / "update.json"), mock.patch.object(report, "SHIPPED", shipped):
             # no address: nothing leaves, and the page is told to hand the zip over
             with self.assertRaisesRegex(report.NotSent, "no address"):
                 report.send(self.path, note="x", blender="blender", open_url=open_url)
@@ -159,6 +160,9 @@ class Engine(unittest.TestCase):
                 report.use_address("https://example.com/api/webhooks/1/abc")
             (self.root / "update.json").write_text(json.dumps({"repo": "a/b", "reports": "https://example.com/upload"}))
             self.assertIsNone(report.address())
+            # the address that comes with the app is the one used; update.json's, when it names one, goes before it
+            shipped.write_text(json.dumps({"address": "https://discord.com/api/webhooks/9/shipped"}))
+            self.assertEqual(report.address(), "https://discord.com/api/webhooks/9/shipped")
             report.use_address("https://discord.com/api/webhooks/123/abc-DEF")
             self.assertEqual(json.loads((self.root / "update.json").read_text())["repo"], "a/b")
             made = report.send(self.path, note="@everyone it broke", pictures=True, blender="blender", open_url=open_url)
