@@ -14,6 +14,7 @@ import { loadMovement, loadSprings } from "./movement.js";
 import { loadFeedback, loadRenders, loadSheets } from "./review.js";
 import { loadSetup } from "./setup.js";
 import "./start.js";
+import "./report.js";
 import { resetPaint } from "./paint.js";
 
 const LAST = "vtuber-maker-project";

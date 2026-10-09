@@ -29,7 +29,11 @@ export async function call(route, body) {
 export async function refreshManifest() { S.manifest = await call("manifest"); }
 export async function refreshStatus() { S.status = await call("status"); }
 
-export function say(id, text, bad = false) { const el = $(id); if (!el) return; el.textContent = text; el.classList.toggle("bad", bad); }
+export function say(id, text, bad = false) {
+  // an error written beside its button is remembered for a report made in the next minutes
+  if (bad && text) S.lastError = { text, at: Date.now() };
+  const el = $(id); if (!el) return; el.textContent = text; el.classList.toggle("bad", bad);
+}
 
 // the meaningful line of a step's error: the last one that isn't Blender's shutdown chatter
 export const lastLine = (t) => String(t ?? "").split(/\r?\n/).map((l) => l.trim())

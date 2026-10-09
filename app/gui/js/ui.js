@@ -1,8 +1,15 @@
 // Toasts, the one dialog, the picture viewer and undo: shared by every page.
-import { $, esc } from "./core.js";
+import { $, S, app, esc } from "./core.js";
 
 // A short note in the corner. Saved-confirmations go here; errors stay next to what failed.
 export function toast(text, kind = "good", { action, ms = 4500 } = {}) {
+  // every error can be reported from where it is shown: a tester's failed install reached us as a
+  // sentence retold from memory
+  if (kind === "bad") {
+    S.lastError = { text, at: Date.now() };
+    action ||= { label: "Report", run: () => app.report?.(text) };
+    ms = Math.max(ms, 9000);
+  }
   const el = document.createElement("div");
   el.className = `toast ${kind}`;
   el.innerHTML = `<span>${esc(text)}</span>`;

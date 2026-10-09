@@ -15,6 +15,11 @@ from app import cli, engine, errors, paint, server, update, vendor  # noqa: E402
 from app.engine import Project, manifest  # noqa: E402
 
 
+def mock_textures(report, sizes):
+    from unittest import mock
+    return mock.patch.object(report, "TEXTURES", sizes)
+
+
 class Engine(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
@@ -71,6 +76,184 @@ class Engine(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (folder / "model").iterdir()),
                          ["color_head_000.png", "color_torso_000.png", "color_torso_180.png"])
         self.assertEqual((folder / "build_failed.log").read_text(), "the face patch has no polygons")
+
+    def test_a_report_holds_no_picture_and_no_place_on_the_computer_unless_asked(self):
+        # for the developers, from a tester's computer: numbers and text, the folders and the user name left behind
+        import zipfile
+        from app import report
+        project = self.project({"options": {}, "triangles": 40000}, hat_tip=True)
+        home = self.root / "Users" / "Ayumi"
+        run = project.out / "runs" / "20261009-120000"
+        (run / "13_check_spots").mkdir(parents=True)
+        (project.out / "face" / "views").mkdir(parents=True)
+        (project.out / "face" / "views" / "color_torso_000.png").write_bytes(b"picture")
+        (run / "13_check_spots" / "stretch.png").write_bytes(b"picture")
+        (run / "01_build.blend").write_bytes(b"model")
+        (run / "14_export.vrm").write_bytes(b"model")
+        slashed = str(run).replace(chr(92), "/")
+        (run / "01_build.log").write_text(f"Read {home / 'art' / 'oc.fbx'}, saved {slashed}/01_build.blend, by ayumi")
+        (run / "12_mouth_fingerprint.json").write_text(json.dumps({"keys": {}, "blend": str(run / "12_mouth.blend")}))
+        project.state["steps"]["build"] = {"status": "done", "seconds": 40, "log": str(run / "01_build.log"), "blend": str(run / "01_build.blend")}
+        project.state["steps"]["export"] = {"status": "done", "seconds": 5, "vrm": str(run / "14_export.vrm")}
+        project._save_state()
+        made = report.make(self.path, note=f"it broke in {home}", blender="blender")
+        with zipfile.ZipFile(made["report"]) as archive:
+            names = archive.namelist()
+            text = {name: archive.read(name).decode() for name in names}
+        self.assertEqual(made["left_out"], ["pictures of the character", "the model"])
+        self.assertEqual({Path(name).suffix for name in names}, {".json", ".log", ".txt"})
+        self.assertIn("runs/20261009-120000/12_mouth_fingerprint.json", names)
+        summary = json.loads(text["report.json"])
+        self.assertEqual(summary["character"]["options_changed"], {"hat_tip": True})
+        self.assertEqual([(s["step"], s["seconds"]) for s in summary["steps"] if s["seconds"]], [("build", 40), ("export", 5)])
+        clean = report.scrubber(project, home=home)
+        self.assertEqual(clean(f"Read {home / 'art'} by ayumi, {json.dumps(str(home))}"),
+                         "Read ~" + chr(92) + 'art by user, "~"')
+        self.assertEqual(clean('{"author": "Ayumi Art"}'), '{"author": "(left out)"}')
+        for name, body in text.items():
+            self.assertNotIn(str(self.root), body, name)
+            self.assertNotIn(json.dumps(str(self.root))[1:-1], body, name)
+        (self.root / "model.glb").write_bytes(b"the model as it was given")
+        asked = report.make(self.path, pictures=True, model=True, blender="blender")
+        with zipfile.ZipFile(asked["report"]) as archive:
+            names = archive.namelist()
+        self.assertIn("model_views/color_torso_000.png", names)
+        self.assertIn("runs/20261009-120000/13_check_spots/stretch.png", names)
+        # the model is the file the build reads, as it is: with it the character can be built again
+        self.assertIn("model/source/model.glb", names)
+        self.assertFalse([name for name in names if name.endswith((".vrm", ".blend"))])
+        self.assertEqual(asked["left_out"], [])
+
+    def test_a_report_is_sent_only_to_the_address_kept_and_without_the_model_unless_asked(self):
+        import zipfile
+        from unittest import mock
+        from app import report, update
+        project = self.project({"options": {}, "triangles": 40000})
+        run = project.out / "runs" / "20261009-120000"
+        run.mkdir(parents=True)
+        (run / "14_export.vrm").write_bytes(b"model")
+        project.state["steps"]["export"] = {"status": "done", "vrm": str(run / "14_export.vrm")}
+        project._save_state()
+        posted = []
+
+        class Answer:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b""
+
+        def open_url(request, timeout=None):
+            posted.append(request)
+            return Answer()
+
+        with mock.patch.object(update, "CONFIG", self.root / "update.json"):
+            # no address: nothing leaves, and the page is told to hand the zip over
+            with self.assertRaisesRegex(report.NotSent, "no address"):
+                report.send(self.path, note="x", blender="blender", open_url=open_url)
+            # only a Discord webhook is an address, whatever the file says
+            with self.assertRaisesRegex(ValueError, "Discord webhook"):
+                report.use_address("https://example.com/api/webhooks/1/abc")
+            (self.root / "update.json").write_text(json.dumps({"repo": "a/b", "reports": "https://example.com/upload"}))
+            self.assertIsNone(report.address())
+            report.use_address("https://discord.com/api/webhooks/123/abc-DEF")
+            self.assertEqual(json.loads((self.root / "update.json").read_text())["repo"], "a/b")
+            made = report.send(self.path, note="@everyone it broke", pictures=True, blender="blender", open_url=open_url)
+        self.assertEqual(posted, posted[:1])
+        self.assertEqual(posted[0].full_url, "https://discord.com/api/webhooks/123/abc-DEF")
+        body = posted[0].data
+        self.assertIn(b'"allowed_mentions": {"parse": []}', body)
+        self.assertIn(b"it broke", body)
+        self.assertIn(Path(made["report"]).read_bytes(), body)
+        with zipfile.ZipFile(made["report"]) as archive:
+            self.assertFalse([name for name in archive.namelist() if name.startswith("model/") or name.endswith(".vrm")])
+        self.assertTrue(made["sent"])
+
+    def test_a_model_that_is_sent_has_its_textures_made_smaller_until_it_fits(self):
+        # Tripo's 4096 px PNGs are most of its files: model A's 29 MB against the 9 a message takes
+        import io
+        import random
+        import zipfile
+        from app import report
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not in this Python: run with python -m unittest tests.test_app")
+        noise = random.Random(1)
+        picture = Image.frombytes("RGB", (512, 512), bytes(noise.getrandbits(8) for _ in range(512 * 512 * 3)))
+        png = io.BytesIO()
+        picture.save(png, "PNG")
+        shape = bytes(range(256)) * 4
+        gltf = {"asset": {"version": "2.0"}, "buffers": [{"byteLength": len(png.getvalue()) + len(shape)}],
+                "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": len(png.getvalue())},
+                                {"buffer": 0, "byteOffset": len(png.getvalue()), "byteLength": len(shape)}],
+                "images": [{"bufferView": 0, "mimeType": "image/png"}]}
+        source = Engine.write_glb(self, "model.glb", gltf, png.getvalue() + shape)
+        self.project({"options": {}, "triangles": 40000})
+
+        def read(raw):
+            length = struct.unpack_from("<I", raw, 12)[0]
+            doc = json.loads(raw[20:20 + length])
+            binary = raw[28 + length:]
+            return doc, [binary[v["byteOffset"]:v["byteOffset"] + v["byteLength"]] for v in doc["bufferViews"]]
+
+        doc, (small, kept) = read(report.smaller_model(source, 128, 85))
+        self.assertEqual(kept, shape)
+        self.assertEqual(doc["images"][0]["mimeType"], "image/jpeg")
+        self.assertEqual(Image.open(io.BytesIO(small)).size, (128, 128))
+        self.assertEqual(struct.unpack_from("<I", report.smaller_model(source, 128, 85), 8)[0], len(report.smaller_model(source, 128, 85)))
+        # room for the whole file: the first size; room for less: the next that fits; none: said, and no zip left
+        whole = report.make(self.path, model=True, blender="blender", fit=4 * 2**20)
+        with zipfile.ZipFile(whole["report"]) as archive:
+            self.assertEqual(json.loads(archive.read("report.json"))["model"]["textures"], report.TEXTURES[0][0])
+            self.assertEqual(read(archive.read("model/source/model.glb"))[1][1], shape)
+        with mock_textures(report, ((512, 85), (64, 80))):
+            tight = report.make(self.path, model=True, blender="blender", fit=report.SUMMARY_ROOM + 60_000)
+            with zipfile.ZipFile(tight["report"]) as archive:
+                self.assertEqual(json.loads(archive.read("report.json"))["model"]["textures"], 64)
+            before = sorted((self.root / "out" / "reports").iterdir())
+            with self.assertRaisesRegex(report.NotSent, "doesn't fit"):
+                report.make(self.path, model=True, blender="blender", fit=report.SUMMARY_ROOM + 300)
+            self.assertEqual(sorted((self.root / "out" / "reports").iterdir()), before)
+
+    def test_a_report_says_first_where_it_stopped_and_what_the_page_showed(self):
+        # a zip alone had to be opened to learn whether it was a failed install or a sleeve
+        import zipfile
+        from app import report
+        project = self.project({"options": {}, "triangles": 40000}, hat_tip=True)
+        project.state["steps"]["survey"]["seconds"] = 6
+        project.state["steps"]["build"] = {"status": "failed", "reason": f"build: Blender ran out of memory (see {self.root / 'x.log'})\nMalloc",
+                                           "known": {"code": "VM-OOM", "what": "Blender ran out of memory", "fix": "close other programs"}}
+        project._save_state()
+        made = report.make(self.path, note="it stopped", about="The run failed: build\nmore", blender="blender")
+        lines = made["headline"]
+        self.assertTrue(lines[0].startswith("**Test** | "), lines[0])
+        self.assertIn("Failed at **build** [VM-OOM]: build: Blender ran out of memory", lines[1])
+        self.assertNotIn(str(self.root), "\n".join(lines))
+        self.assertIn("Options changed: hat_tip=True", lines)
+        self.assertEqual(lines[-1], "On their page: The run failed: build")
+        with zipfile.ZipFile(made["report"]) as archive:
+            self.assertEqual(json.loads(archive.read("report.json"))["headline"], lines)
+            self.assertIn("On the page: The run failed: build", archive.read("NOTE.txt").decode())
+
+    def test_a_report_can_be_made_with_no_character_open(self):
+        # what goes wrong before a character can be opened (an install, the app itself) had no report at all
+        import zipfile
+        from unittest import mock
+        from app import report
+        with mock.patch.object(report, "REPO", self.root), mock.patch.object(engine, "setup", lambda: {"version": "5.2.2", "checks": [
+                {"name": "VRM Add-on", "state": "bad", "what": "the VRM Add-on isn't installed", "fix": "..."}]}):
+            (self.root / "out").mkdir(exist_ok=True)
+            (self.root / "out" / "app_errors.log").write_text(f"Traceback in {self.root}")
+            made = report.make(None, note="won't start", about="install failed")
+        self.assertEqual(made["headline"][0].split(" | ")[0], "**No character open**")
+        self.assertIn("Setup: the VRM Add-on isn't installed", made["headline"])
+        with zipfile.ZipFile(made["report"]) as archive:
+            self.assertEqual(sorted(archive.namelist()), ["NOTE.txt", "app_errors.log", "report.json"])
+            self.assertNotIn(str(self.root), archive.read("app_errors.log").decode())
 
     def test_manifest_overrules_the_survey(self):
         project = self.project({"options": {"rigid_head": True}, "triangles": 40000}, rigid_head=False)
@@ -412,6 +595,36 @@ class Engine(unittest.TestCase):
         # the same piece a rebuild numbered otherwise and found a few millimetres off is no news
         moved = report("moved", [(181, 29.6, [0.226, 0.131, 1.02])])
         self.assertEqual(engine.changes(before, moved), {"worse": [], "better": []})
+
+    def test_face_shapes_are_compared_key_by_key(self):
+        # model D: mouth points saved again on her throat, and two days of regress said "nothing worse"
+        def report(name, keys):
+            path = self.root / f"{name}.json"
+            path.write_text(json.dumps({"poses": {}, "unweighted": 0, "face": {"keys": keys}}))
+            return {"check": path}
+
+        key = lambda moved, reach, z: {"moved": moved, "max_mm": reach, "at": [0.0, -0.27, z]}  # noqa: E731
+        good = report("good", {"aa": key(98, 17.31, 1.338), "jawOpen": key(1116, 18.52, 1.322), "blink": key(300, 6.0, 1.4)})
+        self.assertEqual(engine.changes(good, report("again", {"aa": key(98, 17.3, 1.339), "jawOpen": key(1110, 18.6, 1.322),
+                                                                "blink": key(300, 6.0, 1.4)})), {"worse": [], "better": []})
+        throat = report("throat", {"aa": key(99, 9.16, 1.279), "jawOpen": key(133, 10.78, 1.28), "blink": key(300, 6.0, 1.4)})
+        self.assertEqual(engine.changes(good, throat)["worse"],
+                         ["face shapes: 2 of 3 changed, aa works 5.9 cm from where it did"])
+        emptied = report("emptied", {"aa": key(98, 17.31, 1.338), "jawOpen": {"moved": 0, "max_mm": 0.0}})
+        self.assertEqual(engine.changes(good, emptied)["worse"],
+                         ["face shapes: 2 of 3 changed, jawOpen no longer moves anything (it moved 1116 vertices)"])
+
+    def test_a_build_older_than_the_face_part_of_the_check_is_read_from_its_last_fingerprint(self):
+        # no places in those: the count and the reach alone still told model D's throat from her face
+        for name, jaw in (("old", {"moved": 1116, "max_mm": 18.52}), ("new", {"moved": 133, "max_mm": 10.78})):
+            (self.root / name).mkdir()
+            (self.root / name / "13_check.json").write_text(json.dumps({"poses": {}, "unweighted": 0}))
+            (self.root / name / "01_build_fingerprint.json").write_text(json.dumps({"keys": {}}))
+            (self.root / name / "12_mouth_fingerprint.json").write_text(json.dumps({"keys": {"body": {"jawOpen": jaw}}}))
+        old, new = ({"check": self.root / name / "13_check.json"} for name in ("old", "new"))
+        self.assertEqual(engine.changes(old, new)["worse"],
+                         ["face shapes: 1 of 1 changed, jawOpen moves 133 vertices by up to 10.78 mm, was 1116 by 18.52"])
+        self.assertEqual(engine.changes(old, old), {"worse": [], "better": []})
 
     def test_only_a_finished_build_can_be_marked_good(self):
         with self.assertRaisesRegex(engine.StepFailed, "build to the end"):
@@ -2105,7 +2318,7 @@ class Server(unittest.TestCase):
 
             def _api(self, route, query, body):
                 self.said.append(route)
-        for route in ("run", "prune", "approve", "cancel", "vendor", "sheet", "face_guess", "send_warudo", "set", "bundle"):
+        for route in ("run", "prune", "approve", "cancel", "vendor", "sheet", "face_guess", "send_warudo", "set", "bundle", "report", "report_send", "report_address"):
             probe = Probe(f"/api/{route}?manifest=x")
             probe.do_GET()
             self.assertEqual(probe.said, [405], route)

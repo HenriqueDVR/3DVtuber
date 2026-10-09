@@ -25,7 +25,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import cli, engine, paint, update, vendor
+from . import cli, engine, paint, report, update, vendor
 from .engine import REPO, Cancelled, Project, StepFailed
 
 GUI = Path(__file__).resolve().parent / "gui"
@@ -283,6 +283,16 @@ def api(route, query, body):
         return cli.duplicate(Path(m), (body.get("name") or "").strip())
     if route == "approve":
         return cli.cmd_approve(_args(manifest=Path(m), note=body.get("note", "")))
+    if route == "report_address":
+        return report.use_address(body.get("address") or "")
+    if route in ("report", "report_send"):
+        # with no character open it is about the app itself: what fails before one can be opened
+        send = {"note": body.get("note", ""), "pictures": bool(body.get("pictures")), "model": bool(body.get("model")),
+                "about": str(body.get("about") or "")[:2000]}
+        return (report.send if route == "report_send" else report.make)(Path(m) if m else None, **send)
+    if route == "bundle" and not m:
+        # pressed on the Stuck? page before any character was opened: it read as the app's own crash
+        raise ValueError("choose a character first: this gathers what one character's build did")
     if route == "bundle":
         return cli.cmd_bundle(_args(manifest=Path(m), note=body.get("note", "")))
     if route == "browse":

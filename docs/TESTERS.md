@@ -106,12 +106,23 @@ Most useful, in this order:
 
 To send a report:
 
-1. Open **Stuck?** in the app, write what you saw, press the button. It gathers that character's
-   settings, logs, checks and rendered pictures into one folder (`out/<name>/bundles/<date>/`).
-2. Zip that folder and send it, with the "App version ..." line from the **Setup** page.
+1. Press **Report**: it is on every error the app shows (the red note in the corner, a failed step
+   on the Build page), and on the **Stuck?** page for anything else, a build that went well included.
+2. Write what happened and what you expected, tick what may go with it, and press **Send**. It
+   posts one zip to our private Discord channel with a few lines saying where it stopped. Nothing
+   is ever sent without that press. **Only make the zip** writes it
+   (`out/<name>/reports/<name>_<date>.zip`) and sends nothing: give it to us yourself. A copy from
+   before v8 asks once for the address reports go to: we give it to you.
 
-The 3D model file itself is not in the bundle. Rendered pictures of the character, and any
-screenshots you attached on the Review page, are: leave them out if you'd rather not share them.
+What is in it: that character's settings, each step's log and timing, the checks' numbers, the app
+and Blender versions and what kind of computer it ran on (system, processor, memory, graphics
+card). Folder names and your Windows user name are taken out of every file, and so is the author
+name set for the avatar. **No picture of your character and no model is in it** unless you tick the
+boxes: pictures show us what went wrong; the model you gave the app (with its rig, and your paint)
+lets us build your character ourselves with a fix and see whether it worked, which is the most
+help of all. A model that is sent has its textures written smaller so the zip fits in a Discord
+message; its shape is not changed. A report of a build that went well helps too:
+the rules are tuned on few characters, and yours is another.
 
 ## Known limits
 

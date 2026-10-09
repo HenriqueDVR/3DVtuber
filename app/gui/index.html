@@ -557,6 +557,12 @@ try {
     <div class="row" style="margin-top:var(--s3)"><button class="act" id="bundle">Gather for an agent</button></div>
     <pre id="bundle-out" hidden></pre>
   </div>
+  <div class="card w-md" style="margin-top:var(--s4)">
+    <div class="title">Tell the developers</div>
+    <p class="help">Something failed, looks wrong, or went well and you'd like it counted: send a report. It says what it
+      holds and sends nothing until you press Send. The same button is on every error the app shows.</p>
+    <div class="row"><button class="act" id="report-open">Report to the developers</button></div>
+  </div>
 </section>
 
 <section class="page" id="setup">
@@ -634,6 +640,21 @@ try {
 </main>
 
 <div id="toasts" aria-live="polite"></div>
+<dialog id="report-dialog"><form method="dialog"><h3>Tell the developers</h3>
+  <p id="rd-who"></p>
+  <p id="rd-about" hidden></p>
+  <label for="rd-note">What happened, and what did you expect?</label>
+  <textarea id="rd-note" rows="4" placeholder="the build stopped at the hair step; or: the left sleeve stays at the ribs when the arm goes up"></textarea>
+  <div id="rd-choices">
+    <label class="inline"><input type="checkbox" id="rd-pictures" checked> with rendered pictures of the character</label><br>
+    <label class="inline"><input type="checkbox" id="rd-model"> with the model, so they can build it themselves</label>
+  </div>
+  <p>Send posts one zip to the developers' private Discord channel: settings, step logs, checks, timings and what kind of computer this is, with a few lines saying where it stopped. Folder names and your user name are taken out. Nothing goes until you press Send.</p>
+  <pre id="rd-out" hidden></pre>
+  <div class="row"><button type="button" class="act alt" id="rd-cancel">Close</button>
+    <button type="button" class="act alt" id="rd-show" hidden>Show it in its folder</button>
+    <button type="button" class="act alt" id="rd-zip">Only make the zip</button>
+    <button type="button" class="act" id="rd-send">Send</button></div></form></dialog>
 <dialog id="ask"><form method="dialog"><h3 id="ask-title"></h3><p id="ask-text"></p>
   <input type="text" id="ask-input" hidden>
   <div class="row"><button type="button" class="act alt" id="ask-cancel">Cancel</button><button class="act" id="ask-ok">OK</button></div></form></dialog>

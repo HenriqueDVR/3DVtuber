@@ -1,6 +1,7 @@
 // Review: still renders (next to the approved build's), the spring viewer, and notes from Warudo.
 import { $, S, app, call, esc, lastVrm, say } from "./core.js";
 import { toast } from "./ui.js";
+import { reportDialog } from "./report.js";
 import { job } from "./jobs.js";
 import { onLeave } from "./nav.js";
 
@@ -165,3 +166,6 @@ $("bundle").onclick = async () => {
       `Read docs/agent/app.md, then look at the problem bundle in ${made.bundle} and fix it with python -m app.`;
   } catch (e) { $("bundle-out").hidden = false; $("bundle-out").textContent = e.message; }
 };
+
+// the report itself is one dialog for the whole app (report.js); what was written here goes with it
+$("report-open").onclick = () => { $("rd-note").value = $("note").value; reportDialog(); };

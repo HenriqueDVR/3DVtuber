@@ -81,11 +81,13 @@ async function renderDetail() {
       ${known ? `<dt>${esc(known.code)}</dt><dd>${esc(known.what)}${known.detail ? ` (${esc(known.detail)})` : ""}. What to do: ${esc(known.fix)}</dd>` : ""}</dl>
     <div class="row"><button class="act alt small" data-job id="detail-from" ${s.runs ? "" : "disabled"}>Run from here</button>
       <button class="act alt small" data-job id="detail-only" ${s.runs ? "" : "disabled"}>Run only this</button>
-      ${log ? `<button class="act alt small" id="detail-reveal">Show log in folder</button>` : ""}</div>
+      ${log ? `<button class="act alt small" id="detail-reveal">Show log in folder</button>` : ""}
+      ${fail || s.status === "failed" ? `<button class="act alt small" id="detail-report">Report this</button>` : ""}</div>
     ${log ? `<pre id="detail-log">loading the log…</pre>` : ""}`;
   $("detail-from").onclick = () => job("run", { from: s.step });
   $("detail-only").onclick = () => job("run", { only: s.step });
   $("detail-reveal")?.addEventListener("click", () => reveal(log));
+  $("detail-report")?.addEventListener("click", () => app.report(`${stepName(s.step)} failed: ${plain(s.step, s.reason || fail?.reason || "")}`));
   if (!$("runbar").hidden) box.querySelectorAll("[data-job]").forEach((b) => b.disabled = true);
   if (!log) return;
   try {
@@ -153,6 +155,9 @@ function renderTodo() {
   for (const [page, text] of S.status.verdict?.looks || []) if (page !== "face" || S.manifest.face) add(text, `Go to ${pageName(page)}`, () => app.go(page));
   for (const line of S.status.gained || []) add(`Better than the file you gave: ${line}.`, "Go to Review", () => app.go("review"), "done");
   if (S.status.verdict?.ready) add("Load the .vrm in Warudo and try it pose by pose; note what you see on the Review page.", "Go to Review", () => app.go("review"), "done");
+  // one way on from a failure that retrying doesn't fix: tell the developers, with what failed already said
+  const broken = items.find((it) => it.kind === "failed" && it.isJob);
+  if (broken) add("Can't get past this? Tell the developers: the report says what failed.", "Report", () => app.report(broken.text));
   $("todo").innerHTML = items.length ? items.map((it, i) => `<div class="todo"><span class="${it.kind}">${esc(it.text)}</span>
     <button class="act alt small" data-todo="${i}" ${it.isJob ? "data-job" : ""} ${it.isJob && !$("runbar").hidden ? "disabled" : ""}>${esc(it.label)}</button></div>`).join("") : `<p class="done">Nothing left.</p>`;
   $("todo").querySelectorAll("[data-todo]").forEach((b) => b.onclick = items[+b.dataset.todo].act);

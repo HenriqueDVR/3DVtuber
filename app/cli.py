@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import engine, face_guess, paint, sheet, update, vendor
+from . import engine, face_guess, paint, report, sheet, update, vendor
 from .engine import REPO, Project, StepFailed, manifest
 
 
@@ -161,6 +161,15 @@ def main(argv=None):
     p = sub.add_parser("bundle", help="gather everything an agent needs to look at a problem into one folder")
     p.add_argument("manifest", type=Path)
     p.add_argument("--note", default="", help="what looks wrong, in the user's words")
+
+    p = sub.add_parser("report", help="a zip for the developers: settings, logs, checks and numbers, paths rewritten; nothing is sent")
+    p.add_argument("manifest", type=Path, nargs="?")
+    p.add_argument("--note", default="", help="what happened, in the user's words")
+    p.add_argument("--about", default="", help="what the app was showing (an error's words)")
+    p.add_argument("--pictures", action="store_true", help="also the rendered pictures of the character")
+    p.add_argument("--model", action="store_true", help="also the model the build reads, its rig, reference and paint (sent: textures made smaller to fit)")
+    p.add_argument("--send", action="store_true", help="post it to the developers' channel (the address in update.json)")
+    p.add_argument("--address", help="keep this Discord webhook as where reports are sent ('' forgets it)")
 
     p = sub.add_parser("regress", help="rebuild characters in a scratch folder and compare each with its good build")
     p.add_argument("manifests", type=Path, nargs="*", help="which characters (default: every one with a finished build)")
@@ -1010,7 +1019,17 @@ def cmd_bundle(args):
     return {"bundle": str(folder), "files": sorted(p.name for p in folder.iterdir())}
 
 
-COMMANDS = {"init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_set, "joint": cmd_joint,
+def cmd_report(args):
+    if args.address is not None:
+        return report.use_address(args.address)
+    if args.send:
+        return report.send(args.manifest, note=args.note, pictures=args.pictures, model=args.model, about=args.about,
+                           blender=getattr(args, "blender", None))
+    return report.make(args.manifest, note=args.note, pictures=args.pictures, model=args.model, about=args.about,
+                       blender=getattr(args, "blender", None))
+
+
+COMMANDS = {"report": cmd_report, "init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_set, "joint": cmd_joint,
             "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "portraits": cmd_portraits, "sheet": cmd_sheet, "movement": cmd_movement, "springs": cmd_springs,
             "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "paint": cmd_paint, "duplicate": cmd_duplicate, "rename": cmd_rename, "hide": cmd_hide, "delete": cmd_delete, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
             "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup,
