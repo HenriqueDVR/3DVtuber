@@ -184,6 +184,13 @@ class TrackerShapesOnASmallFreeMouth(MouthFixture, unittest.TestCase):
         everything = self.shown({"mouthPucker": 1, "mouthFunnel": 1, "jawOpen": 1})[self.patch]
         self.assertGreaterEqual(np.ptp(everything[:, 0]), self.tracking.PATCH_FLOOR * narrowest - 1e-6)
 
+    def test_the_pucker_alone_is_a_small_upright_mouth(self):
+        # scaled down with the jaw and the funnel it was a flat line, 25 by 9 mm on model D where it had
+        # been 8 by 9 (the user, 2026-10-09: the small upright pucker was the better one, its bug aside)
+        pucker, ou = (self.shown({name: 1})[self.patch] for name in ("mouthPucker", "ou"))
+        self.assertAlmostEqual(np.ptp(pucker[:, 0]), np.ptp(ou[:, 0]), places=6)
+        self.assertGreater(np.ptp(pucker[:, 2]), 0.6 * np.ptp(ou[:, 2]))
+
     def test_the_mouth_comes_forward_with_the_puckered_skin(self):
         # the corners' pull moves the skin forward; a patch left behind it showed skin through the mouth
         pucker = co(self.keys["mouthPucker"]) - co(self.keys["Basis"])
@@ -197,10 +204,15 @@ class TrackerShapesOnABigFreeMouth(TrackerShapesOnASmallFreeMouth):
 
     ARGS = {"scale": 1.3, "rest_share": 0.8 / 1.3, "rest_height": 0.07}
 
-    def test_pucker_is_the_whole_of_its_vowels_share(self):
+    def test_pucker_is_as_narrow_as_its_vowel_and_the_others_keep_their_shape(self):
+        # the pucker: the whole vowel's width at its share of the height; nothing else gives way to it here
         basis = co(self.keys["Basis"])
         pucker, ou = co(self.keys["mouthPucker"]) - basis, co(self.keys["ou"]) - basis
-        np.testing.assert_allclose(pucker[self.patch, 0], 0.7 * ou[self.patch, 0], atol=1e-6)
+        narrower = self.patch & (np.abs(co(self.keys["ou"])[:, 0]) < np.abs(basis[:, 0]))
+        np.testing.assert_allclose(pucker[narrower, 0], ou[narrower, 0], atol=1e-6)
+        np.testing.assert_allclose(pucker[self.patch, 2], 0.7 * ou[self.patch, 2], atol=1e-6)
+        funnel, oh = co(self.keys["mouthFunnel"]) - basis, co(self.keys["oh"]) - basis
+        np.testing.assert_allclose(funnel[self.patch, 0], oh[self.patch, 0], atol=1e-6)
 
 
 if __name__ == "__main__":

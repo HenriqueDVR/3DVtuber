@@ -45,8 +45,11 @@ SIDE_SHIFT = 0.6        # mouthLeft/Right, in mouth widths
 PUCKER_IN = 0.3         # corners pulled towards the middle, in mouth widths
 # The shapes a tracker sends together that each make the drawn mouth narrower: (vowel, share of it).
 # At full strength together they may narrow it to PATCH_FLOOR of the narrowest of those vowels, no further.
-NARROWING = {"jawOpen": ("aa", None), "mouthPucker": ("ou", 0.7), "mouthFunnel": ("oh", 1.0)}
-PATCH_FLOOR = 0.6
+# In this order the patch's width is given out (FaceShapes.narrowing_kept): the pucker narrows it as far
+# as the whole of its vowel, whatever its share of the vowel's height.
+NARROWING = {"mouthPucker": ("ou", 0.7), "jawOpen": ("aa", None), "mouthFunnel": ("oh", 1.0)}
+PUCKER_VOWEL = "ou"
+PATCH_FLOOR = 0.25
 JAW_PIVOT_BACK = 0.1    # jaw hinge behind the mouth (m)
 JAW_PIVOT_UP = 0.04     # and above it (m)
 CHIN_BEHIND = 0.3       # the chin lies no further behind the mouth than this share of the way to the hinge
@@ -174,24 +177,33 @@ class FaceShapes:
         return grid.reshape(-1, 3)[:, 2] > 0.5
 
     def narrowing_kept(self, patch, shares):
-        """How much of its narrowing each of `shares` ({vowel: share}) may keep on the patch (0..1).
+        """{vowel: how much of its narrowing of the patch its key keeps} for `shares` ({vowel: share}).
 
         Shape keys add up. Every opening is the same outline at another width, so the patch's width
         under several keys is its closed width less each key's narrowing, and past nothing it comes
         out the other side, facing backwards: seen as the mouth "inverting" on a small "o" (the
         user, 2026-10-08; a free mouth's closed line is 0.8 mouth widths wide, and at size 0.7 every
-        opening is narrower than it). The narrowings are scaled together so that all at full
-        strength leave PATCH_FLOOR of the narrowest vowel; where they never reach that, nothing changes.
+        opening is narrower than it). All at full strength may leave PATCH_FLOOR of the narrowest
+        vowel, no less, and the width down to there is given out in NARROWING's order: the pucker
+        first, as narrow as its whole vowel (over 1 of its share), then the jaw, then the funnel.
+        Scaled down together instead (2026-10-08 to 10-09), model D's pucker was a flat line 25 mm
+        wide and 9 tall where it had been 8 by 9, a small upright mouth (the user: better, bug aside).
+        Where the keys never reach the floor together, the jaw and the funnel keep all of theirs.
         """
         if not patch.any():
-            return 1.0
+            return dict.fromkeys(shares, 1.0)
         closed = np.ptp(self.basis[patch, 0])
         widths = {name: np.ptp(self.read(name)[patch, 0]) for name in shares}
-        narrowed = sum(share * max(closed - widths[name], 0.0) for name, share in shares.items())
-        room = closed - PATCH_FLOOR * min(widths.values())
-        kept = 1.0 if narrowed <= room or narrowed <= 0 else max(room, 0.0) / narrowed
-        print(f"mouth patch: closed {1000 * closed:.1f} mm wide, the openings together narrow it by {1000 * narrowed:.1f} mm, "
-              f"kept {kept:.0%} of that")
+        room = max(closed - PATCH_FLOOR * min(widths.values()), 0.0)
+        kept = {}
+        for name, share in shares.items():
+            whole = max(closed - widths[name], 0.0)
+            wanted = whole if name == PUCKER_VOWEL else share * whole
+            given = min(wanted, room)
+            room -= given
+            kept[name] = given / (share * whole) if share * whole > 0 else 1.0
+        print(f"mouth patch: closed {1000 * closed:.1f} mm wide; of their narrowing the keys keep "
+              + ", ".join(f"{name} {share:.0%}" for name, share in kept.items()))
         return kept
 
     def add_mouth(self, jaw_drop):
@@ -204,7 +216,7 @@ class FaceShapes:
             """The vowel's share of this key, its narrowing of the patch held to what the keys together may have."""
             delta = self.vowel(name, shares[name])
             narrower = patch & (np.abs(self.read(name)[:, 0] - self.mouth[0]) < np.abs(self.basis[:, 0] - self.mouth[0]))
-            delta[narrower, 0] *= kept
+            delta[narrower, 0] *= kept[name]
             return delta
         corners = {"Left": self.mouth + [w / 2, 0, 0], "Right": self.mouth - [w / 2, 0, 0]}
         reach = CORNER_REACH * w
