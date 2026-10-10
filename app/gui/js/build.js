@@ -4,13 +4,13 @@ import { ask, toast } from "./ui.js";
 import { job } from "./jobs.js";
 import { nextRun } from "./nav.js";
 
-let selectedStep = null;
+let selectedStep = null, checkDrawn = null;
 
 export function renderSteps() {
   const body = $("step-rows");
   renderTodo(); renderVrm();
   $("ships").innerHTML = shipsHtml(S.status?.ships);
-  if (!S.status) { body.innerHTML = ""; $("check").innerHTML = ""; $("verdict").innerHTML = ""; $("approved").innerHTML = ""; $("step-detail").hidden = true; return; }
+  if (!S.status) { checkDrawn = null; body.innerHTML = ""; $("check").innerHTML = ""; $("verdict").innerHTML = ""; $("approved").innerHTML = ""; $("step-detail").hidden = true; return; }
   body.innerHTML = S.status.steps.map((s) => `<tr data-step="${s.step}" class="${s.step === selectedStep ? "sel" : ""}">
     <td>${stepName(s.step)}</td><td><span class="chip ${s.runs ? s.status.split(" ")[0] : "off"}">${s.runs ? esc(s.status) : "off"}</span></td>
     <td>${s.seconds ? s.seconds + " s" : ""}</td><td class="msg">${!s.runs ? esc(s.skip_reason)
@@ -34,9 +34,14 @@ export function renderSteps() {
     if (note === null) return;
     try { await call("approve", { note }); await refreshStatus(); app.renderAll(); toast("Marked as good."); } catch (e) { toast(e.message, "bad"); }
   });
-  const failed = S.status.check_failed;
-  $("check").innerHTML = (failed == null ? `<p class="msg">not checked yet</p>` : failed.length ? `<ul class="plain">${failed.map((f) => `<li class="failed">${esc(f)}</li>`).join("")}</ul>` : `<p class="done">nothing over the limits</p>`)
-    + spotsHtml(S.status.steps.find((s) => s.step === "check")?.report?.spots);
+  const failed = S.status.check_failed, spots = S.status.steps.find((s) => s.step === "check")?.report?.spots;
+  // drawn again only when the check is another one: every role given on the Parts page asks for
+  // the status, and each time the ten close-ups were fetched afresh
+  const drawn = JSON.stringify([S.manifestPath, failed, spots]);
+  if (drawn === checkDrawn) return;
+  checkDrawn = drawn;
+  $("check").innerHTML =(failed == null ? `<p class="msg">not checked yet</p>` : failed.length ? `<ul class="plain">${failed.map((f) => `<li class="failed">${esc(f)}</li>`).join("")}</ul>` : `<p class="done">nothing over the limits</p>`)
+    + spotsHtml(spots);
   // the still close-ups show where; the viewer shows the avatar going into that pose, springs running
   $("check").querySelectorAll("[data-watch]").forEach((b) => b.onclick = () => {
     app.go("review"); app.openViewer(null, null, { pose: b.dataset.watch });

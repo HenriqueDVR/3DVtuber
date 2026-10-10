@@ -64,7 +64,8 @@ const TURN_POSES = { "head turn": ["head", [0, 1, 0], 0.4], "head turn right": [
 // A shot: [label, {pose: [...names], set: {expression: value}, look: [yaw, pitch] degrees,
 //   at: bone the camera looks at, span: metres across the tile, from: [degrees round from the front
 //   toward the character's left, degrees up], lift: metres above the bone}]
-const FACE = { at: "head", span: 0.3, lift: 0.07 };
+const FACE = { at: "head", span: 0.3, lift: 0.07, face: true };
+const FACE_FITS = 0.95;  // of the tile's half width: eyes and mouth inside this are framed well enough
 const BODY = { at: "hips", span: 1.9, lift: 0.0 };
 const SHEETS = {
   face: [
@@ -107,7 +108,7 @@ const SHEETS = {
   ],
 };
 
-let vrm = null;
+let vrm = null, faceFrame = null;
 const restArm = {};
 const missing = new Set();
 
@@ -124,6 +125,9 @@ async function load(url) {
     const upper = vrm.humanoid.getNormalizedBoneNode(`${side}UpperArm`), hand = vrm.humanoid.getNormalizedBoneNode(`${side}Hand`);
     restArm[side] = upper && hand ? hand.getWorldPosition(new THREE.Vector3()).sub(upper.getWorldPosition(new THREE.Vector3())).normalize() : null;
   }
+  vrm.update(0);
+  vrm.scene.updateMatrixWorld(true);
+  faceFrame = findFace();
 }
 
 function bonePoint(name) {
@@ -131,11 +135,41 @@ function bonePoint(name) {
   return node.getWorldPosition(new THREE.Vector3());
 }
 
+// The face as the file has it: the vertices its blink and "aa" move, standing at rest. A tile aimed
+// at the head bone showed Slime's eyes at its bottom edge and never her mouth (a head 45 cm across
+// under a hat). Where those vertices fit in the usual tile nothing changes, so the sheets of the
+// avatars that were framed well stay comparable with their older ones.
+function findFace() {
+  const box = new THREE.Box3(), v = new THREE.Vector3();
+  for (const name of ["blink", "aa"]) {
+    const expression = vrm.expressionManager?.getExpression(name);
+    for (const bind of expression?.binds ?? expression?._binds ?? []) {
+      for (const mesh of bind.index == null ? [] : bind.primitives ?? []) {
+        const moved = mesh.geometry.morphAttributes.position?.[bind.index];
+        for (let i = 0; i < (moved?.count ?? 0); i++) {
+          if (Math.abs(moved.getX(i)) + Math.abs(moved.getY(i)) + Math.abs(moved.getZ(i)) < 1e-5) continue;
+          box.expandByPoint(mesh.getVertexPosition(i, v).applyMatrix4(mesh.matrixWorld));
+        }
+      }
+    }
+  }
+  if (box.isEmpty()) return null;
+  // seen by the usual camera, not measured at the bone: a face 20 cm in front of the head bone is
+  // drawn a third larger than the tile's span says, and her mouth was 13 mm past the edge
+  aim({ ...FACE, face: false });
+  camera.updateMatrixWorld(true);
+  const corners = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => new THREE.Vector3(k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z).project(camera));
+  if (corners.every((c) => Math.abs(c.x) <= FACE_FITS && Math.abs(c.y) <= FACE_FITS)) return null;
+  const size = box.getSize(v);
+  return { target: box.getCenter(new THREE.Vector3()), span: Math.max(FACE.span, 1.6 * Math.max(size.x, size.y)) };
+}
+
 function aim(shot) {
   // `hold`: the camera stays where the rest pose put the bone, so the pose is seen moving past it
-  const target = bonePoint(shot.at).add(new THREE.Vector3(0, shot.lift ?? 0, 0));
+  const framed = shot.face ? faceFrame : null, span = framed?.span ?? shot.span;
+  const target = framed ? framed.target.clone() : bonePoint(shot.at).add(new THREE.Vector3(0, shot.lift ?? 0, 0));
   const [round, up] = (shot.from ?? [0, 0]).map(THREE.MathUtils.degToRad);
-  const distance = shot.span / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+  const distance = span / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
   camera.position.copy(target).add(new THREE.Vector3(Math.sin(round) * Math.cos(up), Math.sin(up), Math.cos(round) * Math.cos(up)).multiplyScalar(distance));
   camera.lookAt(target);
 }

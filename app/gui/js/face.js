@@ -221,6 +221,9 @@ export function renderFace() {
   if (!S.manifest) return;
   const o = S.manifest.options;
   $("eyes").value = o.eyes ?? "";
+  $("iris-shape").value = o.iris_shape ?? "";
+  $("eye-shown").value = o.eye_shown ?? "";
+  for (const [id, key] of EYE_NUMBERS) $(id).value = o[key] ?? 1;
   $("mouth-tracking").value = String(o.face_tracking !== false);
   const fix = o.mouth_fix;
   $("mouth-fix").checked = !!fix; $("mouth-free").checked = !!fix?.free; $("mouth-scale").value = fix?.scale ?? 1;
@@ -234,7 +237,13 @@ export function renderFace() {
 async function saveChoices() {
   // (what else a manifest says of the mouth, its rest and lift, stays)
   const fix = $("mouth-fix").checked ? { ...S.manifest.options.mouth_fix, free: $("mouth-free").checked, scale: +$("mouth-scale").value || 1 } : null;
-  const now = { eyes: $("eyes").value || null, face_tracking: $("mouth-tracking").value === "true", mouth_fix: fix };
+  const now = { eyes: $("eyes").value || null, face_tracking: $("mouth-tracking").value === "true", mouth_fix: fix,
+    iris_shape: $("iris-shape").value || null, eye_shown: $("eye-shown").value || null };
+  // a number out of its range is put back, not sent: the manifest refuses it and nothing else would save
+  for (const [id, key] of EYE_NUMBERS) {
+    const value = +$(id).value;
+    if (value >= +$(id).min && value <= +$(id).max) now[key] = value; else $(id).value = S.manifest.options[key] ?? 1;
+  }
   const changed = Object.entries(now).filter(([key, value]) => JSON.stringify(S.manifest.options[key] ?? null) !== JSON.stringify(value));
   for (const [key, value] of changed) await call("set", { key, value });
   if (changed.length) { await refreshManifest(); await refreshStatus(); app.renderAll(); }
@@ -258,9 +267,11 @@ $("face-build").onclick = async () => {
   app.go("build");
   job("run", built ? { from: "build" } : {});
 };
+const EYE_NUMBERS = [["iris-size", "iris_size"], ["look-travel", "look_travel"], ["blink-amount", "blink_amount"]];
 const EYE_CHOICE = {
   "": () => `Picks for you: a moving iris if the eyes are modelled as their own pieces, sliding patches if they're painted on the face${S.manifest?.face ? "" : " (and no eye movement until the points are marked)"}.`,
   iris: () => "The coloured part of the eye (iris and pupil) moves inside the eye white. For models whose eyes are separate pieces.",
+  modelled: () => "The model's own iris pieces slide in their sockets, each painted whole from the part that shows. What automatic falls back to when a moving iris would show over the lids.",
   slide: () => "The whole painted eye slides a little across the face. For eyes painted onto the face texture.",
   none: () => "The eyes stay still; blinking still works.",
   hidden: () => "For eyes behind a visor, glasses or a mask: step 2 asks for the mouth's four points only, and the avatar gets no blink and no eye movement.",
@@ -275,5 +286,6 @@ function showFeatures() {
 $("eyes").onchange = async () => { showEyeChoice(); await keepChoices(); showFeatures(); savePoints().catch((e) => say("face-msg", e.message, true)); };
 $("mouth-fix").onchange = () => { $("mouth-free").disabled = $("mouth-scale").disabled = !$("mouth-fix").checked; sendMouth(); keepChoices(); };
 for (const id of ["mouth-tracking", "mouth-free", "mouth-scale"]) $(id).onchange = () => { sendMouth(); keepChoices(); };
+for (const id of ["eye-shown", "iris-shape", "iris-size", "look-travel", "blink-amount"]) $(id).onchange = keepChoices;
 // (the outline follows the number as it is typed; it is saved when the field is left)
 $("mouth-scale").oninput = sendMouth;

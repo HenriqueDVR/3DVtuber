@@ -290,10 +290,30 @@ try {
           Blinking works either way.
           <b>Eyes behind a visor, glasses or a mask:</b> choose "eyes are covered", and only the mouth's four points are asked for below.</p>
         <select id="eyes" aria-label="eye tracking"><option value="">automatic (recommended)</option><option value="iris">moving iris</option>
+          <option value="modelled">the model's own irises slide</option>
           <option value="slide">sliding eye patches</option><option value="none">none: eyes stay still</option>
           <option value="hidden">none: eyes are covered (visor, glasses, mask)</option></select>
         <p class="choice" id="eyes-choice"></p>
-        <div class="examples" data-examples="eyes"></div></div>
+        <div class="examples" data-examples="eyes"></div>
+        <details><summary>Fine-tune the eyes</summary>
+          <p class="help">The build reads these off the drawing; change one when it read wrong. Each needs a rebuild
+            (from the eyes on). Shape and size are for irises the model has as pieces of their own, and an iris is
+            never wider than its piece.</p>
+          <div class="row">
+            <label class="inline">eyes that show <select id="eye-shown" aria-label="eyes that show"><option value="">both</option>
+              <option value="left">only the character's left (on the right of the picture)</option>
+              <option value="right">only the character's right (on the left of the picture)</option></select></label>
+          </div>
+          <p class="help"><b>One eye under hair or an eyepatch:</b> say which one shows. The covered one is left exactly as
+            it is, with no blink and no eye movement. Still mark both below: put the covered eye's four points where the eye
+            would be.</p>
+          <div class="row">
+            <label class="inline">iris shape <select id="iris-shape" aria-label="iris shape"><option value="">as it is drawn</option>
+              <option value="circle">a circle</option><option value="oval">an oval, taller than wide</option></select></label>
+            <label class="inline">iris size × <input id="iris-size" type="number" step="0.05" min="0.7" max="1.4" value="1" style="width:70px"></label>
+            <label class="inline">how far they look × <input id="look-travel" type="number" step="0.05" min="0.5" max="1.5" value="1" style="width:70px"></label>
+            <label class="inline">how far they close × <input id="blink-amount" type="number" step="0.05" min="0.5" max="1.4" value="1" style="width:70px"></label>
+          </div></details></div>
       <p class="help">Click the highlighted point on the picture, twelve in all: four per eye (the two corners, the top and
         bottom of the opening, where the lashes meet the white) and four for the mouth. Drag a dot to move it. The 3D view
         shows where each lands on the head: the dots must sit on the eyes and the mouth (a mouth once got marked on the

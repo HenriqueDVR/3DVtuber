@@ -820,7 +820,9 @@ class Project:
         source = self.model() if name in ("survey", "build") else manifest.path_of(data, "source")
         face = manifest.path_of(data, "face")
         if name == "survey":
-            return ["preflight.py", source, "--json", stem.with_suffix(".json"), "--height", o["height"]], []
+            # the marked eyes say which pieces are the eyes (by size the fox girl's ears were, and her face was hair)
+            return ["preflight.py", source, "--json", stem.with_suffix(".json"), "--height", o["height"],
+                    *(["--face", face] if face else [])], []
         if name == "build" and self.improving:
             return ["import_vrm.py", source, vrm, "--blend", blend, *(["--licence-read"] if o["licence_read"] else [])], NO_EXPORT
         if name == "build":
@@ -879,6 +881,8 @@ class Project:
             args.append("--mouth-only")
         if name == "face_tracking" and o["eyes"] == "hidden":
             args.append("--no-blink")
+        elif name == "face_tracking" and o["eye_shown"]:
+            args += ["--covered", "right" if o["eye_shown"] == "left" else "left"]
         if name == "pieces":
             args += ["--manifest", self.manifest_path]
         if name == "tpose":
@@ -901,6 +905,15 @@ class Project:
                 args += ["--slide", *o["slide"]]
             elif o["eyes"] == "modelled":
                 args.append("--modelled")
+                if o["iris_shape"]:
+                    args += ["--iris-shape", o["iris_shape"]]
+                if o["iris_size"] != 1.0:
+                    args += ["--iris-size", o["iris_size"]]
+            if o["eye_shown"]:
+                args += ["--only", o["eye_shown"]]
+            for flag, key in (("--travel", "look_travel"), ("--blink", "blink_amount")):
+                if o[key] != 1.0:
+                    args += [flag, o[key]]
         if name == "mouth":
             fix = o["mouth_fix"]
             if fix.get("free"):
@@ -2136,11 +2149,12 @@ def _fingerprint_of(blend):
 def _write_json(path, data, backup=False):
     """Write JSON so a crash mid-write leaves the old file whole, not half of the new one."""
     path = Path(path)
-    temporary = path.with_name(path.name + ".tmp")
+    temporary = manifest.temporary(path)
     temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
     if backup and path.exists():
         shutil.copy2(path, path.with_name(path.name + ".bak"))
-    os.replace(temporary, path)
+    # the page asks for the status while a build writes its state: Windows refuses the replace then
+    manifest.replace(temporary, path)
 
 
 def _load_state(path):

@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import webbrowser
 from datetime import datetime
@@ -627,7 +628,77 @@ def main():
         server.serve_forever()
         return
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    started = time.time()
     _show(address)
+    crash = _window_crash(started)
+    if crash:
+        # the window died under the user, the app with it and its console too fast to read: the
+        # builds and the one Blender are held here, so the page goes on in the browser
+        said = f"the app's window crashed in {crash['module'] or 'an unknown module'}"
+        print(f"\n {said}.{_CRASH_HINTS.get((crash['module'] or '').lower(), '')}\n"
+              f" Nothing is lost: the app goes on in your browser at {address}\n Close this window to stop it.", flush=True)
+        webbrowser.open(address)
+        threading.Event().wait()
+
+
+# What a crash report of the window's browser names, and what to do about the ones seen.
+_CRASH_HINTS = {
+    # 2026-10-10, four times in three days on one computer: an access violation in the overlay's hook,
+    # some ten seconds after the window opened
+    "rtsshooks64.dll": "\n That is RivaTuner Statistics Server (MSI Afterburner's overlay). In RivaTuner, add"
+                       "\n msedgewebview2.exe and set its application detection level to None, or close it;"
+                       "\n or choose \"open the app in: browser\" on the Setup page.",
+}
+
+
+# Where the dumps of the window's last crashes are kept, and how many: 64 MB each.
+CRASHES, CRASHES_KEPT = REPO / "out" / "crashes", 2
+
+
+def _window_crash(since, temp=None, keep=None):
+    """The crash of the window's browser since `since`, as {"module", "detail"}; None without one.
+
+    pywebview gives each window a profile of its own in the temp folder and removes it on closing;
+    after a crash it can't ("Failed to delete user data folder", all the console said), and the
+    profile stays with its dump. Every crashed window found is written in the error log, an
+    older one too (the app may have been closed before it could look); its dump goes to `CRASHES`,
+    the newest few kept, and the profile is removed: nothing reads it again."""
+    import tempfile
+    keep, found = Path(keep or CRASHES), None
+    for reports in Path(temp or tempfile.gettempdir()).glob("tmp*/EBWebView/Crashpad/reports"):
+        try:
+            dumps = sorted(reports.glob("*.dmp"), key=lambda p: p.stat().st_mtime)
+            if not dumps:
+                continue
+            detail = (reports.parent / "watson_metadata").read_bytes().decode("latin-1") if (reports.parent / "watson_metadata").is_file() else ""
+            if "WV=python" not in detail:
+                continue  # another program's window
+            when = dumps[-1].stat().st_mtime
+            # renamed first: Windows refuses while a browser still has a file in it open, and a
+            # window that outlived a crashed page keeps its profile
+            profile = reports.parents[2]
+            gone = profile.with_name(profile.name + "_gone")
+            os.rename(profile, gone)
+            module = re.search(r"ModuleName=([^;]*);", detail)
+            wanted = re.search(r"ApplicationName=[^\x00]*?StackHash=[^;]*;", detail)
+            crash = {"module": module.group(1) if module else "", "detail": wanted.group(0) if wanted else ""}
+            stamp = datetime.fromtimestamp(when)
+            kept = keep / f"{stamp:%Y%m%d-%H%M%S}_{re.sub(r'[^A-Za-z0-9.]+', '_', crash['module']) or 'unknown'}.dmp"
+            try:
+                keep.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(gone / "EBWebView" / "Crashpad" / "reports" / dumps[-1].name), kept)
+            except OSError:
+                kept = None
+            _log_error("window", f"the app's window crashed in {crash['module'] or 'an unknown module'} at {stamp:%Y-%m-%d %H:%M:%S}"
+                                 f"\n{crash['detail']}\ndump: {kept or 'not kept'}")
+            shutil.rmtree(gone, ignore_errors=True)
+            if when >= since:
+                found = crash
+        except OSError:
+            continue
+    for old in sorted(keep.glob("*.dmp"), reverse=True)[CRASHES_KEPT:] if keep.is_dir() else ():
+        old.unlink(missing_ok=True)
+    return found
 
 
 # A port another program holds is passed over, this many times.

@@ -45,13 +45,14 @@ def write_glb(path, gltf, binary):
     text += b" " * (-len(text) % 4)
     binary = bytes(binary) + b"\0" * (-len(binary) % 4)
     total = 12 + 8 + len(text) + 8 + len(binary)
+    from .engine import manifest  # here, not above: the engine reads this module first
     path = Path(path)
-    temporary = path.with_name(path.name + ".tmp")
+    temporary = manifest.temporary(path)
     with open(temporary, "wb") as handle:
         handle.write(struct.pack("<4sII", b"glTF", 2, total))
         handle.write(struct.pack("<II", len(text), JSON_CHUNK) + text)
         handle.write(struct.pack("<II", len(binary), BIN_CHUNK) + binary)
-    temporary.replace(path)
+    manifest.replace(temporary, path)
 
 
 def overlay_name(image, index):
@@ -180,7 +181,8 @@ def save(folder, source, images):
         if len(raw) > OVERLAY_MAX:
             raise ValueError(f"{name}: over {OVERLAY_MAX >> 20} MB of paint")
         folder.mkdir(parents=True, exist_ok=True)
-        temporary = folder / (name + ".tmp")
+        from .engine import manifest
+        temporary = manifest.temporary(folder / name)
         temporary.write_bytes(raw)
-        temporary.replace(folder / name)
+        manifest.replace(temporary, folder / name)
     return sorted(overlays(folder))

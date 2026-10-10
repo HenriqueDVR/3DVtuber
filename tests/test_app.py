@@ -357,6 +357,33 @@ class Engine(unittest.TestCase):
         mouth, _ = project._arguments("mouth", self.root / "11_mouth", None)
         self.assertEqual([str(a) for a in mouth[3:]], ["--free", "--scale", "1.3"])
 
+    def test_the_eye_choices_reach_the_eye_step(self):
+        project = self.project({"options": {}, "triangles": 40000}, eyes="modelled", iris_shape="oval", iris_size=1.15,
+                               look_travel=0.8, blink_amount=1.2)
+        eyes, _ = project._arguments("eyes", self.root / "10_eyes", None)
+        self.assertEqual([str(a) for a in eyes[-9:]],
+                         ["--modelled", "--iris-shape", "oval", "--iris-size", "1.15", "--travel", "0.8", "--blink", "1.2"])
+        # left as they are, none is passed; the iris's shape and size are the modelled discs' alone
+        plain, _ = self.project({"options": {}, "triangles": 40000}, eyes="modelled", iris_shape=None, iris_size=1.0, look_travel=1.0,
+                                blink_amount=1.0)._arguments("eyes", self.root / "10_eyes", None)
+        self.assertEqual(str(plain[-1]), "--modelled")
+        slide, _ = self.project({"options": {}, "triangles": 40000}, eyes="slide", slide=[4.5, 2], iris_shape="circle", iris_size=1.2,
+                                look_travel=1.3)._arguments("eyes", self.root / "10_eyes", None)
+        self.assertEqual([str(a) for a in slide[-5:]], ["--slide", "4.5", "2", "--travel", "1.3"])
+
+    def test_a_covered_eye_is_told_to_both_face_steps(self):
+        project = self.project({"options": {}, "triangles": 40000}, eyes="iris", eye_shown="left", iris_shape=None, iris_size=1.0,
+                               look_travel=1.0, blink_amount=1.0)
+        eyes, _ = project._arguments("eyes", self.root / "10_eyes", None)
+        self.assertEqual([str(a) for a in eyes[-2:]], ["--only", "left"])
+        face, _ = project._arguments("face_tracking", self.root / "04_face_tracking", None)
+        self.assertEqual([str(a) for a in face[-2:]], ["--covered", "right"])
+        # eyes behind a visor have no blink at all: nothing is said of one of them
+        hidden, _ = self.project({"options": {}, "triangles": 40000}, eyes="hidden", eye_shown="left")._arguments(
+            "face_tracking", self.root / "04_face_tracking", None)
+        self.assertNotIn("--covered", [str(a) for a in hidden])
+        self.project({"options": {}, "triangles": 40000}, eyes=None, eye_shown=None)
+
     def test_an_adopted_rig_keeps_its_hands_as_modelled(self):
         project = self.project({"options": {}, "triangles": 40000})
         args, _ = project._arguments("tpose", self.root / "09_tpose", None)
@@ -1957,6 +1984,76 @@ class FirstRun(unittest.TestCase):
                 engine.open_in("a tab")
         finally:
             engine._installed = real
+
+    def test_a_crashed_window_is_found_by_its_dump_and_its_profile_removed(self):
+        import time
+        temp = Path(self.folder.name)
+
+        def profile(name, text, dump=True):
+            crashpad = temp / name / "EBWebView" / "Crashpad"
+            (crashpad / "reports").mkdir(parents=True)
+            (crashpad / "watson_metadata").write_bytes(text.encode("latin-1"))
+            if dump:
+                (crashpad / "reports" / "a.dmp").write_bytes(b"MDMP")
+            return temp / name
+
+        ours = "\x00ApplicationName=msedgewebview2.exe;ModuleName=RTSSHooks64.dll;ProcessType=browser;SubCode=0xc0000005;StackHash=0;\x00WV=python.exe;"
+        real_log, server.ERROR_LOG = server.ERROR_LOG, temp / "app_errors.log"
+        keep, since = temp / "crashes", time.time() - 60
+        try:
+            self.assertIsNone(server._window_crash(since, temp, keep))
+            for days in (3, 2):
+                old = profile(f"tmpold{days}", ours)
+                os.utime(old / "EBWebView" / "Crashpad" / "reports" / "a.dmp", (since - days * 86400,) * 2)
+            open_still = profile("tmpopen", ours, dump=False)
+            theirs = profile("tmptheirs", ours.replace("WV=python.exe", "WV=other.exe"))
+            # a crash of an earlier day is not this window's, but it is written down all the same
+            # and nothing reads its profile again
+            self.assertIsNone(server._window_crash(since, temp, keep))
+            self.assertFalse(old.exists())
+            self.assertEqual(server.ERROR_LOG.read_text().count("crashed in RTSSHooks64.dll"), 2)
+            now = profile("tmpnow", ours)
+            crash = server._window_crash(since, temp, keep)
+            self.assertEqual(crash["module"], "RTSSHooks64.dll")
+            self.assertIn("SubCode=0xc0000005", crash["detail"])
+            self.assertNotIn("\x00", crash["detail"])
+            self.assertFalse(now.exists())
+            self.assertTrue(open_still.exists() and theirs.exists())
+            # the dumps of the last crashes are kept for whoever looks into one, the oldest let go
+            dumps = sorted(p.name for p in keep.glob("*.dmp"))
+            self.assertEqual(len(dumps), server.CRASHES_KEPT)
+            self.assertTrue(all(name.endswith("_RTSSHooks64.dll.dmp") for name in dumps))
+            self.assertIn(dumps[-1], server.ERROR_LOG.read_text())
+            self.assertIn("rtsshooks64.dll", server._CRASH_HINTS)
+        finally:
+            server.ERROR_LOG = real_log
+
+    def test_a_save_waits_out_a_file_held_for_a_moment_and_leaves_no_temporary(self):
+        path = Path(self.folder.name) / "character.json"
+        data = manifest.new("model.glb", "Held")
+        manifest.save(data, path)
+        real, real_wait, calls = manifest.os.replace, manifest.REPLACE_WAIT, []
+
+        def held(source, target):
+            calls.append(source)
+            if len(calls) < 3:
+                raise PermissionError(13, "Access is denied")
+            return real(source, target)
+
+        try:
+            manifest.os.replace, manifest.REPLACE_WAIT = held, 0
+            data["options"]["eyes"] = "iris"
+            manifest.save(data, path)
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(manifest.load(path)["options"]["eyes"], "iris")
+            # held for good: said, and the half-made file not left beside the manifest
+            calls.clear()
+            manifest.os.replace = lambda source, target: (_ for _ in ()).throw(PermissionError(13, "Access is denied"))
+            with self.assertRaises(PermissionError):
+                manifest.save(data, path)
+        finally:
+            manifest.os.replace, manifest.REPLACE_WAIT = real, real_wait
+        self.assertEqual([p.name for p in path.parent.glob("character.json*")], ["character.json"])
 
     def test_the_first_start_is_remembered_once_it_is_done(self):
         self.assertFalse(engine.setup()["welcomed"])
