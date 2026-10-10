@@ -382,3 +382,123 @@ class SqueezeShut(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AWholeIrisFromThePartThatShows(unittest.TestCase):
+    """A modelled iris disc, taller than the iris drawn on it, its top under the lid and its
+    bottom skin-coloured behind the lower eye line (the plain boy's: 21 by 29 mm)."""
+
+    RADIUS, CENTRE = 40, (60, 70)  # the drawn iris; the disc is 80 wide, 110 tall, from row 10
+
+    @classmethod
+    def setUpClass(cls):
+        yy, xx = np.mgrid[0:130, 0:120] + 0.5
+        cls.distance = np.hypot(xx - cls.CENTRE[0], yy - cls.CENTRE[1])
+        cls.outline = ((xx - 60) / 40) ** 2 + ((yy - 65) / 55) ** 2 <= 1.0
+        rgb = np.empty((130, 120, 3))
+        rgb[:] = WHITE
+        rgb[cls.distance < cls.RADIUS] = IRIS
+        rgb[cls.distance < 0.9 * cls.RADIUS] = (0.6, 0.4, 0.2)
+        rgb[cls.distance < 0.4 * cls.RADIUS] = PUPIL
+        rgb[(np.hypot(xx - 48, yy - 58) < 6)] = (1.0, 1.0, 1.0)  # a catchlight
+        cls.rgb = rgb.copy()
+        rgb[yy < 50] = LASH      # the lid hides the top
+        rgb[yy > 95] = SKIN      # behind the lower eye line the disc is skin-coloured
+        cls.painted = rgb
+        cls.known = cls.outline & (yy >= 50) & (yy <= 95)
+        cls.layer, cls.circle = eyes.complete_iris(rgb, cls.outline, cls.known)
+
+    def test_the_middle_is_found_where_the_drawing_is_round(self):
+        cx, cy, radius = self.circle
+        self.assertAlmostEqual(cx, self.CENTRE[0], delta=1.0)
+        self.assertAlmostEqual(cy, self.CENTRE[1], delta=3.0)
+        self.assertAlmostEqual(radius, self.RADIUS, delta=1.0)
+
+    def test_what_shows_is_left_as_painted(self):
+        shown = self.known & (self.distance < self.RADIUS - 3)
+        np.testing.assert_allclose(self.layer[..., :3][shown], self.painted[shown], atol=1e-6)
+
+    def test_the_hidden_top_and_bottom_are_iris_not_lash_or_skin(self):
+        hidden = self.outline & ~self.known & (self.distance < 0.85 * self.RADIUS) & (self.distance > 0.5 * self.RADIUS)
+        self.assertGreater(hidden.sum(), 200)
+        self.assertLess(np.abs(self.layer[..., :3][hidden] - (0.6, 0.4, 0.2)).max(), 0.12)
+
+    def test_past_the_iris_the_disc_is_see_through(self):
+        self.assertTrue((self.layer[..., 3][self.distance > self.RADIUS + 4] == 0).all())
+        self.assertTrue((self.layer[..., 3][self.distance < self.RADIUS - 4] == 1).all())
+
+
+class WhiteWhereTheIrisWas(unittest.TestCase):
+    """The eye white is shaded from the lid down; the fill follows it row by row."""
+
+    @classmethod
+    def setUpClass(cls):
+        yy, xx = np.mgrid[0:60, 0:140] + 0.5
+        shade = (0.6 + 0.4 * yy / 60)[..., None]
+        cls.clean = shade * np.array(WHITE)
+        cls.hole = np.hypot(xx - 70, yy - 30) < 22
+        rgb = cls.clean.copy()
+        rgb[cls.hole] = PUPIL
+        rgb[np.hypot(xx - 70, yy - 30) < 25] *= 0.5  # a dark rim just outside the hole
+        cls.white = ~(np.hypot(xx - 70, yy - 30) < 26)
+        cls.filled = eyes.whiten(rgb, cls.hole, cls.white)
+
+    def test_the_fill_is_the_white_beside_it_row_by_row(self):
+        self.assertLess(np.abs(self.filled[self.hole] - self.clean[self.hole]).max(), 0.05)
+
+    def test_nothing_else_is_touched(self):
+        far = ~self.hole
+        np.testing.assert_allclose(self.filled[far], np.where(self.white[..., None], self.clean, self.filled)[far], atol=1e-6)
+
+
+class OneWhiteBehindAModelledIris(unittest.TestCase):
+    """The whole eye white is repainted, not only where the iris was: what the generator drew on it goes."""
+
+    @classmethod
+    def setUpClass(cls):
+        yy, xx = np.mgrid[0:90, 0:160] + 0.5
+        eye = ((xx - 80) / 60) ** 2 + ((yy - 45) / 25) ** 2 < 1
+        rgb = np.empty(eye.shape + (3,))
+        rgb[:] = SKIN
+        rgb[eye] = WHITE
+        rgb[eye & (yy > 55)] = (0.9, 0.7, 0.75)                           # a pink band along the lower lid
+        rgb[eyes._dilate(eye, 4) & ~eye & (yy < 45)] = LASH
+        cls.lash = eye & (yy < 24)                                        # the lashes' soft lower edge, inside the opening
+        rgb[cls.lash] = LASH
+        cls.hole = np.hypot(xx - 80, yy - 45) < 18
+        cls.rim = (np.hypot(xx - 80, yy - 45) < 22) & ~cls.hole & eye     # the iris's rim, left beside the hole
+        rgb[cls.rim] = PUPIL
+        cls.strokes = eye & (xx > 118) & (xx < 124) & (yy > 30) & (yy < 52)  # a dark stroke on the white, clear of its edge
+        rgb[cls.strokes] = LASH
+        cls.corner = eye & (xx > 133) & (yy < 45)                         # the outline, on from the lashes round the outer corner
+        rgb[cls.corner] = LASH
+        rgb[cls.hole] = WHITE                                             # as eyes.whiten leaves it
+        cls.eye, cls.rgb = eye, rgb
+        saturation, value = eyes._saturation_value(rgb)
+        white = eye & (saturation < 0.1) & (value > 0.8)
+        cls.out, cls.painted = eyes.even_white(rgb, eye & ~cls.strokes, cls.hole, white)
+        cls.inside = eyes._erode(eye, 8) & (yy > 34) & ~eyes._dilate(cls.corner, eyes.WHITE_SMOOTH + 1)  # clear of the soft edges
+
+    def test_the_white_is_one_neutral_tone(self):
+        saturation, value = eyes._saturation_value(self.out)
+        self.assertLess(saturation[self.inside].max(), 0.12)
+        self.assertGreater(value[self.inside].min(), 0.85)
+
+    def test_the_rim_and_strokes_left_on_it_are_gone(self):
+        for mask in (self.rim, self.strokes):
+            self.assertTrue(self.painted[mask & self.inside].all())
+
+    def test_the_lashes_lower_edge_stays(self):
+        kept = self.lash & ~self.hole
+        self.assertGreater(kept.sum(), 20)
+        self.assertFalse(self.painted[kept].any())
+        np.testing.assert_allclose(self.out[kept], self.rgb[kept], atol=1e-6)
+
+    def test_the_outline_round_the_corner_stays(self):
+        kept = self.corner & ~self.painted
+        self.assertGreater(kept.sum(), 0.8 * self.corner.sum())
+        np.testing.assert_allclose(self.out[kept], self.rgb[kept], atol=1e-6)
+
+    def test_the_skin_round_the_eye_is_as_it_was(self):
+        far = ~eyes._dilate(self.eye, 6)
+        np.testing.assert_allclose(self.out[far], self.rgb[far], atol=1e-6)

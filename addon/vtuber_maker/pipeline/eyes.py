@@ -157,6 +157,40 @@ NOTCH = 0.07
 IRIS_SATURATION = 0.35
 IRIS_DARK = 0.45
 IRIS_THIN = 3
+# Modelled irises (add_modelled_irises). An eye insert narrower than IRIS_INSERT of the marked eye
+# is the iris alone, a disc in a socket the face's own lids overhang (the plain boy: 21 mm in a 43 mm
+# eye); a wider one is the whole painted eye (model A's), and its iris is found in the picture. The
+# disc itself slides. The generator painted it, and the socket, only as far as it could see:
+#  - the disc's part behind the lower eye line is skin-coloured, and rose into view (brown under
+#    the iris looking up): it gets a picture of its own, the iris completed ring by ring
+#    (IRIS_RINGS from its middle out) from what shows between the lids, see-through past it;
+#  - behind it the socket is a dark fan of triangles and smears: a still copy of the disc
+#    BACKING_GAP behind shows the face's picture, the iris painted out of it from the white beside
+#    (and OUTLINE_REACH pixels round it, its drawn outline, and within RIM_REACH radii of its
+#    circle whatever isn't RIM_FRONT in front of the disc's curve: the rim drawn on the face);
+#  - nothing hides the completed iris under the lower eye line: a frame FRAME_GAP in front, the
+#    face's own picture with the eye left open, does (the lids above are the face's own).
+# At 0.5 mm the copy came through the disc in specks, the disc's own bumps sliding over it.
+# The iris may show over the eye's painting (find_eye_paint) and WINDOW_REACH eye heights round it.
+IRIS_INSERT = 0.75
+IRIS_RINGS = 16
+GHOST = 2
+BACKING_GAP = 0.0015
+FRAME_GAP = 0.001
+FRAME_MARGIN = 0.002
+FRAME_GRID = (24, 16)
+WHITE_NEAR = 24
+RIM_REACH = 0.25
+IRIS_STROKE = 0.06
+IRIS_CHORD = 0.2
+RIM_FRONT = 0.0005
+WINDOW_EVEN = 0.04
+WINDOW_REACH = 0.05
+# The lashes' lower edge is carried across an iris from at least this many columns on each side.
+LID_BESIDE = 6
+# The iris's top lies this share of its radius under the lid; it grows by no more than IRIS_GROW for that.
+IRIS_TUCK = 0.1
+IRIS_GROW = 1.25
 # Sliding eyes: the eye's paint differs from the skin behind it by more than PAINT_STRONG (RGB
 # distance) somewhere and PAINT_WEAK everywhere (faint outlines join the lashes they touch).
 PAINT_STRONG = 0.2
@@ -1614,3 +1648,657 @@ def check_sliding(mesh_obj, built):
                     where = side + " eye looking " + ("+".join(look) or "ahead") + (" with " + blink if blink else "")
                     failures.append(f"face over the eye patch, {where}: {hidden} of {len(samples)} points")
     return {"points": checked, "hidden": worst}, failures
+
+
+def modelled_irises(mesh_obj, points):
+    """side -> the vertices of an eye insert that is the iris alone (IRIS_INSERT); {} unless both eyes have one."""
+    mesh = mesh_obj.data
+    if face_rig.EYE_INSERT_ATTRIBUTE not in mesh.attributes:
+        return {}
+    face = FacePatch(mesh_obj)
+    inserts = get_int(mesh, face_rig.EYE_INSERT_ATTRIBUTE)
+    rest = meshdata.world_vertices(mesh_obj)
+    found = {}
+    for side, eye in marked_eyes(points, face.size).items():
+        ids = np.flatnonzero(inserts == SIDE_IDS[side])
+        if len(ids) < 3 or np.ptp(rest[ids, 0]) > IRIS_INSERT * eye.width * face.metres_per_pixel:
+            return {}
+        # ... and in the marked eye: inserts can sit away from the painted eyes (a tester's pirate, whose
+        # are sunk under his brow: nothing of them fell in the eye's picture, and the step died on it)
+        x0, y0, x1, y1 = eye.box
+        at = (face.pixel(rest[ids][:, [0, 2]].mean(axis=0)[None])[0] - (x0, y0)).astype(int)
+        if not (0 <= at[0] < x1 - x0 and 0 <= at[1] < y1 - y0 and eye.marked[at[1], at[0]]):
+            return {}
+        found[side] = ids
+    return found
+
+
+def add_modelled_irises(mesh_obj, points):
+    """Slide each modelled iris in its socket on the eyeLook keys; None when the eyes aren't made that way.
+
+    Assumes a finished, skinned mesh with a face patch, the character facing -Y, face points
+    marking both eyes, and eye inserts that are the irises alone (modelled_irises). The discs move
+    along their own curve, SIDE_TRAVEL of the room the marks leave beside them sideways and
+    UP_DOWN_TRAVEL of their height up and down; the face's own lids hide what passes under them.
+    Each disc gets its own picture (complete_iris), a still copy behind it showing the face's
+    picture with the iris painted out, and a frame in front that keeps it above the lower eye
+    line (see IRIS_INSERT). Looking ahead the eye is as it was painted. Blink keys stay as the
+    face tracking step made them; the copies and frames blink with the face.
+    """
+    found = modelled_irises(mesh_obj, points)
+    if not found:
+        return None
+    mesh = mesh_obj.data
+    face = FacePatch(mesh_obj)
+    rows = image_rows(face.image)
+    iris_rows = np.zeros_like(rows)
+    windows = np.zeros(rows.shape[:2], bool)
+    rest = meshdata.world_vertices(mesh_obj)
+    marked = marked_eyes(points, face.size)
+    size = face.metres_per_pixel
+    tris = meshdata.triangles(mesh)
+    scene = BVHTree.FromPolygons([Vector(v) for v in rest], tris.tolist())
+    inserted = get_int(mesh, face_rig.EYE_INSERT_ATTRIBUTE) > 0
+    kept = np.flatnonzero(~inserted[tris].all(axis=1))
+    others = BVHTree.FromPolygons([Vector(v) for v in rest], tris[kept].tolist())
+    polygon_of = np.empty(len(mesh.loop_triangles), np.int64)
+    mesh.loop_triangles.foreach_get("polygon_index", polygon_of)
+    patch_slot = mesh.materials.find(face_points.FACE_PATCH_MATERIAL)
+    repainted = 0
+    parts = {}
+    read = {}
+    for side, ids in found.items():
+        eye = marked[side]
+        x0, y0, x1, y1 = eye.box
+        rgb = rows[y0:y1, x0:x1, :3].astype(np.float64)
+        disc = np.zeros(len(rest), bool)
+        disc[ids] = True
+        own = disc[tris].all(axis=1)
+        outline = _outline(face, eye, rest, tris[own])
+        opening = find_opening(rgb, eye)
+        window = eye_window(rgb, eye, opening)
+        windows[y0:y1, x0:x1] |= window
+        known = outline & window & _seen(face, eye, outline, scene, own)
+        drawn = drawn_circle(rgb, outline, known)
+        # the iris goes under the upper lid, as it was drawn: the lash line stays on the frame across
+        # it (see under_lid), and what was painted there is no part of the iris's own picture
+        lid = under_lid(opening, drawn)
+        # ... and so does the lid itself where the model has one over the disc: its underside was
+        # painted with the top of the iris, and painted white it was a white band between the
+        # iris and the lashes, the iris cut off straight under it
+        if drawn:
+            lid |= _overhang(face, eye, drawn, _disc_curve(rest[ids]), others)
+        window &= ~lid
+        known &= ~lid
+        windows[y0:y1, x0:x1] &= ~lid
+        read[side] = (rgb, outline, window, known, drawn, opening, lid)
+    if any(known.sum() < 8 * IRIS_RINGS for _rgb, _outline, _window, known, *_ in read.values()):
+        return None  # too little of a disc shows between the lids to paint an iris from; nothing is changed yet
+    # both irises are one size, the smaller read: lashes running into one make it read bigger
+    # (the catgirl's: 27.3 and 22.3 mm)
+    radii = [drawn[2] for *_, drawn, _opening, _lid in read.values() if drawn]
+    circles = tucked({side: (drawn, lid, outline) for side, (_rgb, outline, _window, _known, drawn, _opening, lid)
+                      in read.items()}, min(radii)) if radii else {}
+    for side, ids in found.items():
+        eye = marked[side]
+        x0, y0, x1, y1 = eye.box
+        rgb, outline, window, known, drawn, opening, lid = read[side]
+        layer, circle = complete_iris(rgb, outline, known, circles.get(side))
+        painted = layer[..., 3] > 0
+        iris_rows[y0:y1, x0:x1][painted] = layer[painted]
+        # the face's picture without the iris, from the white beside it and nothing else
+        # ... the shaded white next to the iris too (drawn from the brightest alone, the fill stood
+        # out as a pale band), and out past the iris's outline, under the eye's lower edge as well
+        # (kept to the opening, a dark arc stayed there when he looked up). The iris's drawn rim
+        # also lies on the face beside the disc, up to where it meets the lashes (dark slivers
+        # stayed on the white as the iris left): round its circle, what lies no further forward
+        # than the disc's own curve is white too; the lids, lashes and all, stand in front of it
+        curve = _disc_curve(rest[ids])
+        # ... and only the iris: the rest of what a disc shows (white, strokes of the lashes) stays
+        # as painted, on the picture the still copy shows. Nor under the eye's lower edge by more
+        # than the outline: on the catgirl the fill ran on down her cheek
+        # (only what was drawn in the iris's colours there, tried: the soft edge of its outline
+        # stayed as a ghost of it; the ring this left looking ahead was the fill's tone, see whiten)
+        yy, xx = np.mgrid[0:y1 - y0, 0:x1 - x0] + 0.5
+        round_iris = np.hypot(xx - circle[0], yy - circle[1]) <= circle[2] + OUTLINE_REACH
+        hole = ((_dilate(known, OUTLINE_REACH) & round_iris | _behind(face, eye, circle, curve, others))
+                & _dilate(window, OUTLINE_REACH)) & ~lid
+        saturation, value = _saturation_value(rgb)
+        near = _dilate(eye.marked, max(2, int(OPENING_REACH * eye.height)))
+        bright = near & ~hole & (saturation < IRIS_SATURATION)
+        white = bright & (value > WHITE_LINE * np.percentile(value[bright], WHITE_TONE)) if bright.any() else bright
+        # ... and the white that always showed is evened with it: the generator's own white kept the
+        # iris's rim just past the hole (dark arcs on the plain boy's as he looked aside), its shading
+        # and strokes (grey and pink bands on the catgirl's)
+        rows[y0:y1, x0:x1, :3], whitened = even_white(whiten(rgb, hole, white), opening, hole, white, lid)
+        # what shows there must show the picture: some of the face round a disc is still on the
+        # model's own texture, with the generator's own paint of the iris's rim (a dark notch stayed)
+        hy, hx = np.nonzero(hole | whitened)
+        under = set()
+        for x, z in face.world(np.stack([hx + x0 + 0.5, hy + y0 + 0.5], axis=1)[::WINDOW_STEP * 2]):
+            index = others.ray_cast(Vector((x, -10.0, z)), Vector((0.0, 1.0, 0.0)), 20.0)[2]
+            if index is not None:
+                under.add(int(polygon_of[kept[index]]))
+        repainted += _onto_patch(mesh_obj, face, under, patch_slot)
+        corners = face.world([eye.points["inner"], eye.points["outer"]])[:, 0]
+        at = face.world([[circle[0] + x0, circle[1] + y0]])[0]
+        low, high = at[0] - circle[2] * size, at[0] + circle[2] * size
+        parts[side] = {"vertices": ids, "white_beside": sorted(max(float(min(abs(c - low), abs(c - high))), 0.0) for c in corners),
+                       "iris_size": (float(high - low), float(high - low)), "circle": (float(at[0]), float(at[1]), float(circle[2] * size)),
+                       "disc_size": (float(np.ptp(rest[ids, 0])), float(np.ptp(rest[ids, 2]))), "shown_px": int(known.sum()),
+                       "outline_px": int(outline.sum()), "opening_size": (float(eye.width * size), float(eye.height * size))}
+    slide = (float(SIDE_TRAVEL * np.mean([info["white_beside"] for info in parts.values()])),
+             float(UP_DOWN_TRAVEL * min(info["iris_size"][1] for info in parts.values())))
+
+    _store(face.image, rows)
+    frame_rows = rows.copy()
+    frame_rows[..., 3][windows] = 0.0
+    iris_slot = _material_like(mesh, IRIS_MATERIAL, new_image(IRIS_MATERIAL, iris_rows))
+    cut_out(mesh.materials[iris_slot])
+    frame_slot = _material_like(mesh, LIDS_MATERIAL, new_image(LIDS_MATERIAL, frame_rows))
+    cut_out(mesh.materials[frame_slot])
+    boxes = mesh_obj.get(face_rig.PAINTED_EYES_PROPERTY)
+    for side, info in parts.items():
+        ids = info["vertices"]
+        info["slide"] = slide
+        info["curve"] = _disc_curve(rest[ids])
+        cx, cz, radius = info["circle"]
+        drawn = np.hypot(rest[ids, 0] - cx, rest[ids, 2] - cz) <= radius
+        deepest = max(float(info["curve"].off[drawn].max()), 0.0) if drawn.any() else 0.0
+        info["white_vertices"] = _still_copy(mesh_obj, ids, side, info["curve"], deepest)
+        _front_mapped(mesh_obj, face, ids, iris_slot)
+        _front_mapped(mesh_obj, face, info["white_vertices"], patch_slot)
+        reach = np.array(slide) + FRAME_MARGIN
+        low, high = rest[ids][:, [0, 2]].min(axis=0) - reach, rest[ids][:, [0, 2]].max(axis=0) + reach
+        centre, spread = rest[ids][:, [0, 2]].mean(axis=0), np.ptp(rest[ids][:, [0, 2]], axis=0)
+        # past the disc the fitted curve runs away: the frame stays at the depth of the disc's nearest edge
+        on_disc = lambda xz, c=centre, d=spread: np.clip(xz, c - d / 2, c + d / 2)  # noqa: E731
+        forward = max(0.0, float(-info["curve"].off.min()))  # where the disc stands in front of its curve
+        flat = lambda xz, curve=info["curve"], on=on_disc, f=forward: curve(on(np.asarray(xz, float))) - f - FRAME_GAP  # noqa: E731
+        info["frame_vertices"] = _add_grid(mesh_obj, np.array([low, high]), flat, face.uv, *FRAME_GRID, frame_slot,
+                                            BONE_NAMES["head"], {LID_ATTRIBUTE: SIDE_IDS[side], face_rig.FIXED_ATTRIBUTE: 1})
+        if boxes is not None:
+            _blink_as_painted(mesh_obj, info["frame_vertices"], tuple(boxes[side]), f"eyeBlink{side.title()}")
+    _slide_keys(mesh_obj, parts, lambda side, xz: parts[side]["curve"].moved(xz))
+    mesh.update()
+    crops = {name: crop_to_use(mesh, name) for name in (LIDS_MATERIAL, IRIS_MATERIAL)}
+    return {"eyes": parts, "window": windows, "repainted_polygons": repainted, "crops": crops}
+
+
+def eye_window(rgb, eye, opening=None):
+    """Where a marked eye is open below, as a mask of its crop: above its lower edge, between its corners.
+
+    Above, the face's own lids close it. The lower edge is the painted opening's (find_opening),
+    evened out along the eye: the curve through the marks is a lens, a drawn eye is rounder, and
+    it cut the plain boy's iris off slantwise as he looked toward his nose.
+    """
+    opening = find_opening(rgb, eye) if opening is None else opening
+    columns = np.nonzero(opening.any(axis=0))[0]
+    window = np.zeros_like(opening)
+    if not len(columns):
+        return window
+    lowest = np.array([np.nonzero(opening[:, c])[0][-1] + 1 for c in columns], float)
+    half = max(1, int(WINDOW_EVEN * len(columns)))
+    padded = np.pad(lowest, half, mode="edge")
+    lowest = np.array([np.median(padded[i:i + 2 * half + 1]) for i in range(len(columns))])
+    padded = np.pad(lowest, half, mode="edge")
+    lowest = np.array([padded[i:i + 2 * half + 1].mean() for i in range(len(columns))])
+    for column, row in zip(columns, lowest):
+        window[:int(round(row)), column] = True
+    return window
+
+
+def _outline(face, eye, rest, tris):
+    """Triangles `tris` (of world vertices `rest`) seen from the front, as a mask of `eye`'s crop."""
+    x0, y0, x1, y1 = eye.box
+    pixels = face.pixel(rest[:, [0, 2]]) - (x0, y0)
+    mask = np.zeros((y1 - y0, x1 - x0), bool)
+    ys, xs = np.mgrid[0:y1 - y0, 0:x1 - x0] + 0.5
+    for a, b, c in pixels[tris]:
+        lo = np.floor(np.minimum(np.minimum(a, b), c)).astype(int).clip(0)
+        hi = np.ceil(np.maximum(np.maximum(a, b), c)).astype(int) + 1
+        px, py = xs[lo[1]:hi[1], lo[0]:hi[0]], ys[lo[1]:hi[1], lo[0]:hi[0]]
+        area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+        if px.size == 0 or abs(area) < 1e-9:
+            continue
+        u = ((px - a[0]) * (c[1] - a[1]) - (py - a[1]) * (c[0] - a[0])) / area
+        v = ((b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0])) / area
+        mask[lo[1]:hi[1], lo[0]:hi[0]] |= (u >= 0) & (v >= 0) & (u + v <= 1)
+    return mask
+
+
+def _seen(face, eye, mask, scene, own):
+    """The pixels of `mask` (a crop of `eye`) where the first thing met from the front is one of the triangles `own`."""
+    x0, y0 = eye.box[:2]
+    seen = np.zeros_like(mask)
+    ys, xs = np.nonzero(mask)
+    for (x, z), py, px in zip(face.world(np.stack([xs + x0 + 0.5, ys + y0 + 0.5], axis=1)), ys, xs):
+        hit, _normal, index, _distance = scene.ray_cast(Vector((x, -10.0, z)), Vector((0.0, 1.0, 0.0)), 20.0)
+        seen[py, px] = hit is not None and bool(own[index])
+    return seen
+
+
+def complete_iris(rgb, outline, known, drawn=False):
+    """(rows, columns, 4) picture of a whole iris on its disc: the painting where it shows, the rest made up.
+
+    `outline` is the disc and `known` the part of it that shows as painted. The iris is the
+    circle drawn on it (drawn_circle); where none can be read, one as wide as the disc, about the
+    middle its painting is most alike all round at each distance (the rings' colours vary
+    least). What doesn't show of it (under the lid, behind the lower eye line) takes, ring by
+    ring, the median colour the known part has at that distance: a catchlight or a streak of
+    shadow is too little of a ring to count. Rings with nothing known take the nearest ring's.
+    Past the circle the disc is see-through. `drawn` is the circle when it has been read already
+    (None: it couldn't be).
+    """
+    ys, xs = np.nonzero(outline)
+    drawn = drawn_circle(rgb, outline, known) if drawn is False else drawn
+    cx, radius = (drawn[0], drawn[2]) if drawn else ((xs.min() + xs.max() + 1) / 2, (np.ptp(xs) + 1) / 2)
+    yy, xx = np.mgrid[0:outline.shape[0], 0:outline.shape[1]] + 0.5
+    ky, kx = np.nonzero(known)
+    colour = rgb[known]
+
+    def rings_of(cy, y, x):
+        return (np.hypot(x - cx, y - cy) / radius * IRIS_RINGS).astype(int)
+
+    def spread(cy):
+        ring = rings_of(cy, ky + 0.5, kx + 0.5)
+        total = 0.0
+        for index in range(IRIS_RINGS):
+            chosen = colour[ring == index]
+            if len(chosen) >= 8:
+                total += float(np.abs(chosen - np.median(chosen, axis=0)).sum())
+        # known pixels past the circle count as badly as any: the middle isn't pushed off the painting
+        return total + float((ring >= IRIS_RINGS).sum()) * 3.0
+
+    layer = np.zeros(outline.shape + (4,), np.float32)
+    if len(ky) < 8 * IRIS_RINGS:
+        return layer, (cx, (ys.min() + ys.max() + 1) / 2, radius)
+    cy = drawn[1] if drawn else min(np.arange(ys.min() + radius / 2, ys.max() + 1 - radius / 2 + 1, 2.0), key=spread)
+    ring = rings_of(cy, yy, xx)
+    colours = np.full((IRIS_RINGS, 3), np.nan)
+    for index in range(IRIS_RINGS):
+        chosen = known & (ring == index)
+        if chosen.sum() >= 8:
+            colours[index] = np.median(rgb[chosen], axis=0)
+    filled = np.flatnonzero(~np.isnan(colours[:, 0]))
+    if not len(filled):
+        return layer, (cx, cy, radius)
+    colours = colours[filled[np.abs(np.arange(IRIS_RINGS)[:, None] - filled[None, :]).argmin(axis=1)]]
+    circle = ring < IRIS_RINGS
+    made = colours[np.minimum(ring, IRIS_RINGS - 1)]
+    layer[..., :3] = _smooth(made, ~known, IRIS_SMOOTH // 4, np.ones_like(outline))
+    layer[..., :3][known & circle] = rgb[known & circle]
+    layer[..., 3] = circle
+    return layer, (cx, cy, radius)
+
+
+def drawn_circle(rgb, outline, known):
+    """(cx, cy, radius) of the iris drawn on a disc, in the crop's pixels; None when it can't be read.
+
+    A disc can be the iris to its edge (the plain boy's) or hold the white round it and strokes
+    of the lashes too (the catgirl's: 30 by 43 mm, an iris of 20 on it; taken for an iris 30
+    wide, a grey rim went about with it). The iris is the saturated or dark part of what shows
+    (IRIS_SATURATION, IRIS_DARK), strokes thinner than IRIS_STROKE of the disc's width left out,
+    joined to its biggest piece. Its rows are a circle's chords: the IRIS_CHORD share of them
+    widest are its middle, as wide as it is; a few wider still are lashes it runs into.
+    """
+    if not outline.any():
+        return None
+    saturation, value = _saturation_value(rgb)
+    iris = known & ((saturation > IRIS_SATURATION) | (value < IRIS_DARK))
+    thin = max(IRIS_THIN, int(IRIS_STROKE * (np.ptp(np.nonzero(outline)[1]) + 1)))
+    iris = _dilate(_erode(iris, thin), thin) & iris
+    if iris.sum() < 8 * IRIS_RINGS:
+        return None
+    iy, ix = np.nonzero(iris)
+    middle = np.zeros_like(iris)
+    nearest = np.argmin(np.hypot(ix - np.median(ix), iy - np.median(iy)))
+    middle[iy[nearest], ix[nearest]] = True
+    iris = _reach(middle, iris)
+    rows = np.nonzero(iris.any(axis=1))[0]
+    left = np.array([np.nonzero(iris[r])[0][0] for r in rows])
+    right = np.array([np.nonzero(iris[r])[0][-1] + 1 for r in rows])
+    width = np.percentile(right - left, 100 * (1 - IRIS_CHORD))
+    middle_rows = np.abs((right - left) - width) <= 0.05 * width
+    if width < 4 * thin or not middle_rows.any():
+        return None
+    return (float(((left + right) / 2)[middle_rows].mean()), float(rows[middle_rows].mean() + 0.5), float(width / 2))
+
+
+def _behind(face, eye, circle, curve, scene):
+    """The pixels of `eye`'s crop within RIM_REACH of an iris's `circle` where `scene` (the mesh without the
+    discs), seen from the front, lies no further forward than the disc's `curve` (less RIM_FRONT)."""
+    x0, y0, x1, y1 = eye.box
+    cx, cy, radius = circle
+    yy, xx = np.mgrid[0:y1 - y0, 0:x1 - x0] + 0.5
+    near = np.hypot(xx - cx, yy - cy) <= radius * (1 + RIM_REACH)
+    behind = np.zeros_like(near)
+    ys, xs = np.nonzero(near)
+    places = face.world(np.stack([xs + x0 + 0.5, ys + y0 + 0.5], axis=1))
+    depths = curve(places)
+    for (x, z), depth, py, px in zip(places, depths, ys, xs):
+        hit = scene.ray_cast(Vector((x, -10.0, z)), Vector((0.0, 1.0, 0.0)), 20.0)[0]
+        behind[py, px] = hit is not None and hit.y >= depth - RIM_FRONT
+    return behind
+
+
+def _overhang(face, eye, circle, curve, scene):
+    """The pixels of `eye`'s crop over the upper half of an iris's `circle` (as far as it may grow) where
+    `scene` (the mesh without the discs), seen from the front, stands in front of the disc's `curve`."""
+    x0, y0, x1, y1 = eye.box
+    cx, cy, radius = circle
+    yy, xx = np.mgrid[0:y1 - y0, 0:x1 - x0] + 0.5
+    near = (np.hypot(xx - cx, yy - cy) <= radius * IRIS_GROW * (1 + RIM_REACH)) & (yy < cy)
+    over = np.zeros_like(near)
+    ys, xs = np.nonzero(near)
+    places = face.world(np.stack([xs + x0 + 0.5, ys + y0 + 0.5], axis=1))
+    for (x, z), depth, py, px in zip(places, curve(places), ys, xs):
+        hit = scene.ray_cast(Vector((x, -10.0, z)), Vector((0.0, 1.0, 0.0)), 20.0)[0]
+        over[py, px] = hit is not None and hit.y < depth - RIM_FRONT
+    # its edge is the mesh's own, triangle by triangle: evened and a little wider, so the frame's
+    # picture covers the teeth
+    even = _smooth(over[..., None].astype(np.float32), np.ones_like(over), 2 * OUTLINE_REACH, np.ones_like(over))[..., 0]
+    return _dilate(even > 0.5, 2) & (yy < cy)
+
+
+def whiten(rgb, hole, white):
+    """`rgb` with `hole` filled along each row from the `white` pixels nearest on either side of it.
+
+    An eye's white is shaded from the lid down, row by row much the same: a fill averaged in
+    from all round (face_points.fill_from_border) came out one flat tone, a band beside the white
+    it lay next to. Each side gives the WHITE_TONE percentile of its WHITE_NEAR nearest white
+    pixels: the very nearest is the edge of a drawn line and gave streaks, and the median of them
+    is the soft grey round an iris, a ring of it left on the white where the iris had been.
+    Rows with white on one side take that side's; rows with none, the nearest filled row's.
+    """
+    out = np.array(rgb, dtype=np.float32)
+    done = np.zeros(len(out), bool)
+    columns = np.arange(out.shape[1])
+    for row in np.nonzero(hole.any(axis=1))[0]:
+        inside = np.nonzero(hole[row])[0]
+        source = np.nonzero(white[row] & ~hole[row])[0]
+        left, right = source[source < inside[0]][-WHITE_NEAR:], source[source > inside[-1]][:WHITE_NEAR]
+        ends = [(side.mean(), np.percentile(out[row, side], WHITE_TONE, axis=0)) for side in (left, right) if len(side)]
+        if not ends:
+            continue
+        for channel in range(3):
+            out[row, inside, channel] = np.interp(columns[inside], [at for at, _ in ends], [c[channel] for _, c in ends])
+        done[row] = True
+    filled = np.nonzero(done)[0]
+    for row in np.nonzero(hole.any(axis=1) & ~done)[0]:
+        if len(filled):
+            near = filled[np.abs(filled - row).argmin()]
+            out[row, hole[row]] = out[near][hole[near]].mean(axis=0) if hole[near].any() else out[row, hole[row]]
+        else:
+            out[row, hole[row]] = 0.9
+    return _smooth(out, hole, 10 * IRIS_SMOOTH, hole | white)
+
+
+def tucked(read, radius):
+    """side -> the iris's circle, both of `radius` grown until their tops lie under the upper lid.
+
+    `read` is side -> (the circle drawn, the lid's mask from under_lid, the disc's outline). An
+    iris's dark top runs into the lashes and reads as lash, so the circle read off the drawing
+    stops short of the lid (8 px on the plain boy, 10 on the catgirl): with the lashes kept over
+    it a band of white still parted the two. Each circle keeps its lowest point and grows upward
+    to IRIS_TUCK radii past the lid's edge, both to the same size, by no more than IRIS_GROW and
+    no wider than the narrower disc. None for an eye whose circle couldn't be read.
+    """
+    wanted, widest = [radius], np.inf
+    for drawn, lid, outline in read.values():
+        if not drawn:
+            continue
+        widest = min(widest, (np.ptp(np.nonzero(outline)[1]) + 1) / 2)
+        column = int(np.clip(drawn[0], 0, lid.shape[1] - 1))
+        if lid[:, column].any():
+            edge = np.flatnonzero(lid[:, column])[-1] + 1
+            wanted.append((drawn[1] + radius - edge + IRIS_TUCK * radius) / 2)
+    grown = max(radius, min(max(wanted), IRIS_GROW * radius, widest))
+    return {side: (drawn[0], drawn[1] + radius - grown, grown) if drawn else None for side, (drawn, _lid, _outline) in read.items()}
+
+
+def under_lid(opening, circle):
+    """What the upper lid covers over an iris, as a mask of the eye's crop; nothing when it can't be read.
+
+    The lash line and the dark top of a drawn iris run into each other, and taken for iris the
+    lashes over it were painted out with it: the whole iris stood free in the white, a ring of
+    white above it, and the eyes stared. The lashes' lower edge is the top of the painted
+    `opening` either side of the iris's `circle` (RIM_REACH radii wide); a curve through those
+    carries it across, and all above it there stays as painted, in front of the iris.
+    """
+    mask = np.zeros_like(opening)
+    columns = np.flatnonzero(opening.any(axis=0))
+    if circle is None or not len(columns):
+        return mask
+    cx, _cy, radius = circle
+    over = np.abs(columns + 0.5 - cx) <= radius * (1 + RIM_REACH)
+    beside = columns[~over]
+    if (beside < cx).sum() < LID_BESIDE or (beside > cx).sum() < LID_BESIDE:
+        return mask
+    line = np.polyval(np.polyfit(beside, np.argmax(opening[:, beside], axis=0), 2), columns[over])
+    mask[:, columns[over]] = np.arange(opening.shape[0])[:, None] < np.round(line)[None, :]
+    return mask
+
+
+def even_white(rgb, opening, hole, white, lid=None):
+    """(`rgb` with the eye white behind a modelled iris one neutral white, the pixels painted).
+
+    The white is the painted `opening`, the `hole` an iris left and the `white` pixels joined to
+    them in more than a thread (the catgirl's runs on past her opening, between strokes), gaps
+    closed and the outline evened. Its tone is the brightest of the `white` pixels (WHITE_TONE) without their tint,
+    shaded from its shape (white_shading), as paint_out does for a painted iris: with only the
+    hole filled, the white beside it kept whatever the generator drew there. Dark pixels in the
+    LASH_GAP at its top are the lashes' lower edge and stay, and so does the outline that runs
+    on from them round a corner; nothing under the upper `lid` (under_lid) is touched. The edge blends into the painting
+    round it over WHITE_SMOOTH passes, across the edge of the frame's window too: cut hard
+    there, the window's own ragged edge showed, white against the eye's lower line.
+    """
+    out = np.array(rgb, dtype=np.float32)
+    beside = _reach(_dilate(opening | hole, 2) & white, white)
+    beside = _reach(_dilate(opening | hole, 2) & beside, _dilate(_erode(beside, IRIS_THIN), IRIS_THIN) & beside)
+    region = opening | hole | beside
+    if not region.any():
+        return out, region
+    closing = max(1, int(NOTCH * (np.ptp(np.nonzero(region.any(axis=1))[0]) + 1)))
+    region = _fill_holes(_erode(_dilate(region, closing), closing) | region)
+    # ... and its outline evened: the opening is found by colour, pixel by pixel, and its teeth and
+    # flags (out on the pale ring round the boy's socket) showed as soon as it was one flat white
+    even = _smooth(region[..., None].astype(np.float32), np.ones_like(region), 4 * closing, np.ones_like(region))[..., 0]
+    region = (even > 0.5) | hole
+    _, value = _saturation_value(out)
+    tone = float(np.percentile(value[white if white.any() else region], WHITE_TONE))
+    height = np.ptp(np.nonzero(region.any(axis=1))[0]) + 1
+    top = np.where(region.any(axis=0), np.argmax(region, axis=0), region.shape[0])
+    band = max(LASH_EDGE, int(LASH_GAP * height))
+    lash = np.arange(region.shape[0])[:, None] < top[None, :] + band
+    # the eye's drawn outline too, where it runs on from the lashes round a corner inside what reads
+    # as opening (the plain boy's outer corners: the black line went white with the rest). Lash-dark
+    # pixels joined to the dark outside, no deeper in than two bands, and not beside the hole: there
+    # they are the iris's rim
+    dark = value < LASH_DARK * tone
+    rim = region & _dilate(~region, 2 * band) & ~_dilate(hole, 2 * band)
+    outline = _reach(_dilate(dark & ~region) & dark, dark & rim)
+    # ... its inner edge evened as the white's is (cut where the two bands end, it was notched)
+    even = _smooth((outline | ~region)[..., None].astype(np.float32), np.ones_like(region), band, np.ones_like(region))[..., 0]
+    outline = rim & (even > 0.5) & (value < WHITE_LINE * tone)
+    painted = region & ~(lash & ~hole & (value < WHITE_LINE * tone)) & ~outline
+    if lid is not None:
+        painted &= ~lid
+    out[painted] = (tone * white_shading(region))[painted]
+    return _smooth(out, painted & _dilate(~painted, WHITE_SMOOTH), WHITE_SMOOTH, np.ones_like(painted)), painted
+
+
+def _disc_curve(points):
+    """The curve of a disc's (n, 3) vertices: depth (world y) at any (m, 2) x-z places.
+
+    A quadratic fitted to the disc; `off` on the function is how far behind it each vertex
+    stands, and `moved` the depth of the disc's own vertices at new places.
+    """
+    def terms(xz):
+        x, z = xz[:, 0] - centre[0], xz[:, 1] - centre[1]
+        return np.stack([np.ones(len(xz)), x, z, x * x, x * z, z * z], axis=1)
+
+    centre = points[:, [0, 2]].mean(axis=0)
+    coeffs = np.linalg.lstsq(terms(points[:, [0, 2]]), points[:, 1], rcond=None)[0]
+    off = points[:, 1] - terms(points[:, [0, 2]]) @ coeffs
+
+    def depth(xz):
+        return terms(np.asarray(xz, float)) @ coeffs
+
+    depth.off = off
+    # where a moved vertex goes: as far off the curve as it stood. Two looks at once add up, and
+    # from the bare curve they turned each dent in the disc into a bump of the same size (a
+    # squiggle round the catgirl's sunk pupil, looking down and aside). The still copy lies
+    # behind the deepest of the iris (_still_copy); a disc's rim curled back under the lid goes
+    # behind it, and is see-through
+    depth.moved = lambda xz: depth(xz) + off
+    return depth
+
+
+def _still_copy(mesh_obj, ids, side, curve, deepest=0.0):
+    """Copy an iris disc (its vertices `ids`) BACKING_GAP behind itself and `deepest` behind its `curve`;
+    returns the copy's vertices.
+
+    The copy keeps the disc's weights and moves as it does in every shape key there is (the
+    blinks); keys added later leave it where it is. It is marked as eye white, not as an insert.
+    """
+    mesh = mesh_obj.data
+    world = np.array(mesh_obj.matrix_world)
+    rest = meshdata.world_vertices(mesh_obj)[ids]
+    behind = np.maximum(curve(rest[:, [0, 2]]) + deepest - rest[:, 1], 0.0) + BACKING_GAP
+    back = np.stack([np.zeros(len(ids)), behind, np.zeros(len(ids))], axis=1) @ np.linalg.inv(world[:3, :3]).T
+    index_of = {int(v): i for i, v in enumerate(ids)}
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.verts.ensure_lookup_table()
+    start = len(bm.verts)
+    faces = [face for face in bm.faces if all(v.index in index_of for v in face.verts)]
+    sources = [bm.verts[int(v)] for v in ids]
+    copies = [bm.verts.new(tuple(np.array(vert.co) + move), vert) for vert, move in zip(sources, back)]
+    for face in faces:
+        bm.faces.new([copies[index_of[v.index]] for v in face.verts], face)
+    bm.to_mesh(mesh)
+    bm.free()
+
+    indices = np.arange(start, start + len(ids))
+    for key in _keys(mesh):
+        key_co = _key_co(key)
+        key_co[indices] = key_co[ids] + back
+        key.data.foreach_set("co", key_co.ravel())
+    for name, value in ((WHITE_ATTRIBUTE, SIDE_IDS[side]), (face_rig.FIXED_ATTRIBUTE, 1), (face_rig.EYE_INSERT_ATTRIBUTE, 0)):
+        values = get_int(mesh, name)
+        values[indices] = value
+        _set_int(mesh, name, values)
+    mesh.update()
+    return indices
+
+
+def _front_mapped(mesh_obj, face, vertices, slot):
+    """Put the polygons made of `vertices` alone on material `slot`, mapped from the front as the face patch is."""
+    mesh = mesh_obj.data
+    rest = meshdata.world_vertices(mesh_obj)
+    chosen = np.zeros(len(rest), bool)
+    chosen[vertices] = True
+    uv = mesh.uv_layers.active.data
+    for poly in mesh.polygons:
+        if not all(chosen[v] for v in poly.vertices):
+            continue
+        poly.material_index = slot
+        for li in poly.loop_indices:
+            co = rest[mesh.loops[li].vertex_index]
+            uv[li].uv = tuple(face.uv([[co[0], co[2]]])[0])
+
+
+def _onto_patch(mesh_obj, face, polygons, slot):
+    """Put `polygons` (indices) on the face patch's material `slot`, mapped from the front; returns how many moved."""
+    mesh = mesh_obj.data
+    rest = meshdata.world_vertices(mesh_obj)
+    uv = mesh.uv_layers.active.data
+    moved = 0
+    for index in sorted(polygons):
+        poly = mesh.polygons[index]
+        if poly.material_index == slot:
+            continue
+        poly.material_index = slot
+        for li in poly.loop_indices:
+            co = rest[mesh.loops[li].vertex_index]
+            uv[li].uv = tuple(face.uv([[co[0], co[2]]])[0])
+        moved += 1
+    return moved
+
+
+def _blink_as_painted(mesh_obj, vertices, box, name):
+    """In the blink keys of one eye (`name` and its variants), squeeze `vertices` as the painted eye in `box` is."""
+    keys = mesh_obj.data.shape_keys.key_blocks
+    basis = _key_co(keys[0])
+    for key in keys[1:]:
+        if not key.name.startswith(name):
+            continue
+        co = _key_co(key)
+        co[vertices, 2] = basis[vertices, 2] + face_rig.squeeze_shut(basis[vertices], box, _blink_amount(basis, co, box))
+        key.data.foreach_set("co", co.ravel())
+
+
+def check_modelled(mesh_obj, built, points):
+    """Where a modelled iris shows outside its eye, in each look (alone and two at once) and each blink.
+
+    Rays from the front meet the disc's vertices and its triangles' middles; one inside the
+    frame's opening (built["window"], as it lies looking ahead) with nothing else in front of it shows.
+    Showing further than WINDOW_REACH of the eye's height outside the eye's painting and its marks
+    (on the brow, on the cheek) is a failure once more than STRAY of the points in one look, or
+    BLINK_STRAY while blinking too; so is an iris that doesn't show at all. Returns (numbers, failures).
+    """
+    mesh = mesh_obj.data
+    face = FacePatch(mesh_obj)
+    world = np.array(mesh_obj.matrix_world)
+    keys = mesh.shape_keys.key_blocks
+    basis = _key_co(keys[0])
+    tris = meshdata.triangles(mesh)
+    solid = tris[~(get_int(mesh, LID_ATTRIBUTE) > 0)[tris].all(axis=1)]
+    marked = marked_eyes(points, face.size)
+    rows = image_rows(face.image)
+    looks = [()] + [(d,) for d in ("In", "Out", "Up", "Down")] + [(a, b) for a in ("In", "Out") for b in ("Up", "Down")]
+    worst, failures, checked, shown_least = 0, [], 0, None
+    for blink in [None] + [key.name for key in keys if key.name.startswith("eyeBlink") and "_" not in key.name]:
+        for side, info in built["eyes"].items():
+            eye = marked[side]
+            paint = find_eye_paint(eye.crop(rows)[..., :3].astype(np.float64), eye)[0]
+            allowed = _dilate(paint | eye.marked, max(1, int(WINDOW_REACH * eye.height)))
+            window = eye.crop(built["window"])
+            disc = np.zeros(len(basis), bool)
+            disc[info["vertices"]] = True
+            own = tris[disc[tris].all(axis=1)]
+            # past the iris's circle the disc is see-through
+            ahead = basis @ world[:3, :3].T + world[:3, 3]
+            ahead = np.concatenate([ahead[info["vertices"]], ahead[own].mean(axis=1)])
+            cx, cz, radius = info["circle"]
+            drawn = np.hypot(ahead[:, 0] - cx, ahead[:, 2] - cz) <= radius
+            for look in looks:
+                names = [f"eyeLook{d}{side.title()}" for d in look] + ([blink] if blink else [])
+                co = basis.copy()
+                for name in names:
+                    co += _key_co(keys[name]) - basis
+                state = co @ world[:3, :3].T + world[:3, 3]
+                scene = BVHTree.FromPolygons([Vector(p) for p in state], solid.tolist())
+                samples = np.concatenate([state[info["vertices"]], state[own].mean(axis=1)])[drawn]
+                pixels = (face.pixel(samples[:, [0, 2]]) - eye.box[:2]).astype(int)
+                inside = ((pixels >= 0) & (pixels < (allowed.shape[1], allowed.shape[0]))).all(axis=1)
+                open_ = inside.copy()
+                open_[inside] = window[pixels[inside, 1], pixels[inside, 0]]
+                inside[inside] = allowed[pixels[inside, 1], pixels[inside, 0]]
+                showing = np.zeros(len(samples), bool)
+                for i in np.flatnonzero(open_):
+                    point = samples[i]
+                    hit = scene.ray_cast(Vector((point[0], -10.0, point[2])), Vector((0.0, 1.0, 0.0)), 20.0)[0]
+                    showing[i] = hit is None or hit.y >= point[1] - 1e-5
+                shown, stray = int(showing.sum()), int((showing & ~inside).sum())
+                checked += len(samples)
+                worst = max(worst, stray)
+                if blink is None:
+                    shown_least = shown if shown_least is None else min(shown_least, shown)
+                where = side + " eye looking " + ("+".join(look) or "ahead") + (" with " + blink if blink else "")
+                if stray > (STRAY if blink is None else BLINK_STRAY) * len(samples):
+                    failures.append(f"iris shows outside the eye, {where}: {stray} of {len(samples)} points")
+                if blink is None and not shown:
+                    failures.append(f"iris hidden altogether, {where}")
+    return {"points": checked, "outside": worst, "shown_least": shown_least or 0}, failures

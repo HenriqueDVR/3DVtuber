@@ -24,7 +24,7 @@ from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 
-from vtuber_maker.pipeline import eyes, face_points, meshdata, vrm_export  # noqa: E402
+from vtuber_maker.pipeline import eyes, face_points, face_rig, meshdata, vrm_export  # noqa: E402
 
 # The look-at input angle (degrees) at which the look expressions reach full weight, as VRoid exports.
 LOOK_INPUT = 90.0
@@ -38,6 +38,9 @@ def main():
     ap.add_argument("--face", type=Path, required=True, help="face.json from viewer/setup.html")
     ap.add_argument("--slide", type=float, nargs="*", metavar=("H", "V"),
                     help="slide the whole eye instead of moving an iris (a mascot); optional shares of its width and height")
+    ap.add_argument("--modelled", action="store_true",
+                    help="the irises are modelled discs in their sockets: slide the discs themselves, each with a picture of "
+                         "its own (the app tries this when the moving iris is refused)")
     ap.add_argument("--still-iris", action="store_true",
                     help="moving iris: in a blink the lids slide down over a still iris (default: the iris squeezes with the eye)")
     ap.add_argument("--lid-travel", type=float, default=1.0,
@@ -65,6 +68,22 @@ def main():
         parts = built["patches"]
         numbers, failures = eyes.check_sliding(obj, built)
         report_sliding(built, numbers)
+    elif args.modelled:
+        if not eyes.modelled_irises(obj, points):
+            print("FAILED: the eyes aren't modelled as iris discs narrower than the eyes: nothing to slide")
+            sys.exit(1)
+        # the blink first, so what is added blinks with the face: the whole marked eye squeezes, as
+        # painted eyes do (the lid blink is sized from the insert, here only the iris)
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import add_face_tracking
+        add_face_tracking.FaceShapes(obj, painted_eyes=True).add_blink("", face_rig.PAINTED_BLINK)
+        built = eyes.add_modelled_irises(obj, points)
+        if built is None:
+            print("FAILED: too little of the iris discs shows between the lids to paint whole irises from")
+            sys.exit(1)
+        parts = built["eyes"]
+        numbers, failures = eyes.check_modelled(obj, built, points)
+        report_modelled(built, numbers)
     else:
         built = eyes.add_moving_irises(obj, points, still_iris=args.still_iris)
         if args.lid_travel != 1.0:
@@ -92,6 +111,22 @@ def main():
         print("FAILED:", failure)
     if failures:
         sys.exit(1)
+
+
+def report_modelled(built, numbers):
+    for side, info in built["eyes"].items():
+        w, h = info["opening_size"]
+        iw, ih = info["iris_size"]
+        across, up = info["slide"]
+        dw, dh = info["disc_size"]
+        print(f"{side} eye: marked {1000 * w:.1f} x {1000 * h:.1f} mm, iris {1000 * iw:.1f} mm across on a disc {1000 * dw:.1f} x {1000 * dh:.1f} mm, "
+              f"room beside it {1000 * info['white_beside'][0]:.1f} and {1000 * info['white_beside'][1]:.1f} mm, "
+              f"slides {1000 * across:.1f} mm sideways, {1000 * up:.1f} mm up/down, {len(info['vertices'])} iris vertices")
+    shown = ", ".join(f"{side} {info['shown_px'] / max(info['outline_px'], 1):.0%}" for side, info in built["eyes"].items())
+    print(f"each iris painted whole from the part that shows ({shown} of its disc), {built['repainted_polygons']} polygons "
+          f"round them moved onto the face patch; "
+          f"checked {numbers['points']} iris points over every look and blink: most showing outside the eye in one look "
+          f"{numbers['outside']}, fewest showing at all {numbers['shown_least']}")
 
 
 def report_irises(built, numbers):
