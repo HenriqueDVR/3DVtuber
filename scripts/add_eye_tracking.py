@@ -45,6 +45,12 @@ def main():
                     help="moving iris: in a blink the lids slide down over a still iris (default: the iris squeezes with the eye)")
     ap.add_argument("--lid-travel", type=float, default=1.0,
                     help="moving iris: how far the lids come down in a blink, times what the build's blink does (with --still-iris: up to about 1.6)")
+    ap.add_argument("--iris-shape", choices=("circle", "oval"), help="with --modelled: the iris's shape, instead of the one read off the drawing")
+    ap.add_argument("--iris-size", type=float, default=1.0, help="with --modelled: the iris this many times the size read (no wider than its disc)")
+    ap.add_argument("--travel", type=float, default=1.0, help="how far the eyes look, as a factor on what the build works out")
+    ap.add_argument("--blink", type=float, default=1.0, help="how far the eyes close, as a factor on the blink the build made")
+    ap.add_argument("--only", choices=("left", "right"),
+                    help="the character's other eye is covered (hair, an eyepatch): it is left as it is, with no blink")
     ap.add_argument("--renders", type=Path, help="write eye close-ups here, before and after, looking each way")
     args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:])
     if args.slide is not None and len(args.slide) not in (0, 2):
@@ -64,12 +70,12 @@ def main():
         render_views(obj, points, renders, {"before": {}})
 
     if args.slide is not None:
-        built = eyes.add_sliding_eyes(obj, points, tuple(args.slide) if args.slide else eyes.SLIDE)
+        built = eyes.add_sliding_eyes(obj, points, tuple(args.travel * reach for reach in (args.slide or eyes.SLIDE)), only=args.only)
         parts = built["patches"]
         numbers, failures = eyes.check_sliding(obj, built)
         report_sliding(built, numbers)
     elif args.modelled:
-        if not eyes.modelled_irises(obj, points):
+        if not eyes.modelled_irises(obj, points, args.only):
             print("FAILED: the eyes aren't modelled as iris discs narrower than the eyes: nothing to slide")
             sys.exit(1)
         # the blink first, so what is added blinks with the face: the whole marked eye squeezes, as
@@ -77,7 +83,7 @@ def main():
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import add_face_tracking
         add_face_tracking.FaceShapes(obj, painted_eyes=True).add_blink("", face_rig.PAINTED_BLINK)
-        built = eyes.add_modelled_irises(obj, points)
+        built = eyes.add_modelled_irises(obj, points, shape=args.iris_shape, bigger=args.iris_size, travel=args.travel, only=args.only)
         if built is None:
             print("FAILED: too little of the iris discs shows between the lids to paint whole irises from")
             sys.exit(1)
@@ -85,12 +91,18 @@ def main():
         numbers, failures = eyes.check_modelled(obj, built, points)
         report_modelled(built, numbers)
     else:
-        built = eyes.add_moving_irises(obj, points, still_iris=args.still_iris)
+        built = eyes.add_moving_irises(obj, points, still_iris=args.still_iris, travel=args.travel, only=args.only)
         if args.lid_travel != 1.0:
             eyes.scale_blinks(obj, args.lid_travel)
         parts = built["eyes"]
         numbers, failures = eyes.check_irises(obj, built)
         report_irises(built, numbers)
+    if args.only:
+        covered = "right" if args.only == "left" else "left"
+        print(f"the {covered} eye is covered: left as it is, {len(eyes.still_blink(obj, covered))} blink keys emptied")
+    if args.blink != 1.0:
+        # after the eyes are made: their own layers were given the blink the face has
+        eyes.scale_blinks(obj, args.blink)
     for name, crop in built["crops"].items():
         x0, y0, x1, y1 = crop["box"]
         print(f"{name} image: {x1 - x0} x {y1 - y0} px of the face patch's {crop['full'][0]} x {crop['full'][1]}")
@@ -119,9 +131,11 @@ def report_modelled(built, numbers):
         iw, ih = info["iris_size"]
         across, up = info["slide"]
         dw, dh = info["disc_size"]
-        print(f"{side} eye: marked {1000 * w:.1f} x {1000 * h:.1f} mm, iris {1000 * iw:.1f} mm across on a disc {1000 * dw:.1f} x {1000 * dh:.1f} mm, "
+        print(f"{side} eye: marked {1000 * w:.1f} x {1000 * h:.1f} mm, iris {1000 * iw:.1f} x {1000 * ih:.1f} mm on a disc {1000 * dw:.1f} x {1000 * dh:.1f} mm, "
               f"room beside it {1000 * info['white_beside'][0]:.1f} and {1000 * info['white_beside'][1]:.1f} mm, "
               f"slides {1000 * across:.1f} mm sideways, {1000 * up:.1f} mm up/down, {len(info['vertices'])} iris vertices")
+    deep = ", ".join(f"{side} {1000 * info['socket_depth']:.1f} mm" for side, info in built["eyes"].items())
+    print(f"the eye white lay in the socket behind the irises ({deep}): it is drawn on a surface of its own right behind them")
     shown = ", ".join(f"{side} {info['shown_px'] / max(info['outline_px'], 1):.0%}" for side, info in built["eyes"].items())
     print(f"each iris painted whole from the part that shows ({shown} of its disc), {built['repainted_polygons']} polygons "
           f"round them moved onto the face patch; "

@@ -74,6 +74,7 @@ def main():
     ap.add_argument("--mouth-only", action="store_true",
                     help="mouth shapes open only the mouth, from the vowels; the face around it stays still")
     ap.add_argument("--no-blink", action="store_true", help="the eyes are hidden (a visor, glasses): mouth shapes only")
+    ap.add_argument("--covered", choices=("left", "right"), help="this eye of the character's is covered (hair, an eyepatch): it doesn't blink")
     ap.add_argument("--renders", type=Path, help="write face close-ups of each shape here")
     ap.add_argument("--blink-tries", type=float, nargs="*", default=[], help="also render these blink amounts")
     args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:])
@@ -91,6 +92,8 @@ def main():
     if not args.no_blink:
         shapes.add_blink("", args.blink if args.blink is not None else (face_rig.PAINTED_BLINK if shapes.painted else 0.4))
         bind_blink(arm, obj)
+        if args.covered:
+            print(f"the {args.covered} eye is covered: {len(eyes.still_blink(obj, args.covered))} blink keys emptied")
 
     bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath(args.out_blend), copy=True)
     if not vrm_export.skipped():

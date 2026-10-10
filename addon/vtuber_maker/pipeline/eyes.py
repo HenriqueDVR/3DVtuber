@@ -176,6 +176,13 @@ IRIS_INSERT = 0.75
 IRIS_RINGS = 16
 GHOST = 2
 BACKING_GAP = 0.0015
+# Round a disc the eye white is painted on the model's own socket, and that can be a pit: 28 to 33 mm
+# behind the fox girl's discs (the catgirl's 12 to 24, the plain boy's 5 to 10). In Warudo, from a
+# little to the side, her irises floated in the opening with the white far behind them, the inside
+# of the head showing (the user). A surface of its own carries the white instead (as the mouth's
+# patch carries the mouth): the face's picture on a grid over the whole opening and WHITE_ROUND (m)
+# round it, two BACKING_GAPs behind the disc; the socket stays where it is, behind it.
+WHITE_ROUND = 0.003
 FRAME_GAP = 0.001
 FRAME_MARGIN = 0.002
 FRAME_GRID = (24, 16)
@@ -183,6 +190,24 @@ WHITE_NEAR = 24
 RIM_REACH = 0.25
 IRIS_STROKE = 0.06
 IRIS_CHORD = 0.2
+# An iris drawn pale toward its lower edge: what shows of the disc, more saturated than IRIS_PALE and
+# within IRIS_HUE (of the colour circle) of the hue of what read as iris, is iris too. The fox girl's
+# discs are iris to their edge (26 x 31 mm), deep violet above and lilac below (saturation 0.2 to
+# 0.35): only the upper part read, the circle came out 18.5 mm across in the top of the disc and the
+# rest of her iris was painted white.
+IRIS_PALE = 0.15
+IRIS_HUE = 0.06
+# A drawn iris is an oval as often as a circle, taller than wide (the user, on the fox girl's: 26 x 31
+# mm, read as a circle 23 across with white under it). Its height is read off the chords of its lower
+# half, those between OVAL_CHORDS of its width (the widest are its middle, the narrowest its ragged
+# end), from at least OVAL_ROWS of them; never flatter than a circle, nor taller than OVAL_TALL widths.
+OVAL_CHORDS = (0.3, 0.9)
+OVAL_ROWS = 8
+OVAL_TALL = 1.4
+# The user's word over the reading (manifest `iris_shape`, `iris_size`): "circle" is as tall as wide,
+# "oval" at least OVAL_ASKED times as tall as wide; the size is a factor on both. Whatever is asked,
+# an iris is painted on its disc and is no wider than it.
+OVAL_ASKED = 1.2
 RIM_FRONT = 0.0005
 WINDOW_EVEN = 0.04
 WINDOW_REACH = 0.05
@@ -279,6 +304,14 @@ def _saturation_value(rgb):
     return (top - bottom) / np.maximum(top, 1e-6), top
 
 
+def _hue(rgb):
+    """The hue of each pixel, 0 to 1 round the colour circle (red 0, green 1/3, blue 2/3); 0 for greys."""
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    top, spread = rgb.max(axis=-1), np.maximum(np.ptp(rgb, axis=-1), 1e-9)
+    hue = np.where(top == r, (g - b) / spread, np.where(top == g, 2.0 + (b - r) / spread, 4.0 + (r - g) / spread))
+    return np.where(np.ptp(rgb, axis=-1) > 0, (hue / 6.0) % 1.0, 0.0)
+
+
 # --- the marked eyes --------------------------------------------------------------------------
 
 def _parabola(a, m, b):
@@ -334,6 +367,28 @@ def marked_eyes(points, image_size):
     eyes.sort(key=lambda eye: -(eye.points["inner"][0] + eye.points["outer"][0]))
     eyes[0].side, eyes[1].side = "left", "right"
     return {eye.side: eye for eye in eyes}
+
+
+def shown_eyes(points, image_size, only=None):
+    """marked_eyes, or with `only` ("left" or "right", the character's) that one alone: the other is
+    covered (hair over it, an eyepatch) and is left as it is modelled and painted, still."""
+    return {side: eye for side, eye in marked_eyes(points, image_size).items() if only in (None, side)}
+
+
+def still_blink(mesh_obj, side):
+    """Empty the blink keys of one eye (`side`: "left" or "right"): a covered eye doesn't blink.
+
+    Squeezed with the other, whatever lies over it (a lock of hair on the face patch, a patch) was
+    squeezed too. Returns the keys emptied.
+    """
+    keys = _keys(mesh_obj.data)
+    if not keys:
+        return []
+    basis = _key_co(keys[0])
+    emptied = [key for key in keys[1:] if "blink" in key.name.lower() and key.name.endswith(side.title())]
+    for key in emptied:
+        key.data.foreach_set("co", basis.ravel())
+    return [key.name for key in emptied]
 
 
 def find_opening(rgb, eye):
@@ -867,7 +922,7 @@ def track_surface(face, pixels):
     return (lambda points: terms(points) @ coeffs + shift), float(np.std(residual[use]))
 
 
-def add_moving_irises(mesh_obj, points, still_iris=False):
+def add_moving_irises(mesh_obj, points, still_iris=False, travel=1.0, only=None):
     """Give each marked eye an iris that slides on eyeLook keys, the face under it painted out, lids in front.
 
     Assumes a finished, skinned mesh with a face patch, the character facing -Y, and face points
@@ -888,7 +943,7 @@ def add_moving_irises(mesh_obj, points, still_iris=False):
     iris_rows = np.zeros_like(rows)
     windows = np.zeros(rows.shape[:2], bool)
     found = {}
-    for side, eye in marked_eyes(points, face.size).items():
+    for side, eye in shown_eyes(points, face.size, only).items():
         x0, y0, x1, y1 = eye.box
         rgb = rows[y0:y1, x0:x1, :3].astype(np.float64)
         opening = find_opening(rgb, eye)
@@ -908,7 +963,7 @@ def add_moving_irises(mesh_obj, points, still_iris=False):
     cut_out(mesh.materials[lid_slot])
     cut_out(mesh.materials[iris_slot])
 
-    slide = iris_slide(found)
+    slide = tuple(travel * reach for reach in iris_slide(found))
     for info in found.values():
         info["track"], info["track_spread"] = track_surface(face, info["window_pixels"])
         info["slide"] = slide
@@ -1311,7 +1366,7 @@ def _barycentric(corners, point):
 
 # --- sliding eyes ----------------------------------------------------------------------------
 
-def add_sliding_eyes(mesh_obj, points, slide=SLIDE):
+def add_sliding_eyes(mesh_obj, points, slide=SLIDE, only=None):
     """Move each marked eye's whole painting onto a patch that slides over the face on eyeLook keys.
 
     Assumes a finished, skinned mesh with a face patch, the character facing -Y, face points
@@ -1326,7 +1381,7 @@ def add_sliding_eyes(mesh_obj, points, slide=SLIDE):
     rows = image_rows(face.image)
     paint_rows = np.zeros_like(rows)
     patches = {}
-    for side, eye in marked_eyes(points, face.size).items():
+    for side, eye in shown_eyes(points, face.size, only).items():
         x0, y0, x1, y1 = eye.box
         rgb = rows[y0:y1, x0:x1, :3].astype(np.float64)
         paint, behind = find_eye_paint(rgb, eye)
@@ -1650,8 +1705,9 @@ def check_sliding(mesh_obj, built):
     return {"points": checked, "hidden": worst}, failures
 
 
-def modelled_irises(mesh_obj, points):
-    """side -> the vertices of an eye insert that is the iris alone (IRIS_INSERT); {} unless both eyes have one."""
+def modelled_irises(mesh_obj, points, only=None):
+    """side -> the vertices of an eye insert that is the iris alone (IRIS_INSERT); {} unless both eyes
+    (the one that shows, with `only`: see shown_eyes) have one."""
     mesh = mesh_obj.data
     if face_rig.EYE_INSERT_ATTRIBUTE not in mesh.attributes:
         return {}
@@ -1659,7 +1715,7 @@ def modelled_irises(mesh_obj, points):
     inserts = get_int(mesh, face_rig.EYE_INSERT_ATTRIBUTE)
     rest = meshdata.world_vertices(mesh_obj)
     found = {}
-    for side, eye in marked_eyes(points, face.size).items():
+    for side, eye in shown_eyes(points, face.size, only).items():
         ids = np.flatnonzero(inserts == SIDE_IDS[side])
         if len(ids) < 3 or np.ptp(rest[ids, 0]) > IRIS_INSERT * eye.width * face.metres_per_pixel:
             return {}
@@ -1673,8 +1729,11 @@ def modelled_irises(mesh_obj, points):
     return found
 
 
-def add_modelled_irises(mesh_obj, points):
+def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, only=None):
     """Slide each modelled iris in its socket on the eyeLook keys; None when the eyes aren't made that way.
+
+    `shape` ("circle", "oval") and `bigger` are the user's word on the iris (see `shaped`), `travel` a
+    factor on how far it slides.
 
     Assumes a finished, skinned mesh with a face patch, the character facing -Y, face points
     marking both eyes, and eye inserts that are the irises alone (modelled_irises). The discs move
@@ -1685,7 +1744,7 @@ def add_modelled_irises(mesh_obj, points):
     line (see IRIS_INSERT). Looking ahead the eye is as it was painted. Blink keys stay as the
     face tracking step made them; the copies and frames blink with the face.
     """
-    found = modelled_irises(mesh_obj, points)
+    found = modelled_irises(mesh_obj, points, only)
     if not found:
         return None
     mesh = mesh_obj.data
@@ -1719,7 +1778,7 @@ def add_modelled_irises(mesh_obj, points):
         window = eye_window(rgb, eye, opening)
         windows[y0:y1, x0:x1] |= window
         known = outline & window & _seen(face, eye, outline, scene, own)
-        drawn = drawn_circle(rgb, outline, known)
+        drawn = shaped(drawn_circle(rgb, outline, known), shape, bigger)
         # the iris goes under the upper lid, as it was drawn: the lash line stays on the frame across
         # it (see under_lid), and what was painted there is no part of the iris's own picture
         lid = under_lid(opening, drawn)
@@ -1736,9 +1795,9 @@ def add_modelled_irises(mesh_obj, points):
         return None  # too little of a disc shows between the lids to paint an iris from; nothing is changed yet
     # both irises are one size, the smaller read: lashes running into one make it read bigger
     # (the catgirl's: 27.3 and 22.3 mm)
-    radii = [drawn[2] for *_, drawn, _opening, _lid in read.values() if drawn]
+    sizes = [drawn[2:] for *_, drawn, _opening, _lid in read.values() if drawn]
     circles = tucked({side: (drawn, lid, outline) for side, (_rgb, outline, _window, _known, drawn, _opening, lid)
-                      in read.items()}, min(radii)) if radii else {}
+                      in read.items()}, np.min(sizes, axis=0)) if sizes else {}
     for side, ids in found.items():
         eye = marked[side]
         x0, y0, x1, y1 = eye.box
@@ -1760,7 +1819,7 @@ def add_modelled_irises(mesh_obj, points):
         # (only what was drawn in the iris's colours there, tried: the soft edge of its outline
         # stayed as a ghost of it; the ring this left looking ahead was the fill's tone, see whiten)
         yy, xx = np.mgrid[0:y1 - y0, 0:x1 - x0] + 0.5
-        round_iris = np.hypot(xx - circle[0], yy - circle[1]) <= circle[2] + OUTLINE_REACH
+        round_iris = _in_oval(xx, yy, circle, more=OUTLINE_REACH)
         hole = ((_dilate(known, OUTLINE_REACH) & round_iris | _behind(face, eye, circle, curve, others))
                 & _dilate(window, OUTLINE_REACH)) & ~lid
         saturation, value = _saturation_value(rgb)
@@ -1774,6 +1833,7 @@ def add_modelled_irises(mesh_obj, points):
         # what shows there must show the picture: some of the face round a disc is still on the
         # model's own texture, with the generator's own paint of the iris's rim (a dark notch stayed)
         hy, hx = np.nonzero(hole | whitened)
+        opened = face.world([[hx.min() + x0, hy.min() + y0], [hx.max() + 1 + x0, hy.max() + 1 + y0]])
         under = set()
         for x, z in face.world(np.stack([hx + x0 + 0.5, hy + y0 + 0.5], axis=1)[::WINDOW_STEP * 2]):
             index = others.ray_cast(Vector((x, -10.0, z)), Vector((0.0, 1.0, 0.0)), 20.0)[2]
@@ -1783,12 +1843,14 @@ def add_modelled_irises(mesh_obj, points):
         corners = face.world([eye.points["inner"], eye.points["outer"]])[:, 0]
         at = face.world([[circle[0] + x0, circle[1] + y0]])[0]
         low, high = at[0] - circle[2] * size, at[0] + circle[2] * size
+        tall = 2 * circle[3] * size
         parts[side] = {"vertices": ids, "white_beside": sorted(max(float(min(abs(c - low), abs(c - high))), 0.0) for c in corners),
-                       "iris_size": (float(high - low), float(high - low)), "circle": (float(at[0]), float(at[1]), float(circle[2] * size)),
+                       "iris_size": (float(high - low), float(tall)), "circle": (float(at[0]), float(at[1]), float(circle[2] * size), float(tall / 2)),
                        "disc_size": (float(np.ptp(rest[ids, 0])), float(np.ptp(rest[ids, 2]))), "shown_px": int(known.sum()),
+                       "opened": (opened.min(axis=0), opened.max(axis=0)),
                        "outline_px": int(outline.sum()), "opening_size": (float(eye.width * size), float(eye.height * size))}
-    slide = (float(SIDE_TRAVEL * np.mean([info["white_beside"] for info in parts.values()])),
-             float(UP_DOWN_TRAVEL * min(info["iris_size"][1] for info in parts.values())))
+    slide = (float(travel * SIDE_TRAVEL * np.mean([info["white_beside"] for info in parts.values()])),
+             float(travel * UP_DOWN_TRAVEL * min(info["iris_size"][1] for info in parts.values())))
 
     _store(face.image, rows)
     frame_rows = rows.copy()
@@ -1802,8 +1864,7 @@ def add_modelled_irises(mesh_obj, points):
         ids = info["vertices"]
         info["slide"] = slide
         info["curve"] = _disc_curve(rest[ids])
-        cx, cz, radius = info["circle"]
-        drawn = np.hypot(rest[ids, 0] - cx, rest[ids, 2] - cz) <= radius
+        drawn = _in_oval(rest[ids, 0], rest[ids, 2], info["circle"])
         deepest = max(float(info["curve"].off[drawn].max()), 0.0) if drawn.any() else 0.0
         info["white_vertices"] = _still_copy(mesh_obj, ids, side, info["curve"], deepest)
         _front_mapped(mesh_obj, face, ids, iris_slot)
@@ -1817,12 +1878,35 @@ def add_modelled_irises(mesh_obj, points):
         flat = lambda xz, curve=info["curve"], on=on_disc, f=forward: curve(on(np.asarray(xz, float))) - f - FRAME_GAP  # noqa: E731
         info["frame_vertices"] = _add_grid(mesh_obj, np.array([low, high]), flat, face.uv, *FRAME_GRID, frame_slot,
                                             BONE_NAMES["head"], {LID_ATTRIBUTE: SIDE_IDS[side], face_rig.FIXED_ATTRIBUTE: 1})
+        # the white, on a surface of its own right behind the disc (see WHITE_ROUND)
+        wide = (np.minimum(low, info["opened"][0] - WHITE_ROUND), np.maximum(high, info["opened"][1] + WHITE_ROUND))
+        behind = lambda xz, curve=info["curve"], on=on_disc, d=deepest: curve(on(np.asarray(xz, float))) + d + 2 * BACKING_GAP  # noqa: E731
+        info["socket_depth"] = _socket_depth(others, info["opened"], info["curve"], on_disc)
+        backing = _add_grid(mesh_obj, np.array(wide), behind, face.uv, *FRAME_GRID, patch_slot,
+                            BONE_NAMES["head"], {WHITE_ATTRIBUTE: SIDE_IDS[side], face_rig.FIXED_ATTRIBUTE: 1})
         if boxes is not None:
             _blink_as_painted(mesh_obj, info["frame_vertices"], tuple(boxes[side]), f"eyeBlink{side.title()}")
+            _blink_as_painted(mesh_obj, backing, tuple(boxes[side]), f"eyeBlink{side.title()}")
+        info["white_vertices"] = np.concatenate([info["white_vertices"], backing])
     _slide_keys(mesh_obj, parts, lambda side, xz: parts[side]["curve"].moved(xz))
     mesh.update()
     crops = {name: crop_to_use(mesh, name) for name in (LIDS_MATERIAL, IRIS_MATERIAL)}
     return {"eyes": parts, "window": windows, "repainted_polygons": repainted, "crops": crops}
+
+
+def _socket_depth(scene, opened, curve, on_disc, steps=24):
+    """How far behind an iris disc's `curve` the surface in its eye opening lies (m): the median over
+    the box `opened` (world (x, z) low and high) of what `scene` (the mesh without the discs) shows
+    from the front behind the curve; 0 when nothing does."""
+    (x0, z0), (x1, z1) = opened
+    xs, zs = np.meshgrid(np.linspace(x0, x1, steps), np.linspace(z0, z1, steps))
+    xz = np.stack([xs.ravel(), zs.ravel()], axis=1)
+    depths = []
+    for (x, z), front in zip(xz, curve(on_disc(xz))):
+        hit = scene.ray_cast(Vector((x, -10.0, z)), Vector((0.0, 1.0, 0.0)), 20.0)[0]
+        if hit is not None and hit.y > front:
+            depths.append(hit.y - front)
+    return float(np.median(depths)) if depths else 0.0
 
 
 def eye_window(rgb, eye, opening=None):
@@ -1893,12 +1977,13 @@ def complete_iris(rgb, outline, known, drawn=False):
     ys, xs = np.nonzero(outline)
     drawn = drawn_circle(rgb, outline, known) if drawn is False else drawn
     cx, radius = (drawn[0], drawn[2]) if drawn else ((xs.min() + xs.max() + 1) / 2, (np.ptp(xs) + 1) / 2)
+    tall = drawn[3] if drawn else radius
     yy, xx = np.mgrid[0:outline.shape[0], 0:outline.shape[1]] + 0.5
     ky, kx = np.nonzero(known)
     colour = rgb[known]
 
     def rings_of(cy, y, x):
-        return (np.hypot(x - cx, y - cy) / radius * IRIS_RINGS).astype(int)
+        return (np.hypot((x - cx) / radius, (y - cy) / tall) * IRIS_RINGS).astype(int)
 
     def spread(cy):
         ring = rings_of(cy, ky + 0.5, kx + 0.5)
@@ -1912,7 +1997,7 @@ def complete_iris(rgb, outline, known, drawn=False):
 
     layer = np.zeros(outline.shape + (4,), np.float32)
     if len(ky) < 8 * IRIS_RINGS:
-        return layer, (cx, (ys.min() + ys.max() + 1) / 2, radius)
+        return layer, (cx, (ys.min() + ys.max() + 1) / 2, radius, tall)
     cy = drawn[1] if drawn else min(np.arange(ys.min() + radius / 2, ys.max() + 1 - radius / 2 + 1, 2.0), key=spread)
     ring = rings_of(cy, yy, xx)
     colours = np.full((IRIS_RINGS, 3), np.nan)
@@ -1922,18 +2007,50 @@ def complete_iris(rgb, outline, known, drawn=False):
             colours[index] = np.median(rgb[chosen], axis=0)
     filled = np.flatnonzero(~np.isnan(colours[:, 0]))
     if not len(filled):
-        return layer, (cx, cy, radius)
+        return layer, (cx, cy, radius, tall)
     colours = colours[filled[np.abs(np.arange(IRIS_RINGS)[:, None] - filled[None, :]).argmin(axis=1)]]
     circle = ring < IRIS_RINGS
     made = colours[np.minimum(ring, IRIS_RINGS - 1)]
     layer[..., :3] = _smooth(made, ~known, IRIS_SMOOTH // 4, np.ones_like(outline))
     layer[..., :3][known & circle] = rgb[known & circle]
     layer[..., 3] = circle
-    return layer, (cx, cy, radius)
+    return layer, (cx, cy, radius, tall)
+
+
+def shaped(oval, shape=None, size=1.0):
+    """`oval` (cx, cy, half width, half height) made the `shape` and `size` asked for, its lowest point kept
+    (it sits on the lower eye line as drawn); None stays None."""
+    if oval is None:
+        return None
+    cx, cy, rx, ry = oval
+    tall = {"circle": rx, "oval": max(ry, OVAL_ASKED * rx)}.get(shape, ry)
+    return (cx, cy + ry - size * tall, size * rx, size * tall)
+
+
+def _in_oval(x, y, oval, reach=1.0, more=0.0):
+    """Whether (x, y) lie in `oval` (cx, cy, half width, half height), its axes times `reach` plus `more`."""
+    cx, cy, rx, ry = oval
+    return np.hypot((x - cx) / (rx * reach + more), (y - cy) / (ry * reach + more)) <= 1.0
+
+
+def _iris_coloured(rgb, known):
+    """The pixels of `known` (the part of a disc that shows) drawn in an iris's colours: saturated or
+    dark (IRIS_SATURATION, IRIS_DARK), or paler in the hue of what is saturated (IRIS_PALE, IRIS_HUE)."""
+    saturation, value = _saturation_value(rgb)
+    strong = (saturation > IRIS_SATURATION) | (value < IRIS_DARK)
+    coloured = known & (saturation > IRIS_SATURATION)
+    if not coloured.any():
+        return known & strong
+    hue = _hue(rgb)
+    # hues lie on a circle: the middle one is read as an angle
+    turn = 2 * np.pi * hue[coloured]
+    middle = np.arctan2(np.sin(turn).mean(), np.cos(turn).mean()) / (2 * np.pi)
+    return known & (strong | (saturation > IRIS_PALE) & (np.abs((hue - middle + 0.5) % 1.0 - 0.5) < IRIS_HUE))
 
 
 def drawn_circle(rgb, outline, known):
-    """(cx, cy, radius) of the iris drawn on a disc, in the crop's pixels; None when it can't be read.
+    """(cx, cy, half width, half height) of the iris drawn on a disc, in the crop's pixels; None when it
+    can't be read. An oval, never flatter than a circle (see OVAL_TALL).
 
     A disc can be the iris to its edge (the plain boy's) or hold the white round it and strokes
     of the lashes too (the catgirl's: 30 by 43 mm, an iris of 20 on it; taken for an iris 30
@@ -1944,8 +2061,7 @@ def drawn_circle(rgb, outline, known):
     """
     if not outline.any():
         return None
-    saturation, value = _saturation_value(rgb)
-    iris = known & ((saturation > IRIS_SATURATION) | (value < IRIS_DARK))
+    iris = _iris_coloured(rgb, known)
     thin = max(IRIS_THIN, int(IRIS_STROKE * (np.ptp(np.nonzero(outline)[1]) + 1)))
     iris = _dilate(_erode(iris, thin), thin) & iris
     if iris.sum() < 8 * IRIS_RINGS:
@@ -1962,16 +2078,20 @@ def drawn_circle(rgb, outline, known):
     middle_rows = np.abs((right - left) - width) <= 0.05 * width
     if width < 4 * thin or not middle_rows.any():
         return None
-    return (float(((left + right) / 2)[middle_rows].mean()), float(rows[middle_rows].mean() + 0.5), float(width / 2))
+    cx, cy, radius = float(((left + right) / 2)[middle_rows].mean()), float(rows[middle_rows].mean() + 0.5), float(width / 2)
+    # an oval's chords: one's share of the width is sqrt(1 - (its rows below the middle / the half height)^2)
+    share = (right - left) / width
+    lower = (rows + 0.5 > cy) & (share > OVAL_CHORDS[0]) & (share < OVAL_CHORDS[1])
+    tall = float(np.median((rows[lower] + 0.5 - cy) / np.sqrt(1 - share[lower] ** 2))) if lower.sum() >= OVAL_ROWS else radius
+    return (cx, cy, radius, float(np.clip(tall, radius, OVAL_TALL * radius)))
 
 
 def _behind(face, eye, circle, curve, scene):
     """The pixels of `eye`'s crop within RIM_REACH of an iris's `circle` where `scene` (the mesh without the
     discs), seen from the front, lies no further forward than the disc's `curve` (less RIM_FRONT)."""
     x0, y0, x1, y1 = eye.box
-    cx, cy, radius = circle
     yy, xx = np.mgrid[0:y1 - y0, 0:x1 - x0] + 0.5
-    near = np.hypot(xx - cx, yy - cy) <= radius * (1 + RIM_REACH)
+    near = _in_oval(xx, yy, circle, 1 + RIM_REACH)
     behind = np.zeros_like(near)
     ys, xs = np.nonzero(near)
     places = face.world(np.stack([xs + x0 + 0.5, ys + y0 + 0.5], axis=1))
@@ -1986,9 +2106,9 @@ def _overhang(face, eye, circle, curve, scene):
     """The pixels of `eye`'s crop over the upper half of an iris's `circle` (as far as it may grow) where
     `scene` (the mesh without the discs), seen from the front, stands in front of the disc's `curve`."""
     x0, y0, x1, y1 = eye.box
-    cx, cy, radius = circle
+    cy = circle[1]
     yy, xx = np.mgrid[0:y1 - y0, 0:x1 - x0] + 0.5
-    near = (np.hypot(xx - cx, yy - cy) <= radius * IRIS_GROW * (1 + RIM_REACH)) & (yy < cy)
+    near = _in_oval(xx, yy, circle, IRIS_GROW * (1 + RIM_REACH)) & (yy < cy)
     over = np.zeros_like(near)
     ys, xs = np.nonzero(near)
     places = face.world(np.stack([xs + x0 + 0.5, ys + y0 + 0.5], axis=1))
@@ -2034,17 +2154,18 @@ def whiten(rgb, hole, white):
     return _smooth(out, hole, 10 * IRIS_SMOOTH, hole | white)
 
 
-def tucked(read, radius):
-    """side -> the iris's circle, both of `radius` grown until their tops lie under the upper lid.
+def tucked(read, size):
+    """side -> the iris's oval, both of `size` (half width, half height) grown until their tops lie under the upper lid.
 
-    `read` is side -> (the circle drawn, the lid's mask from under_lid, the disc's outline). An
-    iris's dark top runs into the lashes and reads as lash, so the circle read off the drawing
+    `read` is side -> (the oval drawn, the lid's mask from under_lid, the disc's outline). An
+    iris's dark top runs into the lashes and reads as lash, so the oval read off the drawing
     stops short of the lid (8 px on the plain boy, 10 on the catgirl): with the lashes kept over
-    it a band of white still parted the two. Each circle keeps its lowest point and grows upward
-    to IRIS_TUCK radii past the lid's edge, both to the same size, by no more than IRIS_GROW and
-    no wider than the narrower disc. None for an eye whose circle couldn't be read.
+    it a band of white still parted the two. Each keeps its lowest point and its shape and grows
+    upward to IRIS_TUCK of its half height past the lid's edge, both to the same size, by no more
+    than IRIS_GROW and no wider than the narrower disc. None for an eye whose oval couldn't be read.
     """
-    wanted, widest = [radius], np.inf
+    radius, tall = float(size[0]), float(size[1])
+    wanted, widest = [tall], np.inf
     for drawn, lid, outline in read.values():
         if not drawn:
             continue
@@ -2052,9 +2173,10 @@ def tucked(read, radius):
         column = int(np.clip(drawn[0], 0, lid.shape[1] - 1))
         if lid[:, column].any():
             edge = np.flatnonzero(lid[:, column])[-1] + 1
-            wanted.append((drawn[1] + radius - edge + IRIS_TUCK * radius) / 2)
-    grown = max(radius, min(max(wanted), IRIS_GROW * radius, widest))
-    return {side: (drawn[0], drawn[1] + radius - grown, grown) if drawn else None for side, (drawn, _lid, _outline) in read.items()}
+            wanted.append((drawn[1] + tall - edge + IRIS_TUCK * tall) / 2)
+    grown = max(tall, min(max(wanted), IRIS_GROW * tall, widest * tall / radius))
+    return {side: (drawn[0], drawn[1] + tall - grown, radius * grown / tall, grown) if drawn else None
+            for side, (drawn, _lid, _outline) in read.items()}
 
 
 def under_lid(opening, circle):
@@ -2070,7 +2192,7 @@ def under_lid(opening, circle):
     columns = np.flatnonzero(opening.any(axis=0))
     if circle is None or not len(columns):
         return mask
-    cx, _cy, radius = circle
+    cx, radius = circle[0], circle[2]
     over = np.abs(columns + 0.5 - cx) <= radius * (1 + RIM_REACH)
     beside = columns[~over]
     if (beside < cx).sum() < LID_BESIDE or (beside > cx).sum() < LID_BESIDE:
@@ -2271,8 +2393,7 @@ def check_modelled(mesh_obj, built, points):
             # past the iris's circle the disc is see-through
             ahead = basis @ world[:3, :3].T + world[:3, 3]
             ahead = np.concatenate([ahead[info["vertices"]], ahead[own].mean(axis=1)])
-            cx, cz, radius = info["circle"]
-            drawn = np.hypot(ahead[:, 0] - cx, ahead[:, 2] - cz) <= radius
+            drawn = _in_oval(ahead[:, 0], ahead[:, 2], info["circle"])
             for look in looks:
                 names = [f"eyeLook{d}{side.title()}" for d in look] + ([blink] if blink else [])
                 co = basis.copy()

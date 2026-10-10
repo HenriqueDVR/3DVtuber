@@ -88,6 +88,20 @@ class Manifest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "chest_amount"):
                 manifest.validate(data)
 
+    def test_the_eye_choices_are_a_shape_and_numbers_in_range(self):
+        data = self.good()
+        for options in ({"iris_shape": "circle"}, {"iris_shape": "oval"}, {"iris_shape": None}, {"iris_size": 0.7}, {"iris_size": 1.4},
+                        {"eye_shown": "left"}, {"eye_shown": "right"}, {"eye_shown": None},
+                        {"look_travel": 0.5}, {"look_travel": 1.5}, {"blink_amount": 0.5}, {"blink_amount": 1.4}):
+            data["options"] = options
+            manifest.validate(data)
+        for key, values in (("eye_shown", ("both", "middle", True)), ("iris_shape", ("square", 1, True)), ("iris_size", (0.5, 2, "1", True, None)),
+                            ("look_travel", (0.2, 3, "1", True, None)), ("blink_amount", (0.2, 2, "1", True, None))):
+            for value in values:
+                data["options"] = {key: value}
+                with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, key):
+                    manifest.validate(data)
+
     def test_stages_split_the_roles(self):
         data = self.good()
         self.assertEqual([p["name"] for p in manifest.pieces_for(data, "build")], ["cuff", "tail"])

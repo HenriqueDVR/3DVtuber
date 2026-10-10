@@ -19,6 +19,8 @@ import json
 import os
 import re
 import struct
+import threading
+import time
 from pathlib import Path
 
 VERSION = 1
@@ -66,6 +68,13 @@ OPTIONS = {
                               # "slide" (painted patch), "none" (still, they blink),
                               # "hidden" (behind a visor or glasses: not marked, no blink); None: from the survey
     "slide": [],              # with "slide": [horizontal, vertical] travel in mm
+    # the user's word over what the eye step reads (the Face page): all need the eye step to run
+    "eye_shown": None,        # "left" or "right": the character's other eye is covered (hair over it, an eyepatch) and is
+                              # left as it is, with no blink; both are still marked, the covered one where it would be
+    "iris_shape": None,       # modelled iris discs: "circle" or "oval"; None: as it is drawn
+    "iris_size": 1.0,         # modelled iris discs: a factor on the size read, IRIS_SIZE; never wider than its disc
+    "look_travel": 1.0,       # how far the eyes look, a factor on what the build works out, LOOK_TRAVEL
+    "blink_amount": 1.0,      # how far the eyes close, a factor on the blink the build made, BLINK_AMOUNT
     # scripts/fix_mouth.py, once the face is marked: the talking shapes redrawn, on a mouth patch of its
     # own (free). None: the face bends around the marked mouth. On by default since 2026-10-07 (the
     # user: the best mouth on every character tried); a manifest written before says null itself.
@@ -78,6 +87,11 @@ OPTIONS = {
                               # faces the way its file has it, for one the app turned around
 }
 FACING = (None, "file")
+IRIS_SHAPE = (None, "circle", "oval")
+EYE_SHOWN = (None, "left", "right")
+IRIS_SIZE = (0.7, 1.4)
+LOOK_TRAVEL = (0.5, 1.5)
+BLINK_AMOUNT = (0.5, 1.4)
 EYES = (None, "none", "iris", "modelled", "slide", "hidden")
 CHEST_AMOUNT = (0.25, 2.0)  # chest.AMOUNT_RANGE (this module stays plain Python)
 FINGERS = ("guides", "auto", "none")
@@ -235,9 +249,34 @@ def save(data, path):
     validate(data)
     clean = {k: v for k, v in data.items() if not k.startswith("_")}
     # through a temporary file: a crash mid-write must not leave the user's decisions half written
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(clean, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    halfway = temporary(path)
+    halfway.write_text(json.dumps(clean, indent=2) + "\n", encoding="utf-8")
+    replace(halfway, path)
+
+
+def temporary(path):
+    """The name to write `path` under first, this writer's own: the app answers requests side by
+    side, and two saves a click apart wrote one ".tmp" between them."""
+    path = Path(path)
+    return path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+
+
+# Windows refuses to replace a file another thread (a status request, a virus scanner) has open
+# for that moment: PermissionError, gone a few milliseconds later.
+REPLACE_TRIES, REPLACE_WAIT = 20, 0.05
+
+
+def replace(halfway, path):
+    """Put the finished temporary file in `path`'s place, waiting out a reader; one that can't be
+    is said, and the temporary not left beside the file."""
+    for attempt in range(REPLACE_TRIES):
+        try:
+            return os.replace(halfway, path)
+        except PermissionError:
+            if attempt == REPLACE_TRIES - 1:
+                Path(halfway).unlink(missing_ok=True)
+                raise
+            time.sleep(REPLACE_WAIT)
 
 
 def path_of(data, key):
@@ -268,7 +307,8 @@ def validate(data):
     for key in options:
         if key not in OPTIONS:
             problems.append(f"unknown option {key!r}")
-    for key, allowed in (("eyes", EYES), ("fingers", FINGERS), ("tpose", TPOSE), ("skinning", SKINNING), ("facing", FACING)):
+    for key, allowed in (("eyes", EYES), ("fingers", FINGERS), ("tpose", TPOSE), ("skinning", SKINNING), ("facing", FACING),
+                         ("iris_shape", IRIS_SHAPE), ("eye_shown", EYE_SHOWN)):
         if options.get(key, OPTIONS[key]) not in allowed:
             problems.append(f"option {key} must be one of {', '.join('null (automatic)' if a is None else a for a in allowed)}")
     for key in ("chest", "hair_hits_body", "licence_read"):
@@ -277,6 +317,10 @@ def validate(data):
     amount = options.get("chest_amount", OPTIONS["chest_amount"])
     if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not CHEST_AMOUNT[0] <= amount <= CHEST_AMOUNT[1]:
         problems.append(f"option chest_amount must be a number from {CHEST_AMOUNT[0]} to {CHEST_AMOUNT[1]}")
+    for key, (low, high) in (("iris_size", IRIS_SIZE), ("look_travel", LOOK_TRAVEL), ("blink_amount", BLINK_AMOUNT)):
+        value = options.get(key, OPTIONS[key])
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+            problems.append(f"option {key} must be a number from {low} to {high}")
     if options.get("eyes") != "slide" and options.get("slide"):
         problems.append("option slide only applies with eyes: slide")
     fix = options.get("mouth_fix")

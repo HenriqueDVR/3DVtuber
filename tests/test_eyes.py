@@ -5,6 +5,8 @@ import unittest
 import bmesh
 import bpy
 import numpy as np
+from mathutils import Vector
+from mathutils.bvhtree import BVHTree
 
 from vtuber_maker.pipeline import eyes, face_points, face_rig
 
@@ -293,6 +295,58 @@ class BlinkWithAModelledEye(unittest.TestCase):
         self.assertAlmostEqual(look.data[9].co.z, 0.01, places=6)
 
 
+class TheSocketBehindAnIris(unittest.TestCase):
+    """How far behind an iris disc the model's own eye white lies (the fox girl's: 28 mm, the inside of
+    her head showing beside her irises from the side)."""
+
+    def depth(self, back):
+        """A socket's floor `back` metres behind a disc standing at y = -0.1, 4 cm square."""
+        corners = [(-0.02, -0.1 + back, 1.38), (0.02, -0.1 + back, 1.38), (0.02, -0.1 + back, 1.42), (-0.02, -0.1 + back, 1.42)]
+        scene = BVHTree.FromPolygons([Vector(c) for c in corners], [(0, 1, 2, 3)])
+        flat = lambda xz: np.full(len(xz), -0.1)  # noqa: E731
+        return eyes._socket_depth(scene, (np.array([-0.015, 1.385]), np.array([0.015, 1.415])), flat, lambda xz: xz)
+
+    def test_a_pit_is_measured(self):
+        self.assertAlmostEqual(self.depth(0.028), 0.028, places=5)
+
+    def test_what_stands_in_front_of_the_disc_is_no_socket(self):
+        self.assertEqual(self.depth(-0.005), 0.0)
+
+
+class OneEyeCovered(unittest.TestCase):
+    """One eye under hair or an eyepatch (manifest `eye_shown`): the other alone is worked on and blinks."""
+
+    POINTS = {"size": [100, 100],
+              "left_eye": {"outer": [80, 50], "inner": [60, 50], "top": [70, 45], "bottom": [70, 55]},
+              "right_eye": {"outer": [20, 50], "inner": [40, 50], "top": [30, 45], "bottom": [30, 55]}}
+
+    def test_both_show_unless_one_is_named(self):
+        self.assertEqual(sorted(eyes.shown_eyes(self.POINTS, (100, 100))), ["left", "right"])
+        self.assertEqual(eyes.shown_eyes(self.POINTS, (100, 100)).keys(), eyes.marked_eyes(self.POINTS, (100, 100)).keys())
+
+    def test_the_one_named_is_the_character_s_own_side(self):
+        for side, column in (("left", 70), ("right", 30)):  # a front view: her left eye is on the right of the picture
+            shown = eyes.shown_eyes(self.POINTS, (100, 100), side)
+            self.assertEqual(list(shown), [side])
+            self.assertAlmostEqual((shown[side].points["inner"][0] + shown[side].points["outer"][0]) / 2, column)
+
+    def test_the_covered_eye_s_blink_is_emptied_and_nothing_else(self):
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        data = bpy.data.meshes.new("face")
+        data.from_pydata([(0, 0, 0), (0.01, 0, 0), (0, 0, 0.01)], [], [(0, 1, 2)])
+        obj = bpy.data.objects.new("face", data)
+        bpy.context.scene.collection.objects.link(obj)
+        obj.shape_key_add(name="Basis")
+        keys = {name: obj.shape_key_add(name=name) for name in ("eyeBlinkLeft", "eyeBlinkRight", "eyeLookUpRight", "aa")}
+        for key in keys.values():
+            key.value = 0.0
+            key.data[2].co.z = 0.0
+        self.assertEqual(eyes.still_blink(obj, "right"), ["eyeBlinkRight"])
+        self.assertAlmostEqual(keys["eyeBlinkRight"].data[2].co.z, 0.01, places=6)
+        for name in ("eyeBlinkLeft", "eyeLookUpRight", "aa"):
+            self.assertAlmostEqual(keys[name].data[2].co.z, 0.0, places=6)
+
+
 class SlidingEyes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -409,10 +463,11 @@ class AWholeIrisFromThePartThatShows(unittest.TestCase):
         cls.layer, cls.circle = eyes.complete_iris(rgb, cls.outline, cls.known)
 
     def test_the_middle_is_found_where_the_drawing_is_round(self):
-        cx, cy, radius = self.circle
+        cx, cy, radius, tall = self.circle
         self.assertAlmostEqual(cx, self.CENTRE[0], delta=1.0)
         self.assertAlmostEqual(cy, self.CENTRE[1], delta=3.0)
         self.assertAlmostEqual(radius, self.RADIUS, delta=1.0)
+        self.assertAlmostEqual(tall, self.RADIUS, delta=1.5)  # a circle is read as one
 
     def test_what_shows_is_left_as_painted(self):
         shown = self.known & (self.distance < self.RADIUS - 3)
@@ -426,6 +481,122 @@ class AWholeIrisFromThePartThatShows(unittest.TestCase):
     def test_past_the_iris_the_disc_is_see_through(self):
         self.assertTrue((self.layer[..., 3][self.distance > self.RADIUS + 4] == 0).all())
         self.assertTrue((self.layer[..., 3][self.distance < self.RADIUS - 4] == 1).all())
+
+
+class AnIrisDrawnPaleBelow(unittest.TestCase):
+    """A disc that is iris to its edge, deep violet above and lilac below (the fox girl's)."""
+
+    RADIUS, CENTRE = 40, (60, 65)
+    VIOLET, LILAC, PINK = (0.35, 0.25, 0.6), (0.72, 0.62, 0.85), (0.9, 0.72, 0.74)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.yy, xx = np.mgrid[0:130, 0:120] + 0.5
+        cls.outline = np.hypot(xx - cls.CENTRE[0], cls.yy - cls.CENTRE[1]) <= cls.RADIUS
+        cls.known = cls.outline & (cls.yy >= 28)
+
+    def circle(self, below):
+        rgb = np.empty((130, 120, 3))
+        rgb[:] = WHITE
+        rgb[self.outline] = self.VIOLET
+        rgb[self.outline & (self.yy > 45)] = below
+        return eyes.drawn_circle(rgb, self.outline, self.known)
+
+    def test_the_lilac_is_too_pale_for_the_plain_rule(self):
+        saturation, value = eyes._saturation_value(np.array(self.LILAC))
+        self.assertLess(saturation, eyes.IRIS_SATURATION)
+        self.assertGreater(value, eyes.IRIS_DARK)
+
+    def test_the_iris_is_the_whole_disc(self):
+        cx, cy, radius, tall = self.circle(self.LILAC)
+        self.assertAlmostEqual(radius, self.RADIUS, delta=1.5)
+        self.assertAlmostEqual(cy, self.CENTRE[1], delta=3.0)
+
+    def test_a_pale_colour_of_another_hue_is_no_iris(self):
+        self.assertLess(self.circle(self.PINK)[2], 0.9 * self.RADIUS)
+
+    def test_nor_is_white(self):
+        self.assertLess(self.circle(WHITE)[2], 0.9 * self.RADIUS)
+
+
+class AnIrisDrawnAsAnOval(unittest.TestCase):
+    """An iris taller than wide, its top under the lid and its lower end cut by the lower eye line
+    (the user: an iris is an oval as often as a circle, and a circle left white under it)."""
+
+    WIDE, TALL, CENTRE = 36, 45, (60, 70)
+
+    @classmethod
+    def setUpClass(cls):
+        yy, xx = np.mgrid[0:140, 0:120] + 0.5
+        cls.inside = np.hypot((xx - cls.CENTRE[0]) / cls.WIDE, (yy - cls.CENTRE[1]) / cls.TALL)
+        cls.outline = np.hypot((xx - 60) / 44, (yy - 70) / 58) <= 1.0
+        rgb = np.empty((140, 120, 3))
+        rgb[:] = WHITE
+        rgb[cls.inside < 1.0] = IRIS
+        rgb[cls.inside < 0.4] = PUPIL
+        cls.known = cls.outline & (yy >= 50) & (yy <= 108)
+        cls.rgb = rgb
+        cls.oval = eyes.drawn_circle(rgb, cls.outline, cls.known)
+        cls.layer, cls.kept = eyes.complete_iris(rgb, cls.outline, cls.known, cls.oval)
+
+    def test_its_width_and_its_height_are_read(self):
+        cx, cy, wide, tall = self.oval
+        self.assertAlmostEqual(cx, self.CENTRE[0], delta=1.0)
+        self.assertAlmostEqual(cy, self.CENTRE[1], delta=3.0)
+        self.assertAlmostEqual(wide, self.WIDE, delta=1.0)
+        self.assertAlmostEqual(tall, self.TALL, delta=2.5)
+
+    def test_its_picture_is_the_oval_not_a_circle(self):
+        self.assertEqual(self.kept, self.oval)
+        self.assertTrue((self.layer[..., 3][self.outline & (self.inside < 0.93)] == 1).all())
+        self.assertTrue((self.layer[..., 3][self.inside > 1.08] == 0).all())
+        # under the circle of its width: still iris
+        below = self.outline & (self.inside < 0.93) & (np.hypot(*(np.mgrid[0:140, 0:120] + 0.5 - np.array(self.CENTRE[::-1])[:, None, None])) > self.WIDE + 2)
+        self.assertGreater(below.sum(), 100)
+
+    def test_it_is_never_flatter_than_a_circle_nor_taller_than_the_limit(self):
+        yy, xx = np.mgrid[0:140, 0:120] + 0.5
+        for tall, wanted in ((20, 36), (80, eyes.OVAL_TALL * 36)):
+            rgb = np.empty((140, 120, 3))
+            rgb[:] = WHITE
+            rgb[np.hypot((xx - 60) / 36, (yy - 70) / tall) < 1.0] = IRIS
+            with self.subTest(tall=tall):
+                self.assertAlmostEqual(eyes.drawn_circle(rgb, np.ones((140, 120), bool), yy >= 50)[3], wanted, delta=1.5)
+
+    def test_both_grow_under_the_lid_in_their_own_shape(self):
+        lid = np.zeros((140, 120), bool)
+        lid[:20] = True  # the lid's edge 5 rows over the oval's top
+        cx, cy, wide, tall = eyes.tucked({"left": ((60.0, 70.0, 36.0, 45.0), lid, self.outline)}, (36.0, 45.0))["left"]
+        self.assertAlmostEqual(cy + tall, 115.0, delta=1e-6)  # the lowest point stays
+        self.assertLess(cy - tall, 20.0)
+        self.assertAlmostEqual(tall / wide, 45 / 36, delta=1e-6)
+
+
+class TheIrisAsTheUserAsksForIt(unittest.TestCase):
+    """The Face page's shape and size, over what was read (manifest `iris_shape`, `iris_size`)."""
+
+    READ = (60.0, 70.0, 36.0, 45.0)
+
+    def test_left_alone_it_is_as_read(self):
+        self.assertEqual(eyes.shaped(self.READ), self.READ)
+        self.assertIsNone(eyes.shaped(None, "circle", 1.2))
+
+    def test_a_circle_is_as_tall_as_wide_on_the_same_lower_edge(self):
+        cx, cy, wide, tall = eyes.shaped(self.READ, "circle")
+        self.assertEqual((cx, wide, tall), (60.0, 36.0, 36.0))
+        self.assertAlmostEqual(cy + tall, 115.0)
+
+    def test_an_oval_is_taller_than_wide_whatever_was_read(self):
+        self.assertEqual(eyes.shaped(self.READ, "oval"), self.READ)  # tall enough already
+        cx, cy, wide, tall = eyes.shaped((60.0, 70.0, 36.0, 36.0), "oval")
+        self.assertAlmostEqual(tall, eyes.OVAL_ASKED * 36.0)
+        self.assertAlmostEqual(cy + tall, 106.0)
+
+    def test_the_size_is_a_factor_on_both(self):
+        cx, cy, wide, tall = eyes.shaped(self.READ, None, 1.2)
+        self.assertAlmostEqual(wide, 43.2)
+        self.assertAlmostEqual(tall, 54.0)
+        self.assertAlmostEqual(cy + tall, 115.0)
 
 
 class WhiteWhereTheIrisWas(unittest.TestCase):

@@ -18,7 +18,7 @@ import bpy
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "addon"))
 
-from vtuber_maker.pipeline import landmarks, normalize, survey  # noqa: E402
+from vtuber_maker.pipeline import face_points, landmarks, normalize, survey  # noqa: E402
 
 IMPORTERS = {
     ".glb": lambda path: bpy.ops.import_scene.gltf(filepath=path),
@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument("model", type=Path)
     parser.add_argument("--json", type=Path, help="also write the whole survey here")
     parser.add_argument("--height", type=float, default=1.6, help="avatar height in metres")
+    parser.add_argument("--face", type=Path, help="face.json, once the eyes are marked: the eye inserts are found at the marks")
     return parser.parse_args(sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else [])
 
 
@@ -50,7 +51,7 @@ def main():
     mesh = normalize.prepare(list(bpy.context.scene.objects), height=args.height)
     orientation = normalize.orientation_of(mesh)
     try:
-        report = survey.survey(mesh)
+        report = survey.survey(mesh, marked=face_points.load(args.face) if args.face else None)
     except landmarks.LandmarkError as error:
         # the size too: a model that fails here never reaches the survey's notes, and a tester's
         # was Tripo's high-poly export, twenty times what any build here has been made from

@@ -28,6 +28,13 @@ HAIR_HANG = 0.6
 # read as hair covers most of the head (the witch hat: 79 to 84%); hair on a head that shows its
 # face is under this share (long hair measured 32 to 36%). No hair found at all stays a solid head.
 HEADWEAR_SHARE = 0.6
+# Nor is hair that comes down over the face: with OVER_FACE of it below the middle of the eyes,
+# between their outer edges and no further back than FACE_DEPTH (m) behind them, it is bangs and
+# locks, whatever share of the head it covers. The fox girl's short pale hair covers 57% of her
+# head's vertices (74% read without her eyes marked: see `survey`) and hangs 0.46 head heights, a
+# witch hat's numbers (84%, 0.3); 4.7% of it lies over her face so (model A: 2%), none of the hat.
+OVER_FACE = 0.01
+FACE_DEPTH = 0.02
 # Pieces smaller than this share of the hair aren't worth measuring (clips, ties, a bobble).
 HAIR_PIECE = 0.05
 # The top of the head narrowing to under this share of its widest point is worth mentioning
@@ -56,8 +63,12 @@ SKIN_DISTANCE = 0.25
 LOPSIDED = 0.08
 
 
-def survey(mesh_obj, joint_warnings=()):
+def survey(mesh_obj, joint_warnings=(), marked=None):
     """Measure a prepared character and work out how it should be built.
+
+    `marked` are the face points when the eyes have been marked: the eye inserts are then the pair
+    at the marks (parts.find `eyes_at`). By size alone the fox girl's inner-ear pieces were her
+    "eyes", an ear her face, and her real face counted as hair.
 
     Returns a dict of measurements, `notes` worth telling the user, and the build
     `options` the mesh asks for (the keys build_avatar takes). Nothing here changes
@@ -71,7 +82,7 @@ def survey(mesh_obj, joint_warnings=()):
 
     joints = landmarks.detect_body(verts, tris, warnings)
     joints = landmarks.refine_limbs(verts, tris, joints)
-    found = _find_parts(mesh_obj, joints)
+    found = _find_parts(mesh_obj, joints, face_points.eye_places(mesh_obj, marked))
 
     report = {
         "size": [round(float(v), 3) for v in np.ptp(verts, axis=0)],
@@ -97,10 +108,10 @@ def survey(mesh_obj, joint_warnings=()):
     return report
 
 
-def _find_parts(mesh_obj, joints):
+def _find_parts(mesh_obj, joints, eyes_at=None):
     """parts.find, or None on a model it can't read (no texture, no separate pieces)."""
     try:
-        return parts.find(mesh_obj, joints)
+        return parts.find(mesh_obj, joints, eyes_at=eyes_at)
     except (ValueError, KeyError, IndexError):
         return None
 
@@ -162,6 +173,7 @@ def _head(points, verts, joints, found):
     return {
         "hair_share": _hair_share(verts, head_z, found),
         "hair_hang": _hair_hang(verts, joints, found),
+        "hair_over_face": _hair_over_face(verts, found),
         "tip_ratio": round(tip / widest, 3) if widest else 1.0,
         "height": round(top - head_z, 3),
     }
@@ -172,6 +184,17 @@ def _hair_share(verts, head_z, found):
         return None
     above = verts[:, 2] > head_z
     return round(float(found.hair[above].mean()), 3) if above.any() else 0.0
+
+
+def _hair_over_face(verts, found):
+    """The share of the hair lying over the face (see OVER_FACE); 0 without eye inserts to place it by."""
+    if found is None or not found.has_eye_inserts or not found.hair.any():
+        return 0.0
+    eyes = np.isin(found.labels, [int(p) for p in found.eyes.values()])
+    low, high = verts[eyes].min(axis=0), verts[eyes].max(axis=0)
+    over = (found.hair & (verts[:, 2] < (low[2] + high[2]) / 2) & (verts[:, 0] > low[0]) & (verts[:, 0] < high[0])
+            & (verts[:, 1] < high[1] + FACE_DEPTH))
+    return round(float(over.sum() / found.hair.sum()), 3)
 
 
 def _hair_hang(verts, joints, found):
@@ -235,7 +258,8 @@ def _options(report, found):
     """The build_avatar options this mesh asks for."""
     hang = report["head"]["hair_hang"]
     share = report["head"]["hair_share"] or 0.0
-    rigid_head = hang is not None and hang < HAIR_HANG and not 0.0 < share < HEADWEAR_SHARE
+    rigid_head = (hang is not None and hang < HAIR_HANG and not 0.0 < share < HEADWEAR_SHARE
+                  and report["head"]["hair_over_face"] < OVER_FACE)
     options = {
         "rigid_head": rigid_head,
         "cloth_physics": report["cloth"]["share"] > CLOTH_SHARE,

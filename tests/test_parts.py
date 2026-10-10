@@ -164,6 +164,43 @@ class HairShadedInTwoTones(PartsFixture):
         self.assertFalse(self.found_with(0.1).hair[self.piece].any())
 
 
+class HairDrawnInShades(PartsFixture):
+    """Pale hair drawn in many shades of one colour (the fox girl): its commonest colour at the crown
+    is the brightest, and most of every piece is further from it than HAIR_COLOR_DISTANCE."""
+
+    PALE = np.array([0.93, 0.91, 0.86])
+
+    @classmethod
+    def setUpClass(cls):
+        cls.load()
+        cls.colours = texture_space.vertex_colors(cls.mesh, texture_space.base_color_image(cls.mesh))
+        # the pieces that are hair and nothing else: the fringe in the face's own surface is read by `fused_hair`
+        cls.pieces = [p for p in np.unique(cls.found.labels[cls.found.hair]) if cls.found.hair[cls.found.labels == p].all()]
+        cls.whole = np.isin(cls.found.labels, cls.pieces)
+
+    def found_with(self, darkest, lightest):
+        """The parts with the top fifth of each hair piece pale and the rest of it from `darkest` to `lightest` of that."""
+        colours = self.colours.copy()
+        for piece in self.pieces:
+            members = np.flatnonzero(self.found.labels == piece)
+            down = members[np.argsort(-self.verts[members, 2])]
+            shade = np.ones(len(down))
+            shade[len(down) // 5:] = np.linspace(lightest, darkest, len(down) - len(down) // 5)
+            colours[down, :3] = self.PALE * shade[:, None]
+        with mock.patch.object(texture_space, "vertex_colors", return_value=colours):
+            return parts.find(self.mesh, self.joints)
+
+    def test_the_shades_are_too_far_from_the_crown_for_the_plain_rule(self):
+        self.assertGreater(np.linalg.norm(self.PALE) * (1 - 0.8), parts.HAIR_COLOR_DISTANCE)
+
+    def test_hair_in_shades_of_the_crown_is_hair(self):
+        self.assertTrue(self.whole.any())
+        self.assertTrue(self.found_with(0.72, 0.8).hair[self.whole].all())
+
+    def test_a_colour_darker_than_any_shade_of_it_is_not(self):
+        self.assertFalse(self.found_with(0.3, 0.4).hair[self.whole].any())
+
+
 class SkinParts(PartsFixture):
     @classmethod
     def setUpClass(cls):

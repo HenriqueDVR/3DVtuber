@@ -51,6 +51,15 @@ SKIN_STEP = 0.4
 SHADED_DISTANCE = 0.3
 SHADED_SHARE = 0.25
 SHADED_SIZE = 0.05
+# Hair of one colour drawn in many shades of it: a piece is hair too with SHADES_SHARE of it within
+# HAIR_COLOR_DISTANCE of the crown's colour darkened to no less than SHADE_FLOOR of it, and
+# SHADES_PLAIN of it within that of the crown's colour itself (a brown hat on fair hair has none).
+# The fox girl's pale hair runs from 0.5 to 0.95 in brightness and its commonest colour at the
+# crown is the brightest: 19 to 46% of each hair piece was near it (one ear alone was hair, 3% of
+# her head) and she had no hair chain at all; with the shades 76 to 93%, her eyebrows' piece 0.
+SHADE_FLOOR = 0.7
+SHADES_SHARE = 0.7
+SHADES_PLAIN = 0.15
 
 
 # Ears and horns: a pair standing over the crown, one either side of it, each rising at least
@@ -172,8 +181,12 @@ def find(mesh_obj, joints, eyes_at=None):
     size = np.bincount(labels, minlength=labels.max() + 1)
     shaded = np.bincount(labels, weights=np.linalg.norm(colors - hair_color, axis=1) < SHADED_DISTANCE,
                          minlength=labels.max() + 1) / np.maximum(size, 1)
+    shade = np.clip(colors @ hair_color / max(float(hair_color @ hair_color), 1e-12), SHADE_FLOOR, 1.0)
+    shades = np.bincount(labels, weights=np.linalg.norm(colors - shade[:, None] * hair_color, axis=1) < HAIR_COLOR_DISTANCE,
+                         minlength=labels.max() + 1) / np.maximum(size, 1)
     hair_parts = [p for p in ids if high[p][2] > joints["head"][2] and p not in excluded
                   and (share[p] >= HAIR_SHARE
+                       or (shades[p] >= SHADES_SHARE and share[p] >= SHADES_PLAIN)
                        or (shaded[p] >= SHADED_SHARE and size[p] >= SHADED_SIZE * len(verts) and low[p][2] < joints["neck"][2]))]
     hair = np.isin(labels, hair_parts)
     face_area = labels == face
