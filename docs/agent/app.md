@@ -148,6 +148,21 @@ With `eyes` left to the survey, modelled eyes get a moving iris and painted eyes
 When the eye step refuses an iris (it would show over the lids), the engine reruns it with sliding
 eyes and remembers that for the character.
 
+The user's word over what the eye step reads (Face page, "Fine-tune the eyes"; all take effect from
+the `eyes` step on, `eye_shown` from `face_tracking`):
+
+| Option | Values | What it does |
+|---|---|---|
+| `eye_shown` | null, `"left"`, `"right"` (the character's own side) | the other eye is covered (hair, an eyepatch): left as modelled and painted, no blink, no look keys. Both eyes are still marked, the covered one where it would be |
+| `iris_shape` | null (as drawn), `"circle"`, `"oval"` | modelled iris discs only: the shape painted, lowest point kept |
+| `iris_size` | 0.7 to 1.4 | modelled iris discs only: a factor on the size read; never wider than the disc |
+| `look_travel` | 0.5 to 1.5 | a factor on how far the eyes look, every eye mode |
+| `blink_amount` | 0.5 to 1.4 | a factor on the blink keys (`eyes.scale_blinks`); needs the eye step to run |
+
+A modelled iris is read as an oval (`eyes.drawn_circle`: centre, half width, half height), never
+flatter than a circle. A changed option can make the eye check refuse the step (an iris showing
+outside the eye): the log's `FAILED:` lines say in which look.
+
 ## Improving a finished avatar (.vrm)
 
 A character whose `source` is a `.vrm` is **taken in as it is** (`manifest.improves`,

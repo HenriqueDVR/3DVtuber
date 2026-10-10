@@ -89,6 +89,8 @@ A plain `.glb` or `.obj` works too (the app places the skeleton itself), and a f
 
 1. **New character**: pick your model, give it a name, press *Create the character*. A minute or two.
 2. **Face**: mark the eyes and mouth on the picture (or *Place them for me*, an optional install).
+   If the eyes come out wrong, *Fine-tune the eyes* on that page has the choices: which eye shows (one
+   under hair or an eyepatch), the iris as a circle or an oval, its size, how far the eyes look and close.
 3. **Save and build**: a few minutes. The Build page says what is in the file and what is worth a look.
 4. Load the `.vrm` in **Warudo** or **VNyan** (*Send to Warudo* copies it there) and move: raise
    your arms, turn your head, lean, blink, talk, look around.
@@ -130,3 +132,8 @@ the rules are tuned on few characters, and yours is another.
   (cape, hanging sleeve, hat); the Movement page lists pieces that stay behind.
 - The first build of a character is the slow one; later builds restart from the step that changed.
 - VRM 0.x files (older VRoid exports) are not taken in: export as VRM 1.0.
+- **MSI Afterburner / RivaTuner Statistics Server** can crash the app's window (it goes blank or
+  closes by itself, a few seconds after opening or in the middle of something). Nothing is lost: the
+  app says so in its console and goes on in your browser. To stop it happening: in RivaTuner, press
+  Add, choose `msedgewebview2.exe`, and set "Application detection level" to None; or close
+  Afterburner while you use the app; or on the Setup page choose "open the app in: browser".

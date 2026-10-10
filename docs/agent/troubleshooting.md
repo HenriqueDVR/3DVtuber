@@ -67,6 +67,11 @@ Suspicious edges have one end weighted to `Head`/`Neck` or to nothing, or sit in
 | Eyes don't follow gaze in the tracking app | the app is turning eye bones the avatar doesn't have | in Warudo set eye movement to blendshapes |
 | The eye step fails: "iris shows over the lids" | the drawn iris is as tall as the eye's opening | `eyes: "slide"` (the app switches by itself when eyes are on automatic) |
 | A character keeps building sliding eyes | the fallback is remembered | set `eyes: "iris"` explicitly |
+| In the tracking app the eye white is far back in the head: the iris floats in the opening and the inside of the head shows from the side | the white beside a modelled iris was painted on the model's own socket, 3 cm behind the disc on the fox girl (catgirl 1.6, boy 0.6); front views and the contact sheets look right | fixed 2026-10-10 (`eyes.add_modelled_irises`: the white on a surface of its own right behind the iris); rebuild from `eyes`. The eye step's log says how deep the socket lay |
+| The iris is small, with white where its lower part was | a drawn iris that is pale below (or an oval) was read as a small circle | fixed 2026-10-10 (pale pixels of the iris's hue count; ovals are read); rebuild from `eyes`. Still wrong: Face page, "Fine-tune the eyes" (`iris_shape`, `iris_size`) |
+| Short hair has no springs and the whole head moves as one | the survey took the hair for headwear (it covers most of the head and hangs little), or read the face as hair before the eyes were marked | mark the face, then build from the start (`survey` reads the marks); else Options: solid head off (`rigid_head: false`) |
+| Pale or shaded hair has no springs | under half of each hair piece was near the crown's commonest colour | fixed 2026-10-10 (`parts.find`: shades of the crown's colour count); rebuild from `build`; else give the pieces the role `hair` |
+| One eye is under hair or an eyepatch | both eyes get an iris, a white and a blink | Face page, "Fine-tune the eyes": say which eye shows (`eye_shown`); mark both all the same |
 | Mouth barely opens, looks smeared, or the face dents when talking | the face bends round the marked mouth | Face page: "redraw the talking mouth shapes", and "free mouth" for simple or chibi faces |
 | With the webcam only the drawn mouth moves, the face round it stays; the mouth sits under the surface or slides off | the lips are on another surface than the eyes (a tester's pirate: eyes with the hat, lips with the body), so the face shapes could not move them and the patch was hung on a hidden layer | fixed 2026-10-09 (`parts.with_marked_mouth`). A build from before: run it again from `build` |
 | A hat (or ears, a helmet) loses its colour once face points are marked: flat blocks of one lighter colour | no hair found above it, so the head counts as solid and was repainted to continue the face patch, as a mascot's is | fixed 2026-10-09 (`face_texture.extend_if_solid`: only a head of one colour round the patch). The build log says "face patch edge: ...". A build from before: run it again from `build` |
@@ -118,6 +123,12 @@ A failed step's log is matched against `app/errors.py`; the Build page and `stat
 | `VM-UNSUPPORTED-FILE` | the model type isn't readable | FBX, GLB/glTF or OBJ |
 | `VM-BAD-OUTPUT` | a step ended without a usable file | rerun; a repeat is a bug |
 | `VM-STEP-DAMAGE` | a step changed something that belongs to another step (`app/contracts.py`) | the reason names what changed; a bug in that step's script |
+
+## The app's window
+
+| Symptom | Measured cause | Fix |
+|---|---|---|
+| The window goes blank or closes by itself; the console flashed "Failed to delete user data folder" and was gone | the window's browser (WebView2) crashed; that line is pywebview unable to remove its profile afterwards, not the cause. Four times on one computer (2026-10-07 to 10-10): an access violation in `RTSSHooks64.dll`, RivaTuner's overlay hook, each some ten seconds after the window opened. Nothing of the app's was at fault: no entry in `out/app_errors.log`, the request under the click (`POST /api/piece`) only writes the manifest | the app now finds the crash by its dump (`server._window_crash`), writes the module in `out/app_errors.log` (`window`), keeps the last two dumps in `out/crashes/` and goes on in the browser. For the user: exclude `msedgewebview2.exe` in RivaTuner (application detection level: None), or "open the app in: browser" |
 
 ## Commands failing
 
