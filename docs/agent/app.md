@@ -178,7 +178,9 @@ python -m app run out/MyAvatar/character.json     # about a minute; the file giv
 The steps that run: `build` (here: read the file), `chest` when asked for, `check`, `export`,
 `vrm_check`, `springs`. Every step that would make what the file already has is skipped, with the
 reason in `status` (`engine.KEPT`). The Parts, Joints, Face, Paint and Movement pages have nothing
-to do for such a character.
+to do for such a character. Only the options `licence_read`, `chest` and `chest_amount` change
+anything in it (`manifest.VRM_OPTIONS`): `set` on another (`skinning`, `tpose`, `fingers`...)
+answers with a `note`, and the run warns of them at `build`.
 
 What the build does to the file:
 
@@ -307,7 +309,7 @@ branch testers follow) and `token`, a fine-grained key the owner makes with read
 this one repository's contents.
 
 ```bash
-python -m app pack                 # dist/OC2VRM-<commit>.zip: the committed files, their version, update.json, music.* if there
+python -m app pack [--at origin/testers]   # dist/OC2VRM-<commit>.zip (--at: the released commit, when main has gone on since): the committed files, their version, update.json, music.* if there
 python -m app update               # is a newer commit published on that branch?
 python -m app update --apply       # get it (the Setup page's Update button)
 ```

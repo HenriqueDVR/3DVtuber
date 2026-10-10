@@ -62,7 +62,8 @@ OPTIONS = {
     "skinning": "heat",       # "heat" (bone heat and the arm/body rules), "template" (template_skin.py) or "voxel" (voxel_skin.py, same rules)
     "tpose": "spec",          # "spec" (spec hands, straight fingers), "plain" or "none"
     "repair_shoulder_seams": True,
-    "eyes": None,             # eye tracking: "iris" (moving iris), "slide" (painted patch), "none" (still, they blink),
+    "eyes": None,             # eye tracking: "iris" (moving iris), "modelled" (the model's own iris discs slide),
+                              # "slide" (painted patch), "none" (still, they blink),
                               # "hidden" (behind a visor or glasses: not marked, no blink); None: from the survey
     "slide": [],              # with "slide": [horizontal, vertical] travel in mm
     # scripts/fix_mouth.py, once the face is marked: the talking shapes redrawn, on a mouth patch of its
@@ -77,7 +78,7 @@ OPTIONS = {
                               # faces the way its file has it, for one the app turned around
 }
 FACING = (None, "file")
-EYES = (None, "none", "iris", "slide", "hidden")
+EYES = (None, "none", "iris", "modelled", "slide", "hidden")
 CHEST_AMOUNT = (0.25, 2.0)  # chest.AMOUNT_RANGE (this module stays plain Python)
 FINGERS = ("guides", "auto", "none")
 TPOSE = ("spec", "plain", "none")
@@ -101,6 +102,22 @@ def improves(data):
     """Whether this character starts from a finished .vrm, which the build takes in as it is and
     adds to (pipeline/improve.py), instead of from a bare model it rigs."""
     return str(data.get("source") or "").lower().endswith(".vrm")
+
+
+# The options such a character reads. The others belong to steps that don't run on one (the app's
+# engine.KEPT): a tester set `skinning` on a VRoid file and compared four identical exports.
+VRM_OPTIONS = ("licence_read", "chest", "chest_amount")
+
+
+def inert(data):
+    """The options set away from their defaults that change nothing in this character's avatar:
+    none for a model, every one outside VRM_OPTIONS for a finished .vrm. One left at null was not
+    chosen (`mouth_fix` in a manifest written before it had a default)."""
+    if not improves(data):
+        return []
+    options = data.get("options") or {}
+    return sorted(key for key, default in OPTIONS.items()
+                  if key not in VRM_OPTIONS and options.get(key, default) not in (default, None))
 
 
 def carries_rig(path):

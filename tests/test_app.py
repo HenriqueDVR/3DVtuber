@@ -390,10 +390,16 @@ class Engine(unittest.TestCase):
         project = self.project({"options": {}, "triangles": 40000, "parts": {"eye_inserts": True}})
         self.assertEqual(project.options()["eyes"], "iris")
         refused = engine.StepFailed("eyes: iris over the lids", errors.describe("VM-EYES-REFUSED"))
+        # first the model's own iris discs, then the painted patch, then nothing more
+        self.assertTrue(project._eyes_fall_back("eyes", refused))
+        self.assertEqual(project.options()["eyes"], "modelled")
+        args, _ = project._arguments("eyes", self.root / "11_eyes", None)
+        self.assertIn("--modelled", [str(a) for a in args])
         self.assertTrue(project._eyes_fall_back("eyes", refused))
         self.assertEqual(project.options()["eyes"], "slide")
         args, _ = project._arguments("eyes", self.root / "11_eyes", None)
         self.assertIn("--slide", [str(a) for a in args])
+        self.assertFalse(project._eyes_fall_back("eyes", refused))
         # kept for the next build of the same model
         self.assertEqual(Project(self.path, blender="blender").options()["eyes"], "slide")
         # an iris the user chose stays an iris, and other failures aren't retried
@@ -1867,9 +1873,20 @@ class FinishedVrm(unittest.TestCase):
     def test_the_files_own_skinning_is_said_not_held_against_the_build(self):
         project = self.project()
         self.finished(project, engine.shipped(Engine.write_glb(self, "out.vrm", Engine.avatar(self))))
-        verdict = project.verdict(["arms raised: stretch"])
+        # without the check's guess at why, which is about a rig made here
+        failed = ["an edge shrinks to 18% with the leg lift: a limb's weights reach onto the body it folds into"]
+        verdict = project.verdict(failed)
         self.assertTrue(verdict["ready"])
-        self.assertEqual(verdict["looks"], [("review", "rig check: arms raised: stretch (the file's own skinning, kept as it came)")])
+        self.assertEqual(verdict["issues"], [])
+        said = "rig check: an edge shrinks to 18% with the leg lift (the file's own skinning, kept as it came)"
+        self.assertEqual(verdict["looks"], [("review", said)])
+        # and once in a report's first lines, not as the rig check and again as a look
+        from app import report
+        lines = report.headline({"check_failed": failed, "verdict": {"looks": [["review", said], ["face", "the eyes: " + "long " * 60]]},
+                                 "character": {"options_changed": {"skinning": "voxel"}, "inert": ["skinning"]}}, "Test")
+        self.assertEqual(sum("18%" in line for line in lines), 1)
+        self.assertTrue(any(line.startswith("Also flagged: the eyes") and line.endswith("long...") for line in lines))
+        self.assertIn("Options changed: skinning=voxel (no effect on a finished .vrm: skinning)", lines)
 
     def test_a_joint_a_constraint_holds_turned_is_not_a_fault(self):
         avatar = Engine.avatar(self, turned=3)
@@ -1891,6 +1908,25 @@ class FinishedVrm(unittest.TestCase):
             cli.cmd_init(SimpleNamespace(model=old, name="Old", author="Unknown", face=None, reference=None, rig=None,
                                          manifest=self.root / "old.json"))
         self.assertFalse((self.root / "old.json").exists())
+
+    def test_an_option_that_changes_nothing_in_a_vrm_is_said(self):
+        # a tester set skinning to voxel on a VRoid file: four identical exports and no word of it
+        said = cli.cmd_set(SimpleNamespace(manifest=self.path, key="skinning", value="voxel"))
+        self.assertEqual(said["options"]["skinning"], "voxel")
+        self.assertIn("skinning changes nothing", said["note"])
+        self.assertNotIn("note", cli.cmd_set(SimpleNamespace(manifest=self.path, key="chest", value="true")))
+        self.assertEqual(manifest.inert(manifest.load(self.path)), ["skinning"])
+        self.assertEqual(Project(self.path, blender="blender").status()["inert"], ["skinning"])
+        model = self.root / "model.json"
+        manifest.save(manifest.new("model.glb", "Other"), model)
+        self.assertNotIn("note", cli.cmd_set(SimpleNamespace(manifest=model, key="skinning", value="voxel")))
+        self.assertEqual(manifest.inert(manifest.load(model)), [])
+
+    def test_the_cli_runs_under_its_module_name_too(self):
+        # `python -m app.cli set ...` exited 0 having done nothing: the module had no entry of its own
+        import subprocess
+        asked = subprocess.run([sys.executable, "-m", "app.cli", "--help"], cwd=engine.REPO, capture_output=True, text=True)
+        self.assertIn("usage: python -m app", asked.stdout)
 
 
 class FirstRun(unittest.TestCase):
@@ -2213,6 +2249,17 @@ class Updates(unittest.TestCase):
         asked = len(self.asked)
         self.assertEqual((update.check(self.github())["configured"], len(self.asked)), (False, asked))  # no file, nothing asked
 
+    def test_a_checkout_ahead_of_the_release_is_offered_nothing(self):
+        # the owner works on past a release: the published commit is in their history already
+        real = update._holds
+        update._holds = lambda commit: commit == self.NEW
+        try:
+            found = update.check(self.github())
+        finally:
+            update._holds = real
+        self.assertEqual((found["latest"], found["available"]), ("bbbbbbb", False))
+        self.assertFalse(update._holds(self.NEW))  # a zip holds no history
+
     def test_the_code_is_replaced_and_the_users_things_are_left_alone(self):
         events = []
         done = update.apply(on_event=events.append, open_url=self.github())
@@ -2251,6 +2298,14 @@ class Updates(unittest.TestCase):
         for name in ("app/server.py", "OC2VRM.bat", "docs/agent/app.md"):
             self.assertTrue(update._guarded(name), name)
 
+    def test_a_run_in_a_copy_without_git_says_which_version_built_it(self):
+        # a tester's run.json said "commit": null: git was the only one asked
+        made_by = engine.provenance("blender", self.app / "out" / "Mine" / "character.json")
+        self.assertEqual((made_by["commit"], made_by["dirty"], made_by["app"]), (self.OLD, False, "v1"))
+        update.VERSION.unlink()
+        made_by = engine.provenance("blender", self.app / "out" / "Mine" / "character.json")
+        self.assertEqual((made_by["commit"], made_by["dirty"]), (None, None))
+
     def test_the_testers_zip_holds_the_committed_files_and_says_which_commit(self):
         import shutil
         import zipfile
@@ -2268,6 +2323,15 @@ class Updates(unittest.TestCase):
         # the owner's song goes with it when there is one beside the app, though it is never committed
         self.assertEqual(packed["music"], next((n for n in ("music.mp3", "music.ogg", "music.wav") if (update.REPO / n).is_file()), ""))
         self.assertEqual(f"OC2VRM/{packed['music']}" in names, bool(packed["music"]))
+        # an earlier commit packs as it was: work goes on after a release, and the zip must be the release
+        import subprocess
+        before = subprocess.run(["git", "rev-parse", "HEAD~1"], cwd=update.REPO, capture_output=True, text=True).stdout.strip()
+        if before:
+            earlier = update.pack(self.app / "dist", at="HEAD~1")
+            with zipfile.ZipFile(earlier["zip"]) as archive:
+                self.assertEqual(json.loads(archive.read("OC2VRM/.oc2vrm_version.json"))["commit"], before)
+        with self.assertRaisesRegex(update.UpdateFailed, "no such commit"):
+            update.pack(self.app / "dist", at="no-such-branch")
 
 
 class ServerAnswers(unittest.TestCase):

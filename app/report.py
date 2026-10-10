@@ -23,6 +23,7 @@ import platform
 import re
 import struct
 import subprocess
+import textwrap
 import urllib.error
 import urllib.request
 import uuid
@@ -177,12 +178,16 @@ def headline(summary, name):
     failed = summary.get("check_failed") or []
     if failed:
         lines.append(f"Rig check, {len(failed)} to look at: " + "; ".join(line.split(":")[0] for line in failed[:3]))
-    looks = [text for _, text in ((summary.get("verdict") or {}).get("looks") or [])][:3]
+    # not the rig check's lines again: on a finished .vrm they are looks too, and were said twice
+    looks = [text for _, text in ((summary.get("verdict") or {}).get("looks") or [])
+             if not (failed and text.startswith("rig check: "))][:3]
     if looks:
-        lines.append("Also flagged: " + "; ".join(text[:120] for text in looks))
+        lines.append("Also flagged: " + "; ".join(textwrap.shorten(text, 160, placeholder="...") for text in looks))
     changed = (summary.get("character") or {}).get("options_changed") or {}
     if changed:
-        lines.append("Options changed: " + ", ".join(f"{key}={value}" for key, value in list(changed.items())[:8]))
+        inert = (summary.get("character") or {}).get("inert") or []
+        lines.append("Options changed: " + ", ".join(f"{key}={value}" for key, value in list(changed.items())[:8])
+                     + (f" (no effect on a finished .vrm: {', '.join(inert)})" if inert else ""))
     for check in summary.get("setup") or []:
         if check.get("state") == "bad":
             lines.append(f"Setup: {check.get('what')}")
@@ -437,6 +442,7 @@ def summarize(project, note, pictures, model):
                        "megabytes": round(source.stat().st_size / 2**20, 1) if source and source.is_file() else None},
             "rigged": bool(data.get("rig")), "face_points": bool(data.get("face")), "painted": bool(data.get("paint")),
             "joints_set": sorted(data.get("joints") or {}), "options_changed": changed,
+            "inert": manifest.inert(data),
             "pieces": [{"name": p.get("name"), "role": p.get("role"), "count": p.get("count")} for p in data.get("pieces") or []],
             "survey": project.survey()},
         "steps": [{"step": name, "status": entry.get("status"), "seconds": entry.get("seconds"), "finished": entry.get("finished"),

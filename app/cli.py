@@ -36,6 +36,7 @@ def main(argv=None):
     p.add_argument("--apply", action="store_true", help="download it and put it in place (about 8 MB; out/ and tools/ are not touched)")
     p = sub.add_parser("pack", help="the zip a tester starts from: the committed files, their version, and update.json when there is one")
     p.add_argument("--out", type=Path, help="folder for the zip (default: dist/)")
+    p.add_argument("--at", help="the commit to pack: a hash, a branch, origin/testers (default: the one checked out)")
     sub.add_parser("vendor", help="keep a copy of three.js, three-vrm and the face tracker with the app, so it runs offline (17 MB)")
 
     p = sub.add_parser("init", help="start a character manifest for a model")
@@ -226,7 +227,7 @@ def cmd_update(args):
 
 
 def cmd_pack(args):
-    return update.pack(args.out)
+    return update.pack(args.out, at=args.at)
 
 
 def cmd_vendor(args):
@@ -407,6 +408,11 @@ def cmd_set(args):
         value = args.value
     data["options"][args.key] = value
     manifest.save(data, args.manifest)
+    if manifest.improves(data) and args.key not in manifest.VRM_OPTIONS:
+        # kept all the same: the manifest stays whole, and its source may become a model
+        return {"options": data["options"],
+                "note": f"this character's source is a finished .vrm, taken in as it is: {args.key} changes nothing in it "
+                        f"(the options that do: {', '.join(manifest.VRM_OPTIONS)})"}
     return {"options": data["options"]}
 
 
@@ -1055,3 +1061,7 @@ def _relative(target, manifest_path):
             return os.path.relpath(target, manifest_path.parent)
         except ValueError:  # another drive
             return str(target)
+
+
+if __name__ == "__main__":  # `python -m app.cli` too: it exited 0 having done nothing
+    sys.exit(main())

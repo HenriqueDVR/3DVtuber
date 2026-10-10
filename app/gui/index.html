@@ -212,9 +212,14 @@ try {
         <div class="hint">drag to orbit · scroll to zoom · click a piece</div></div>
       <details class="card" id="region-card">
         <summary><b>Part of a piece</b> <span class="help">for something fused into a bigger piece</span></summary>
-        <p class="help">A twin-tail that is part of the body: pick the piece, then paint the part with <b>Alt</b>+drag
-          (<b>Ctrl+Alt</b> erases), or <b>Shift</b>+drag a box (<b>Ctrl+Shift</b> adds). Take all of it, ribbons and the hidden
-          side included: whatever is left out stays on the old bone and tears away from the rest.</p>
+        <p class="help">A lock or a twin-tail that is part of a bigger piece: choose a tool, then drag on the model. It turns
+          yellow where it is chosen. Turn the model round and take all of it, the hidden side included: whatever is left out
+          stays on the old bone and tears away from the rest. Then name it, give it a role and press the button.</p>
+        <div class="row" id="region-tools">
+          <button class="act alt small" data-region-tool="brush" title="drag over the model to choose what the brush touches">Brush</button>
+          <button class="act alt small" data-region-tool="erase" title="drag over the model to take it out of the part again">Eraser</button>
+          <button class="act alt small" data-region-tool="box" title="drag a box: all of the piece inside it, the far side too, is added">Box</button>
+          <span class="msg" id="region-tool-msg">no tool: dragging turns the model</span></div>
         <div class="row">brush <input type="range" id="region-brush" min="0.5" max="6" step="0.5" value="2" style="width:110px" aria-label="brush size">
           <span id="region-brush-cm" class="msg">2 cm</span>
           <button class="act alt small" id="region-grow" title="add the ring of vertices around the part">Grow</button>

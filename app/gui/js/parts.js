@@ -33,7 +33,9 @@ function roleOf(label) {
   return row ? namedFor(row)?.role || "" : "";
 }
 
-// Colours by role (faded where only suggested), the picked piece lit, the painted part white.
+// Colours by role (faded where only suggested), the picked piece lit, the painted part yellow
+// (it was white, on a picked piece lit nearly white: the paint was there and couldn't be seen).
+const PAINTED = [1, 0.82, 0.1, 1];
 // Isolate fades every other piece nearly out; X-ray makes the whole model see-through.
 export function colourPieces() {
   const focus = hovered ?? selected;
@@ -54,7 +56,7 @@ export function colourPieces() {
         cache.set(label, [...c.toArray(), alpha]);
       }
       const painted = region.size && numbers && topo && region.has(topo.rep.get(Math.round(numbers.getX(i))));
-      colours.set(painted ? [1, 1, 1, 1] : cache.get(label), i * 4);
+      colours.set(painted ? PAINTED : cache.get(label), i * 4);
     }
     mesh.geometry.setAttribute("color", new THREE.BufferAttribute(colours, 4));
     const see = xray || (isolate && selected != null);
@@ -144,25 +146,49 @@ function shrink() { const drop = [...region].filter((r) => [...topo.nbrs.get(r)]
 const box = document.createElement("div");
 box.className = "box";
 $("parts-view").appendChild(box);
-let dragFrom = null, painting = null;
+let dragFrom = null, painting = null, tool = null;
+// The tool chosen on the card: with one on, a plain drag paints and the right button turns the model.
+// It was Alt+drag and Shift+drag alone, written in a closed card: nobody found it, Alt opens the
+// window's menu in the desktop app, and with no piece picked first a drag did nothing at all.
+const TOOL_SAYS = { brush: "Brush: drag over the part", erase: "Eraser: drag over what to take out", box: "Box: drag a box round the part" };
+function setTool(name) {
+  tool = tool === name ? null : name;
+  $("region-tools").querySelectorAll("[data-region-tool]").forEach((b) => b.classList.toggle("on", b.dataset.regionTool === tool));
+  $("region-tool-msg").textContent = tool ? `${TOOL_SAYS[tool]} · right-drag turns the model` : "no tool: dragging turns the model";
+  partsView.orbit.mouseButtons.RIGHT = tool ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN;
+  canvas.style.cursor = tool ? "crosshair" : "";
+}
 function brushAt(e) {
   const hit = partsView.pick(e, partMeshes);
   if (!hit) return;
   const radius = +$("region-brush").value / 100;
-  for (const [r, label] of topo.piece) {
-    if (label !== selected || topo.pos.get(r).distanceTo(hit.point) > radius) continue;
-    if (painting.erase) region.delete(r); else region.add(r);
+  const touched = [];
+  for (const [r, label] of topo.piece) if (label === selected && topo.pos.get(r).distanceTo(hit.point) <= radius) touched.push(r);
+  // a brush smaller than the triangle under it touches none of its corners (a low-poly lock: edges of
+  // 5 cm under a 2 cm brush, and nothing was painted): the triangle that was hit is taken whole
+  const numbers = hit.object.geometry.attributes._vertex, pieces = hit.object.geometry.attributes._piece;
+  if (numbers && pieces && hit.face) for (const i of [hit.face.a, hit.face.b, hit.face.c]) {
+    if (Math.round(pieces.getX(i)) === selected) touched.push(topo.rep.get(Math.round(numbers.getX(i))));
   }
+  for (const r of touched) if (painting.erase) region.delete(r); else region.add(r);
   colourPieces();
 }
 const canvas = partsView.renderer.domElement;
+$("region-tools").onclick = (e) => { if (e.target.dataset.regionTool) setTool(e.target.dataset.regionTool); };
+canvas.addEventListener("contextmenu", (e) => { if (tool) e.preventDefault(); });
 canvas.addEventListener("pointerdown", (e) => {
-  if (!(e.shiftKey || e.altKey) || selected == null) return;
+  const mode = e.altKey ? (e.ctrlKey ? "erase" : "brush") : e.shiftKey ? "box" : e.button === 0 ? tool : null;
+  if (!mode) return;
+  // the piece under the cursor is the one to work on, unless a part of another is already begun
+  const under = partsView.pick(e, partMeshes), attr = under?.object.geometry.attributes._piece;
+  const label = attr ? Math.round(attr.getX(under.face.a)) : null;
+  if (label != null && label !== selected && (selected == null || !region.size)) selectPiece(label);
+  if (selected == null) { toast("Drag on the model: start on the piece the part belongs to", "info"); return; }
   if (!topo) buildTopo();
   $("region-card").open = true;
   e.preventDefault(); e.stopPropagation(); partsView.orbit.enabled = false;
-  if (e.altKey) { painting = { erase: e.ctrlKey }; brushAt(e); return; }
-  dragFrom = { x: e.offsetX, y: e.offsetY, add: e.ctrlKey };
+  if (mode !== "box") { painting = { erase: mode === "erase" }; brushAt(e); return; }
+  dragFrom = { x: e.offsetX, y: e.offsetY, add: e.ctrlKey || (!e.shiftKey && tool === "box") };
 }, true);
 canvas.addEventListener("pointermove", (e) => {
   if (painting) { brushAt(e); return; }
@@ -204,9 +230,14 @@ $("region-grow").onclick = () => { if (topo && region.size) { grow(); showRegion
 $("region-shrink").onclick = () => { if (topo && region.size) { shrink(); showRegion(); } };
 $("region-fill").onclick = () => { if (topo && region.size) { fillGaps(); showRegion(); } };
 $("region-role").innerHTML = ROLES.filter(Boolean).map((r) => `<option value="${r}" title="${ROLE_INFO[r][1]}">${roleName(r)}</option>`).join("");
+$("region-role").value = "hair";  // what a part is nearly always painted for (it opened on "body", which changes nothing)
 $("role-legend").innerHTML = ROLES.map((r) => `<p class="help" style="margin:2px 0"><span class="swatch" style="background:${hex(ROLE_COLOUR[r])}"></span>
   <b style="color:var(--text)">${roleName(r)}</b>: ${ROLE_INFO[r][1]}</p>`).join("");
 $("region-clear").onclick = () => { region = new Set(); showRegion(); };
+$("region-card").addEventListener("toggle", () => {
+  if (!$("region-card").open && tool) setTool(tool);
+  if ($("region-card").open) $("region-card").scrollIntoView({ block: "nearest", behavior: "smooth" });
+});
 $("region-save").onclick = async () => {
   const name = $("region-name").value.trim() || `${$("region-role").value}_part_${selected}`;
   const rep = regionReport();
@@ -224,7 +255,7 @@ $("region-save").onclick = async () => {
 let partsDown = null;
 canvas.addEventListener("pointerdown", (e) => { partsDown = { x: e.clientX, y: e.clientY }; });
 canvas.addEventListener("click", (event) => {
-  if (event.shiftKey || event.altKey) return;
+  if (event.shiftKey || event.altKey || tool) return;
   if (partsDown && Math.hypot(event.clientX - partsDown.x, event.clientY - partsDown.y) > 4) return;
   const hit = partsView.pick(event, partMeshes);
   const attr = hit?.object.geometry.attributes._piece;

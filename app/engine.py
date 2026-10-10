@@ -177,8 +177,13 @@ KEPT = {"survey": "a finished .vrm is read as it is, not surveyed",
 # Run before a check on a character taken in from a .vrm: its meshes joined in memory (the checks
 # measure one mesh, and a VRoid file's body, face and hair are three).
 WHOLE_BODY = ["--python-exit-code", "1", "-P", str(SCRIPTS / "_whole_body.py")]
-EYES_FALLBACK_REASON = ("the moving iris showed over the lids (the drawn iris is as tall as the eye), "
-                        "so the eyes slide as a painted patch instead")
+# An automatic iris the eye step refuses is tried again, in this order (see _eyes_fall_back).
+EYES_FALLBACK = {
+    "modelled": ("the moving iris showed over the lids (the drawn iris is as tall as the eye, or its lashes read as "
+                 "iris), so the model's own iris discs slide instead"),
+    "slide": ("the moving iris was refused and the model's own iris discs couldn't be used either, "
+              "so the eyes slide as a painted patch instead"),
+}
 
 
 def find_blender(given=None):
@@ -355,7 +360,7 @@ class Project:
         check = self.state["steps"].get("check", {})
         failed = _read_json(check.get("json"), {}).get("failed")
         return {"name": self.name, "manifest": str(self.manifest_path), "out": str(self.out),
-                "improving": self.improving, "source_holds": self.source_holds(),
+                "improving": self.improving, "inert": manifest.inert(self.data), "source_holds": self.source_holds(),
                 "gained": gained(self.source_holds(), self.ships()),
                 "latest_blend": str(last) if last else None, "options": self.options(), "steps": steps,
                 "check_failed": failed, "verdict": self.verdict(failed), "ships": self.ships(),
@@ -453,8 +458,11 @@ class Project:
         issues = [("review", f"rig check: {f}") for f in (failed or [])]
         looks = []
         if self.improving:
-            # the skinning came with the file and no step here remakes it: said, not held against the build
-            issues, looks = [], [(page, f"{line} (the file's own skinning, kept as it came)") for page, line in issues]
+            # the skinning came with the file and no step here remakes it: said, not held against the build.
+            # Without the check's guess at the cause, which is about rigs made here: "a limb's weights reach
+            # onto the body" was said of a VRoid hip whose weights only changed too fast across the crease
+            issues, looks = [], [("review", f"rig check: {f.split(': ')[0]} (the file's own skinning, kept as it came)")
+                                 for f in (failed or [])]
         for name in sorted(SOFT):
             if steps.get(name, {}).get("status") == "failed":
                 issues.append(("build", f"built without {name.replace('_', ' ')}"))
@@ -686,17 +694,27 @@ class Project:
                     self._record(name, {"status": "skipped", "reason": why})
                     emit({"step": name, "status": "skipped", "reason": why})
                     continue
+                if name == "build" and manifest.inert(self.data):
+                    # said in the run itself: `skinning: voxel` on a .vrm built the same file with no word of it
+                    emit({"step": name, "status": "warning", "reason": "a finished .vrm is taken in as it is: these options "
+                          f"change nothing in it: {', '.join(manifest.inert(self.data))}"})
                 # with its log's name: the app shows the log's end while the step runs
                 emit({"step": name, "status": "running", "log": str(folder / f"{index:02d}_{name}.log")})
                 try:
                     try:
                         entry = self._run_step(name, index, folder)
                     except StepFailed as error:
-                        if not self._eyes_fall_back(name, error):
-                            raise
-                        emit({"step": name, "status": "warning", "reason": EYES_FALLBACK_REASON})
-                        entry = self._run_step(name, index, folder)
-                        entry["report"] = {**(entry.get("report") or {}), "eyes": "slide", "why": EYES_FALLBACK_REASON}
+                        while True:
+                            if not self._eyes_fall_back(name, error):
+                                raise error
+                            mode = self.state["eyes_fallback"]
+                            emit({"step": name, "status": "warning", "reason": EYES_FALLBACK[mode]})
+                            try:
+                                entry = self._run_step(name, index, folder)
+                                break
+                            except StepFailed as again:
+                                error = again
+                        entry["report"] = {**(entry.get("report") or {}), "eyes": mode, "why": EYES_FALLBACK[mode]}
                 except Cancelled:
                     # not recorded: the step keeps what it last finished, which later steps may still read
                     emit({"step": name, "status": "cancelled"})
@@ -881,6 +899,8 @@ class Project:
             args += ["--face", face]
             if o["eyes"] == "slide":
                 args += ["--slide", *o["slide"]]
+            elif o["eyes"] == "modelled":
+                args.append("--modelled")
         if name == "mouth":
             fix = o["mouth_fix"]
             if fix.get("free"):
@@ -894,9 +914,12 @@ class Project:
         """Whether an automatic iris the eye step refused should be tried again as a sliding patch
         (remembered in the state, so later builds of the same model slide straight away)."""
         refused = name == "eyes" and (error.known or {}).get("code") == "VM-EYES-REFUSED"
-        if not refused or self.data["options"]["eyes"] is not None or self.options()["eyes"] != "iris":
+        now = self.options()["eyes"]
+        if not refused or self.data["options"]["eyes"] is not None or now not in ("iris", "modelled"):
             return False
-        self.state["eyes_fallback"] = "slide"
+        # the established moving iris first (model A's builds, seen good in Warudo, keep it); then the
+        # model's own iris discs, where it has them (the plain boy, the catgirl); the painted patch last
+        self.state["eyes_fallback"] = "modelled" if now == "iris" else "slide"
         self._save_state()
         return True
 
@@ -1642,22 +1665,20 @@ def provenance(blender, manifest_path):
     version = blender_version(blender)
     if version and ".".join(version.split(".")[:2]) not in TESTED:
         warnings.append(f"Blender {version}: not yet tested with this pipeline (tested: {', '.join(sorted(TESTED))})")
-    commit = dirty = None
+    # git's word in a checkout, the version file's in a tester's copy: asked of git alone, every run a
+    # tester sent said "commit": null, and which version built it was read off the size of its check
     try:
-        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, timeout=20).stdout.strip() or None
-        # tracked files only: the tree holds large untracked models
-        changed = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=REPO,
-                                 capture_output=True, text=True, timeout=20).stdout
-        dirty = bool(changed.strip())
+        here = update.current()
     except Exception:  # noqa: BLE001 -- provenance is a record, never a reason to stop
-        pass
+        here = {}
+    commit, dirty = here.get("commit"), here.get("changed") if here.get("commit") else None
     try:
         digest = hashlib.sha256(Path(manifest_path).read_bytes()).hexdigest()[:16]
     except OSError:
         digest = None
     return {"started": datetime.now().isoformat(timespec="seconds"), "blender": str(blender),
             "blender_version": version, "vrm_addon": vrm_addon_version(blender, version), "commit": commit,
-            "dirty": dirty, "manifest": str(manifest_path), "manifest_sha256": digest,
+            "dirty": dirty, "app": here.get("version") or None, "manifest": str(manifest_path), "manifest_sha256": digest,
             "python": platform.python_version(), "warnings": warnings}
 
 
