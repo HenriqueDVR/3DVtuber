@@ -22,6 +22,12 @@ SAMPLES = 120_000
 # so every dark piece on it reads as hair -- but how far a piece hangs can: a brim reaches a
 # third of a head down, a bob or a ponytail much further.
 HAIR_HANG = 0.6
+# Short hair doesn't hang either, and is no helmet: a plain boy's (hair 10% of the head's vertices,
+# hanging 0.0) was built as a solid head, his bare neck, one surface with the face, put on the
+# head bone whole (it left the collar when he nodded) and his hair's colour run down it. Headwear
+# read as hair covers most of the head (the witch hat: 79 to 84%); hair on a head that shows its
+# face is under this share (long hair measured 32 to 36%). No hair found at all stays a solid head.
+HEADWEAR_SHARE = 0.6
 # Pieces smaller than this share of the hair aren't worth measuring (clips, ties, a bobble).
 HAIR_PIECE = 0.05
 # The top of the head narrowing to under this share of its widest point is worth mentioning
@@ -228,7 +234,8 @@ def _parts_report(found):
 def _options(report, found):
     """The build_avatar options this mesh asks for."""
     hang = report["head"]["hair_hang"]
-    rigid_head = hang is not None and hang < HAIR_HANG
+    share = report["head"]["hair_share"] or 0.0
+    rigid_head = hang is not None and hang < HAIR_HANG and not 0.0 < share < HEADWEAR_SHARE
     options = {
         "rigid_head": rigid_head,
         "cloth_physics": report["cloth"]["share"] > CLOTH_SHARE,

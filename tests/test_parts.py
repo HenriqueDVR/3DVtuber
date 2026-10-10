@@ -317,3 +317,104 @@ class BuildAvatarFromParts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EyePairAtTheMarks(unittest.TestCase):
+    """A tester's head, as measured: inner-ear pieces bigger than the eyes and 11 cm above them."""
+
+    CENTRE = {1: np.array([0.09, -0.141, 1.51]), 2: np.array([-0.09, -0.141, 1.51]),      # inner ears
+              3: np.array([0.04, -0.164, 1.394]), 4: np.array([-0.04, -0.164, 1.394])}    # eyes
+    SIZE = {1: np.array([0.049, 0.034, 0.066]), 2: np.array([0.049, 0.034, 0.066]),
+            3: np.array([0.026, 0.009, 0.031]), 4: np.array([0.026, 0.009, 0.031])}
+
+    def pair(self, **marks):
+        low = {p: self.CENTRE[p] - self.SIZE[p] / 2 for p in self.CENTRE}
+        high = {p: self.CENTRE[p] + self.SIZE[p] / 2 for p in self.CENTRE}
+        return parts._eye_pair(list(self.CENTRE), low, high, self.CENTRE, 0.0, 1.3, **marks)
+
+    def test_by_size_alone_the_ears_win(self):
+        self.assertEqual(self.pair(), {"left": 1, "right": 2})
+
+    def test_marked_eyes_pick_the_pair_under_the_marks(self):
+        marked = [(-0.04, 1.40), (0.04, 1.40)]  # either order: the left eye is the one at +X
+        self.assertEqual(self.pair(marked=marked, reach=0.3 * 0.25), {"left": 3, "right": 4})
+
+    def test_marks_far_from_every_pair_change_nothing(self):
+        self.assertEqual(self.pair(marked=[(0.04, 1.75), (-0.04, 1.75)], reach=0.3 * 0.25), {"left": 1, "right": 2})
+
+
+class FaceTrackingOnAPaintedFace(unittest.TestCase):
+    """One surface with the eyes and mouth painted on: no eye inserts, nothing fixed, no mouth cover
+    (a tester's generated model). The step used to die reading them; the blink is still built."""
+
+    @classmethod
+    def setUpClass(cls):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import add_face_tracking
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        bpy.ops.mesh.primitive_grid_add(x_subdivisions=40, y_subdivisions=40, size=0.2, rotation=(math.pi / 2, 0, 0))
+        cls.obj = bpy.context.object
+        bpy.ops.object.transform_apply(rotation=True)
+        cls.obj.shape_key_add(name="Basis").value = 0.0
+        cls.obj[face_rig.PAINTED_EYES_PROPERTY] = {"left": [0.02, 0.0, 0.06, 0.03], "right": [-0.06, 0.0, -0.02, 0.03]}
+        cls.shapes = add_face_tracking.FaceShapes(cls.obj)
+        cls.shapes.add_blink("", face_rig.PAINTED_BLINK)
+
+    def moved(self, name):
+        keys = self.obj.data.shape_keys.key_blocks
+        co, basis = np.empty(len(self.obj.data.vertices) * 3), np.empty(len(self.obj.data.vertices) * 3)
+        keys[name].data.foreach_get("co", co)
+        keys["Basis"].data.foreach_get("co", basis)
+        basis = basis.reshape(-1, 3)
+        return basis, np.abs(co.reshape(-1, 3) - basis).max(axis=1) > 1e-6
+
+    def test_it_has_no_mouth_to_shape(self):
+        self.assertIsNone(self.shapes.mouth)
+        self.assertTrue(self.shapes.painted)
+
+    def test_each_blink_squeezes_its_own_eye(self):
+        for name, sign in (("eyeBlinkLeft", 1), ("eyeBlinkRight", -1)):
+            with self.subTest(name=name):
+                basis, moved = self.moved(name)
+                self.assertGreater(moved.sum(), 10)
+                self.assertTrue((sign * basis[moved, 0] > 0).all())
+
+
+class APieceWithNoBody(unittest.TestCase):
+    """A head piece with a twin-tail hanging past the hips holds no body; one with a trunk or legs does."""
+
+    JOINTS = {"hips": np.array([0.0, 0.0, 0.9]), "neck": np.array([0.0, 0.0, 1.3]),
+              "left_upper_leg": np.array([0.1, 0.0, 0.85]), "left_lower_leg": np.array([0.1, 0.0, 0.5]),
+              "left_foot": np.array([0.1, 0.0, 0.1]), "right_upper_leg": np.array([-0.1, 0.0, 0.85]),
+              "right_lower_leg": np.array([-0.1, 0.0, 0.5]), "right_foot": np.array([-0.1, 0.0, 0.1])}
+
+    @classmethod
+    def setUpClass(cls):
+        z = np.linspace(0.0, 1.6, 161)
+        head = np.stack([np.zeros(20), np.zeros(20), np.linspace(1.3, 1.6, 20)], axis=1)
+        cls.tail = np.stack([np.full(60, -0.3), np.full(60, 0.1), np.linspace(0.7, 1.4, 60)], axis=1)  # the catgirl's, as measured
+        cls.trunk = np.stack([np.full(40, 0.05), np.zeros(40), np.linspace(0.9, 1.3, 40)], axis=1)
+        cls.leg = np.stack([np.full(40, 0.12), np.zeros(40), np.linspace(0.1, 0.85, 40)], axis=1)
+        cls.verts = np.concatenate([head, cls.tail, cls.trunk, cls.leg, np.stack([np.zeros(len(z)), np.ones(len(z)), z], axis=1)])
+        cls.head, cls.n = len(head), len(cls.verts)
+
+    def piece(self, *spans):
+        mask = np.zeros(self.n, dtype=bool)
+        for start, count in spans:
+            mask[start:start + count] = True
+        return mask
+
+    def test_a_head_and_its_tail_hold_no_body(self):
+        self.assertFalse(parts._holds_body(self.verts, self.piece((0, self.head + 60)), self.JOINTS))
+
+    def test_a_trunk_is_a_body(self):
+        self.assertTrue(parts._holds_body(self.verts, self.piece((0, self.head), (self.head + 60, 40)), self.JOINTS))
+
+    def test_legs_are_a_body(self):
+        self.assertTrue(parts._holds_body(self.verts, self.piece((0, self.head), (self.head + 100, 40)), self.JOINTS))
+
+    def test_without_named_legs_anything_below_the_hips_is(self):
+        joints = {"hips": self.JOINTS["hips"], "neck": self.JOINTS["neck"]}
+        self.assertTrue(parts._holds_body(self.verts, self.piece((0, self.head + 60)), joints))

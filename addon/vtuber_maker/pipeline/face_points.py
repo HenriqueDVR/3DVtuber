@@ -64,6 +64,18 @@ def has_eyes(points):
     return bool(points.get("right_eye") or points.get("left_eye"))
 
 
+def eye_places(mesh_obj, points):
+    """Where both eyes are marked, two world (x, z); None without both, or without a face patch to read them on."""
+    if not (points and points.get("right_eye") and points.get("left_eye")) or _patch_image(mesh_obj) is None:
+        return None
+    to_world = _pixel_to_world(mesh_obj, points["size"])
+    places = []
+    for key in ("left_eye", "right_eye"):
+        p = {name: to_world(xy) for name, xy in points[key].items()}
+        places.append(((p["inner"][0] + p["outer"][0]) / 2, (p["top"][1] + p["bottom"][1]) / 2))
+    return places
+
+
 def apply(mesh_obj, features, points):
     """Return features with eyes and mouth taken from the points (world space, like the rest).
     Without eye points the eyes stay where they were found."""

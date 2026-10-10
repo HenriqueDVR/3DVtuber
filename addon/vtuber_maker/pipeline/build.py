@@ -52,7 +52,8 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
         override = {**adopt.joints(adopted[0]), **override}
     joints = landmarks.detect_body(meshdata.world_vertices(mesh), meshdata.triangles(mesh.data), warnings)
     joints.update(override)
-    found = parts.find(mesh, joints)
+    # the eye inserts are the pair where the eyes were marked, when they were
+    found = parts.find(mesh, joints, eyes_at=face_points.eye_places(mesh, points))
     pieces = pieces or []
     # found on the source as it came in, before any step adds or cuts vertices
     named = {}
@@ -161,7 +162,15 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
             tip_chains = cloth.build_tip_chain(mesh, armature, joints, head_mask, face_mask)
     else:
         named_hair = roles.of_role(pieces, named, "hair", count)
-        hair_mask = found.hair if modelled_face else (named_hair if named_hair.any() else None)
+        hair_mask = named_hair if named_hair.any() else None
+        if modelled_face:
+            # what the user says is hair is hair, and what they gave another role isn't: with a modelled
+            # face only the hair found by itself counted, and a part painted on the Parts page as hair
+            # (the still half of the catgirl's lock) changed nothing
+            hair_mask = roles.pad(found.hair, count) | named_hair
+            for piece in pieces:
+                if piece["role"] != "hair":
+                    hair_mask &= ~roles.pad(named[piece["name"]], count)
         chains = hair.build_hair_bones(mesh, armature, joints, features, hair_mask, off_arms=adopted is not None)
         head_mask = hair_mask
     swing = roles.of_role(pieces, named, "swing_cloth", count)

@@ -31,6 +31,18 @@ FUSED_HAIR = 0.003
 FUSED_GAP = 0.02
 # Fused hair taking this share of the body's surface below the hips isn't hair: the skin is its colour.
 SKIN_AS_HAIR = 0.3
+# A piece holds a body when it has vertices below the hips within LEG_REACH (of the model's height)
+# of the legs' bones, or within TRUNK_REACH of the line from hips to neck below its middle. In one
+# that doesn't, the neck is what lies within NECK_REACH of the line from neck to head.
+LEG_REACH = 0.05
+TRUNK_REACH = 0.075
+NECK_REACH = 0.035
+# The face, in distances between the eyes: this far to either side of their middle, above and below
+# them. Skin runs on there across an edge whose ends' normals agree to SKIN_TURN (their cosine) and
+# that leaves the surface by less than SKIN_STEP (the sine of its angle to it).
+FACE_WIDE, FACE_ABOVE, FACE_BELOW = 1.1, 0.5, 1.7
+SKIN_TURN = 0.85
+SKIN_STEP = 0.4
 # Hair shaded in two tones: a piece this big (share of the vertices) hanging from above the head
 # joint to below the neck is hair with only this share of it within SHADED_DISTANCE of the crown's
 # colour. Model D's hair, dark in front with pale highlights: 19% of the model, 22% within
@@ -57,6 +69,10 @@ EAR_COLOUR = 0.2
 EAR_MAX = 0.14
 # How far behind the frontmost surface at the mouth still counts as the lips (m).
 LIP_DEPTH = 0.005
+# With the eyes marked, the eye inserts are the mirrored pair nearest the marks, within this many
+# head heights of them: by size alone a tester's model took its inner-ear pieces (4.9 x 6.6 cm,
+# 11 cm above the eyes' 2.6 x 3.1 cm) and blinked with its ears.
+EYES_MARKED = 0.3
 
 
 class MeshParts(NamedTuple):
@@ -111,8 +127,11 @@ def _components(count, a, b):
         labels = updated
 
 
-def find(mesh_obj, joints):
-    """Split the mesh into parts and pick out the hair, the eye and mouth inserts, and the face."""
+def find(mesh_obj, joints, eyes_at=None):
+    """Split the mesh into parts and pick out the hair, the eye and mouth inserts, and the face.
+
+    `eyes_at` is where the eyes were marked, two world (x, z), when they were (face_points.eye_places).
+    """
     verts = world_vertices(mesh_obj)
     edges = np.empty(len(mesh_obj.data.edges) * 2, dtype=np.int64)
     mesh_obj.data.edges.foreach_get("vertices", edges)
@@ -132,7 +151,8 @@ def find(mesh_obj, joints):
         and centre[p][2] > joints["neck"][2]
         and centre[p][1] < head_centre_y
     ]
-    eyes = _eye_pair(inserts, low, high, centre, float(joints["head"][0]), float(joints["head"][2]))
+    eyes = _eye_pair(inserts, low, high, centre, float(joints["head"][0]), float(joints["head"][2]),
+                     marked=eyes_at, reach=EYES_MARKED * head_height)
     mouth = _mouth(inserts, eyes, low, high, centre) if eyes else -1
 
     face = -1
@@ -162,13 +182,129 @@ def find(mesh_obj, joints):
         # face, or the head-top clean-up repaints the up-facing arms and the jaw's chin is a foot.
         # Its hair is usually that same surface too, and swings rather than moving with the face
         fused = fused_hair(mesh_obj, verts, labels, hair_colored & (labels == face), joints)
+        # a piece that hangs low and holds no body is a head and its hair (the catgirl's: face, neck,
+        # bangs and one twin-tail, the tail down past her hips)
+        bodiless = not _holds_body(verts, labels == face, joints)
+        if bodiless and fused.any():
+            from . import roles
+            piece = labels == face
+            eye_at = np.array([centre[p] for p in eyes.values()])
+            apart = float(np.ptp(eye_at[:, 0]))
+            between = (piece & (np.abs(verts[:, 0] - eye_at[:, 0].mean()) < FACE_WIDE * apart)
+                       & (verts[:, 2] < eye_at[:, 2].mean() + FACE_ABOVE * apart) & (verts[:, 2] > eye_at[:, 2].mean() - FACE_BELOW * apart))
+            # in such a piece a colour is the hair's or the skin's, whichever it is nearer: a lock in
+            # shadow is further from the crown's colour than HAIR_COLOR_DISTANCE (the one by her left
+            # cheek: 0.24), counted as skin with the cheek it touches, and stood still while the
+            # locks round it swung
+            if (between & ~hair_colored).any():
+                skin_colour = np.median(colors[between & ~hair_colored], axis=0)
+                hairish = piece & (np.linalg.norm(colors - hair_color, axis=1) < np.linalg.norm(colors - skin_colour, axis=1))
+                fused = fused_hair(mesh_obj, verts, labels, hairish, joints)
+            else:
+                hairish = piece & hair_colored
+            # the skin the eyes sit in is small beside the hair round it: it was closed as a hole in
+            # the hair, and the mouth's shapes moved "hair". Its own holes are closed first (lips, a
+            # blush and shading of the hair's colour: left to the hair, her chin and lids hung on its
+            # chains and tore on a head turn)
+            skin = roles.close_region(mesh_obj, piece, _skin_at(mesh_obj, verts, piece & ~hairish, nearest))
+            # ... and the neck is skin, of whatever colour (hers is near her hair's pink: on a chain
+            # it sagged out over her collar)
+            a, b = np.asarray(joints["neck"], dtype=float), np.asarray(joints["head"], dtype=float)
+            along = np.clip((verts - a) @ (b - a) / max(float((b - a) @ (b - a)), 1e-12), -1.0, 1.0)
+            skin |= piece & (np.linalg.norm(verts - (a + along[:, None] * (b - a)), axis=1) < NECK_REACH * float(np.ptp(verts[:, 2])))
+            # ... and so is what runs on smoothly from the skin between brow and chin, though it is the
+            # hair's colour: a blush from her nose to her chin joins a lock that touches it, the two
+            # were one stretch of "hair", and half her mouth and a cheek swung on a chain
+            skin = _smooth_onward(mesh_obj, verts, skin, between)
+            # all else of it under the neck is hair, whatever its colour (her tail's inner side is
+            # painted dark: left on the head, it tore from the rest 10.7 cm on a head turn)
+            fused = (fused | piece & (verts[:, 2] < joints["neck"][2])) & ~skin
+            # ... and so are the gaps left in the hair once the skin is known: a stretch of a lock nearer
+            # the skin's colour than the hair's (the end of the one by her left cheek, 50 vertices in
+            # shadow between the lock and its tip) was neither, stayed on the head and cut the tip off
+            # the lock: both stood still. Closed over what isn't skin, so the face isn't taken again
+            fused = roles.close_region(mesh_obj, piece & ~skin, fused)
         legs = face_area & (verts[:, 2] < joints["hips"][2])
         # a body of the hair's own colour (model D, a slime girl, blue all over): colour can't tell
-        # the hair from the skin, and her legs were taken as hair and swung on its chains
-        if not legs.any() or fused[legs].mean() < SKIN_AS_HAIR:
+        # the hair from the skin, and her legs were taken as hair and swung on its chains. What a
+        # bodiless piece has below the hips hangs there: counted as body, the catgirl's tail had her
+        # fused hair refused whole (that tail, her bangs and the locks by her face had no springs)
+        if bodiless or not legs.any() or fused[legs].mean() < SKIN_AS_HAIR:
             hair |= fused
         face_area &=(verts[:, 2] > joints["neck"][2]) & ~hair
     return MeshParts(labels, hair, face, eyes, mouth, hair_color, face_area)
+
+
+def _smooth_onward(mesh_obj, verts, skin, allowed):
+    """`skin` grown over edges into `allowed` wherever the surface runs on without a crease.
+
+    A vertex joins when its normal is within SKIN_TURN of its skin neighbour's and the edge
+    between them lies in that neighbour's surface (SKIN_STEP): a lock standing on the face meets it
+    at a wall, a patch of the face painted another colour doesn't.
+    """
+    weld, a, b = meshdata.welded_edges(mesh_obj, verts)
+    normals = np.empty(len(verts) * 3)
+    mesh_obj.data.vertices.foreach_get("normal", normals)
+    normals = normals.reshape(-1, 3) @ np.array(mesh_obj.matrix_world)[:3, :3].T
+    # split along UV seams, a welded vertex has several normals: their mean
+    total = np.zeros_like(normals)
+    np.add.at(total, weld, normals)
+    normals = total[weld] / np.maximum(np.linalg.norm(total[weld], axis=1, keepdims=True), 1e-12)
+    a, b = np.concatenate([a, b]), np.concatenate([b, a])
+    step = verts[b] - verts[a]
+    length = np.maximum(np.linalg.norm(step, axis=1), 1e-12)
+    onward = ((normals[a] * normals[b]).sum(axis=1) > SKIN_TURN) & (np.abs((normals[a] * step).sum(axis=1)) / length < SKIN_STEP)
+    region = np.zeros(len(verts), dtype=bool)
+    region[weld[skin]] = True
+    open_ = np.zeros(len(verts), dtype=bool)
+    open_[weld[allowed]] = True
+    while True:
+        reached = np.zeros(len(verts), dtype=bool)
+        reached[b[region[a] & onward & open_[b] & ~region[b]]] = True
+        if not reached.any():
+            return skin | (region[weld] & allowed)
+        region |= reached
+
+
+def _skin_at(mesh_obj, verts, skin, at):
+    """The connected stretches of the mask `skin` that hold the vertices `at`, or lie nearest them."""
+    weld, a, b = meshdata.welded_edges(mesh_obj, verts)
+    if not skin.any():
+        return skin
+    member = np.zeros(len(verts), dtype=bool)
+    member[weld[skin]] = True
+    keep = member[a] & member[b]
+    cluster = _components(len(verts), a[keep], b[keep])[weld]
+    ids = np.flatnonzero(skin)
+    seeds = [int(ids[np.argmin(np.linalg.norm(verts[ids] - verts[v], axis=1))]) for v in at]
+    return skin & np.isin(cluster, cluster[seeds])
+
+
+def _holds_body(verts, piece, joints):
+    """Whether the mask `piece` holds legs or a trunk: vertices on the legs below the hips (_on_legs),
+    or within TRUNK_REACH of the line from hips to neck below its middle. True when the joints name no legs."""
+    below = piece & (verts[:, 2] < joints["hips"][2]) & _on_legs(verts, joints)
+    if below.any():
+        return True
+    a, b = np.asarray(joints["hips"], dtype=float), np.asarray(joints["neck"], dtype=float)
+    along = np.clip((verts - a) @ (b - a) / max(float((b - a) @ (b - a)), 1e-12), 0.0, 1.0)
+    near = np.linalg.norm(verts - (a + along[:, None] * (b - a)), axis=1) < TRUNK_REACH * float(np.ptp(verts[:, 2]))
+    return bool((piece & near & (verts[:, 2] < (a[2] + b[2]) / 2)).any())
+
+
+def _on_legs(verts, joints):
+    """True for vertices within LEG_REACH of a leg's bones; all of them when the joints name no legs."""
+    names = [(f"{side}_upper_leg", f"{side}_lower_leg", f"{side}_foot") for side in ("left", "right")]
+    if not all(name in joints for trio in names for name in trio):
+        return np.ones(len(verts), dtype=bool)
+    reach = LEG_REACH * float(np.ptp(verts[:, 2]))
+    near = np.zeros(len(verts), dtype=bool)
+    for hip, knee, foot in names:
+        for a, b in ((joints[hip], joints[knee]), (joints[knee], joints[foot])):
+            a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+            along = np.clip((verts - a) @ (b - a) / max(float((b - a) @ (b - a)), 1e-12), 0.0, 1.0)
+            near |= np.linalg.norm(verts - (a + along[:, None] * (b - a)), axis=1) < reach
+    return near
 
 
 def with_marked_mouth(found, verts, mouth, width, neck_z, behind):
@@ -372,10 +508,17 @@ def _boxes(verts, labels, ids):
     return low, high, centre
 
 
-def _eye_pair(inserts, low, high, centre, head_x, head_z):
-    """The largest pair of inserts mirrored across the head's centre line, above the head joint."""
+def _eye_pair(inserts, low, high, centre, head_x, head_z, marked=None, reach=0.0):
+    """The largest pair of inserts mirrored across the head's centre line, above the head joint.
+
+    With the eyes `marked` (two world (x, z)), the pair nearest the marks instead, if one lies
+    within `reach` of them (both its pieces together); else the largest, as without marks.
+    """
     candidates = [p for p in inserts if centre[p][2] > head_z]
     best, best_area = {}, 0.0
+    nearest, nearest_gap = {}, 2.0 * reach
+    if marked is not None:
+        marked = sorted((np.asarray(m, float) for m in marked), key=lambda m: -m[0])  # the left eye is at +X
     for i, a in enumerate(candidates):
         for b in candidates[i + 1 :]:
             spread = abs(centre[a][0] - centre[b][0])
@@ -385,10 +528,16 @@ def _eye_pair(inserts, low, high, centre, head_x, head_z):
             level = abs(centre[a][2] - centre[b][2]) < 0.25 * spread
             apart = spread > max(size_a[0], size_b[0])
             alike = max(area_a, area_b) < 3 * min(area_a, area_b)
-            if mirrored and level and apart and alike and area_a + area_b > best_area:
-                left, right = (a, b) if centre[a][0] > centre[b][0] else (b, a)
+            if not (mirrored and level and apart and alike):
+                continue
+            left, right = (a, b) if centre[a][0] > centre[b][0] else (b, a)
+            if area_a + area_b > best_area:
                 best, best_area = {"left": int(left), "right": int(right)}, area_a + area_b
-    return best
+            if marked is not None:
+                gap = sum(float(np.linalg.norm(centre[p][[0, 2]] - m)) for p, m in zip((left, right), marked))
+                if gap < nearest_gap:
+                    nearest, nearest_gap = {"left": int(left), "right": int(right)}, gap
+    return nearest or best
 
 
 def _mouth(inserts, eyes, low, high, centre):

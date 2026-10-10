@@ -81,7 +81,10 @@ def main():
     arm = next(o for o in bpy.data.objects if o.type == "ARMATURE")
     obj = next(o for o in bpy.data.objects if o.type == "MESH" and o.parent == arm)
     shapes = FaceShapes(obj)
-    if args.mouth_only:
+    if shapes.mouth is None:
+        print("no mouth cover on this mesh (a face painted on one surface, without eye or mouth pieces): "
+              "the blink is built, the mouth shapes for face tracking are left out; the vowels stay")
+    elif args.mouth_only:
         shapes.add_mouth_from_vowels()
     else:
         shapes.add_mouth(args.jaw)
@@ -100,17 +103,20 @@ def main():
 
 
 class FaceShapes:
-    def __init__(self, obj):
+    def __init__(self, obj, painted_eyes=False):
+        """`painted_eyes`: blink as painted eyes do even with eye inserts (see add_eye_tracking.py --modelled)."""
         self.obj = obj
         mesh = obj.data
         self.keys = mesh.shape_keys.key_blocks
         self.count = len(mesh.vertices)
         self.basis = self.read("Basis")
-        inserts = self.point_attribute(face_rig.EYE_INSERT_ATTRIBUTE)
+        # no eye inserts, nothing fixed: a face painted on one surface (a tester's generated model,
+        # one shell). The build marks neither there, and the step died reading them
+        inserts = self.point_attribute(face_rig.EYE_INSERT_ATTRIBUTE, missing=0)
         # iris layers, eye whites and sliding eye patches (eyes.py) move on their own, never with the face
         self.iris = (self.point_attribute(eyes.IRIS_ATTRIBUTE, missing=0) > 0) | (self.point_attribute(eyes.WHITE_ATTRIBUTE, missing=0) > 0)
         self.patches = self.point_attribute(eyes.PATCH_ATTRIBUTE, missing=0)
-        self.fixed = self.point_attribute(face_rig.FIXED_ATTRIBUTE) != 0
+        self.fixed = self.point_attribute(face_rig.FIXED_ATTRIBUTE, missing=0) != 0
         self.movable = (~self.fixed & ~self.iris & (self.patches == 0)).astype(float)
         # vertices swung by spring chains (hair, cloth, appendages, a hat's tip): not face
         humanoid = set(rig.BONE_NAMES.values()) | {fingers.bone_name(side, f, seg) for side in ("left", "right")
@@ -123,15 +129,20 @@ class FaceShapes:
         # modelled eyes blink with their lids even when face points were given: the painted squeeze
         # closes 70% and a moving iris (add_eye_tracking) showed through the gap on model A, where the lid
         # blink her tracked build had passes
-        if (inserts > 0).any():
+        # ... unless the eye step asks: where the inserts are the irises alone and slide themselves
+        # (eyes.add_modelled_irises), the lid blink, sized from the insert, closed only the middle
+        # of each eye (the plain boy's, over his 21 mm iris, the lash line's two ends left up)
+        if (inserts > 0).any() and not painted_eyes:
             painted = None
         self.painted = painted is not None
         if painted is not None:
             # the painted eyes, where face points put them: the inserts can sit elsewhere
             self.eyes = {side: np.array([[x0, 0.0, z0], [x1, 0.0, z1]]) for side, (x0, z0, x1, z1) in painted.items()}
-        cover = obj["vtuber_maker_mouth_cover"]
-        self.mouth = np.array([cover["x"], cover["y"], cover["z"]])
-        self.width = float(cover["width"])
+        # the mouth cover comes with the eye inserts (face_rig.set_eyelids_from_inserts): without
+        # it there are no mouth shapes to build, and the blink is still worth having
+        cover = obj.get("vtuber_maker_mouth_cover")
+        self.mouth = None if cover is None else np.array([cover["x"], cover["y"], cover["z"]])
+        self.width = None if cover is None else float(cover["width"])
 
     def read(self, name):
         co = np.empty(self.count * 3)

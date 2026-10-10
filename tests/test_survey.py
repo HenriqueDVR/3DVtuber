@@ -36,6 +36,28 @@ class SurveyASimpleCharacter(unittest.TestCase):
         self.assertEqual([n for n in self.report["notes"] if "typical proportions" in n], [])
 
 
+class ShortHairIsNotASolidHead(unittest.TestCase):
+    """The head's numbers as measured on real models: only the choice is tested."""
+
+    def options(self, share, hang):
+        report = {"head": {"hair_share": share, "hair_hang": hang}, "cloth": {"share": 0.0}, "face_colour": None}
+        return survey._options(report, None)
+
+    def test_short_hair_on_a_head_that_shows_its_face_is_hair(self):
+        self.assertFalse(self.options(0.095, 0.0)["rigid_head"])  # the plain boy
+
+    def test_headwear_read_as_hair_all_over_the_head_stays_solid(self):
+        self.assertTrue(self.options(0.839, 0.3)["rigid_head"])  # the witch hat
+        self.assertTrue(self.options(0.794, 0.18)["rigid_head"])
+
+    def test_a_head_with_no_hair_found_stays_solid(self):
+        self.assertTrue(self.options(0.0, 0.0)["rigid_head"])  # the pirate under his hat
+
+    def test_hanging_hair_was_never_solid(self):
+        self.assertFalse(self.options(0.344, 1.91)["rigid_head"])
+        self.assertFalse(self.options(0.673, 0.62)["rigid_head"])
+
+
 class SurveyACharacterInARobe(unittest.TestCase):
     """The second real character's shape: a robe joining the legs, a body wider than its arms."""
 

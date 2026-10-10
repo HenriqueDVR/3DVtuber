@@ -3,8 +3,9 @@
     blender -b in.blend -P scripts/add_ahoge_spring.py -- out.blend out.vrm
 
 Finds the topmost small separate piece on the head, adds a short bone chain from its base
-to its top under the head bone, weights it by height and adds a VRM spring. The original
-file is left alone. Needs the VRM Add-on for Blender.
+to its top under the head bone, weights it by height and adds a VRM spring. When that piece has
+a twin across the head (a pair of ears), the twin gets the same: one ear swinging beside a still
+one is worse than neither. The original file is left alone. Needs the VRM Add-on for Blender.
 """
 import sys
 from pathlib import Path
@@ -21,6 +22,8 @@ MAX_SIZE = 0.15          # the ahoge fits in this (m)
 BONES = 2
 BASE_BLEND = 0.2         # share of its height (from the base) blending from the head
 STIFFNESS, DRAG, GRAVITY = 1.2, 0.35, 0.05
+EAR_STIFFNESS, EAR_DRAG = 2.5, 0.5
+TWIN = 0.02              # a twin's box is the piece's own, mirrored, within this (m)
 
 
 def main():
@@ -34,9 +37,36 @@ def main():
 
     top = labels[int(np.argmax(verts[:, 2]))]
     members = np.nonzero(labels == top)[0]
+    if np.ptp(verts[members], axis=0).max() > MAX_SIZE:
+        sys.exit(f"the topmost piece is {np.ptp(verts[members], axis=0).max():.2f} m across, too big for an ahoge")
+    # the catgirl's ears are two pieces: the taller by a hair was the ahoge, and one ear swung
+    middle = float((arm.matrix_world @ arm.data.bones["Head"].head_local).x)
+    low, high = verts[members].min(axis=0), verts[members].max(axis=0)
+    mirrored = (np.array([2 * middle - high[0], low[1], low[2]]), np.array([2 * middle - low[0], high[1], high[2]]))
+    for label in np.unique(labels):
+        twin = np.nonzero(labels == label)[0]
+        if label != top and np.abs(verts[twin].min(axis=0) - mirrored[0]).max() < TWIN                 and np.abs(verts[twin].max(axis=0) - mirrored[1]).max() < TWIN:
+            add_chain(arm, mesh_obj, verts, members, "Ahoge", ear=True)
+            add_chain(arm, mesh_obj, verts, twin, "Ahoge2", ear=True)
+            break
+    else:
+        add_chain(arm, mesh_obj, verts, members, "Ahoge")
+
+    bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath(out_blend), copy=True)
+    if not vrm_export.skipped():
+        print("exported", bpy.ops.export_scene.vrm(filepath=bpy.path.abspath(out_vrm), armature_object_name=arm.name))
+
+
+def add_chain(arm, mesh_obj, verts, members, name, ear=False):
+    """A chain of BONES bones named `name`_k under the head for the piece `members`, and its spring.
+
+    An `ear` is a shell, not a strand: walked along its surface, the way from its foot leads over
+    the tip and down its other side, and the chain went up the ear and back down into the head
+    (the catgirl's: second bone 3 cm lower than it began, the whole ear on it). Its chain is the
+    straight line from the middle of its foot to its tip, and it swings stiffer, with no weight.
+    """
+    mesh = mesh_obj.data
     points = verts[members]
-    if np.ptp(points, axis=0).max() > MAX_SIZE:
-        sys.exit(f"the topmost piece is {np.ptp(points, axis=0).max():.2f} m across, too big for an ahoge")
     # distance along the strand from its base, walking the mesh, so a curl isn't cut across
     low = points[:, 2].min()
     local = {int(v): k for k, v in enumerate(members)}
@@ -79,10 +109,16 @@ def main():
     for k in range(BONES + 1):
         band = np.abs(t_all - k / BONES) < 0.08
         joints.append(points[band].mean(axis=0))
+    if ear:
+        foot = points[points[:, 2] < low + 0.15 * np.ptp(points[:, 2])].mean(axis=0)
+        peak = points[int(np.argmax(points[:, 2]))]
+        t_all = np.clip((points - foot) @ (peak - foot) / float((peak - foot) @ (peak - foot)), 0.0, 1.0)
+        along = t_all * float(np.linalg.norm(peak - foot))
+        joints = [foot + (peak - foot) * k / BONES for k in range(BONES + 1)]
     base, tip = joints[0], joints[-1]
-    print(f"ahoge: {len(members)} verts, strand {along.max():.3f} m, base {base.round(3)}, tip {tip.round(3)}")
+    print(f"{name.lower()}: {len(members)} verts, strand {along.max():.3f} m, base {base.round(3)}, tip {tip.round(3)}")
 
-    names = [f"Ahoge_{k}" for k in range(BONES)] + [f"Ahoge_{BONES}"]
+    names = [f"{name}_{k}" for k in range(BONES)] + [f"{name}_{BONES}"]
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode="EDIT")
     edit = arm.data.edit_bones
@@ -123,18 +159,15 @@ def main():
 
     spring_bone = arm.data.vrm_addon_extension.spring_bone1
     for index in reversed(range(len(spring_bone.springs))):
-        if spring_bone.springs[index].vrm_name == "Ahoge":
+        if spring_bone.springs[index].vrm_name == name:
             spring_bone.springs.remove(index)
     spring = spring_bone.add_spring()
-    spring.vrm_name = "Ahoge"
+    spring.vrm_name = name
     for name in names:
         joint = spring.joints.add()
         joint.node.bone_name = name
-        joint.stiffness, joint.drag_force, joint.gravity_power, joint.hit_radius = STIFFNESS, DRAG, GRAVITY, 0.01
-
-    bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath(out_blend), copy=True)
-    if not vrm_export.skipped():
-        print("exported", bpy.ops.export_scene.vrm(filepath=bpy.path.abspath(out_vrm), armature_object_name=arm.name))
+        joint.stiffness, joint.drag_force, joint.gravity_power, joint.hit_radius = \
+            (EAR_STIFFNESS, EAR_DRAG, 0.0, 0.01) if ear else (STIFFNESS, DRAG, GRAVITY, 0.01)
 
 
 main()
