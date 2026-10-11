@@ -82,6 +82,12 @@ For a model (a finished `.vrm` runs fewer: see "Improving a finished avatar"). I
 
 - Steps up to `mouth` write a `.blend` each; only `export` writes the `.vrm`, from the last
   `.blend`. After `run --to tpose` or `--only eyes` there is no new `.vrm` until `export` has run.
+- `export` is two things: Blender writes the file (face shapes stored sparse, pictures asking for
+  mipmaps: `vrm_export.export`), then the app's own Python makes its pictures no bigger than the
+  avatar uses (`app/slim.py`: the face patch cut to the rectangle its triangles read, a 4096 px
+  normal map halved). `steps[export].report.pictures` says what was cut or halved, or `left` and
+  why (no Pillow, nothing to do). A `.vrm` exported by hand with `scripts/export_vrm.py` gets the
+  first only, and a `.vrm` taken in as it is keeps its own pictures.
 - Each run gets its own folder under `<out>/runs/`; nothing is overwritten. A step reads the file
   the step before it last produced (from `state.json`), never the newest file on disk. Rerunning
   a step marks every later step `stale`.

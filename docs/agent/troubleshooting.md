@@ -83,6 +83,13 @@ Suspicious edges have one end weighted to `Head`/`Neck` or to nothing, or sit in
 | Painting the hair changes the face behind it | a face patch made by an older version | remake the face patch (Face page) |
 | A colour is wrong, a smudge, a seam | the generator's texture | paint it on the Paint page |
 
+## The finished file
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Thin drawn lines (fur, hair strands, trim) break into dots that crawl when the avatar is small on screen; close up they are fine | the file's pictures have no mipmaps: the VRM Add-on writes the min filter as LINEAR, which UniVRM reads as "none" | fixed 2026-10-11 (`vrm_export.use_mipmaps`); rerun an older build from `export`. A `.vrm` taken in as it is keeps its own filters |
+| The `.vrm` is 40 to 100 MB | every face shape was stored for every vertex of the body: 30-66% of the file | fixed 2026-10-11 (`vrm_export.sparse_morph_targets`, 25-57% smaller, the model the same value for value); rerun from `export` |
+
 ## The model going in
 
 | Symptom | Cause | Fix |
