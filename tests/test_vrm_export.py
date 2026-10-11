@@ -3,6 +3,7 @@
 import json
 import struct
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -145,10 +146,159 @@ class ExportLookAt(unittest.TestCase):
             bound = {names[bind["index"]] for bind in preset[expression]["morphTargetBinds"]}
             self.assertEqual(bound, keys, expression)
 
+    def test_each_look_is_stored_as_the_vertices_it_moves(self):
+        gltf, binary = vrm_export._read_glb(self.path)
+        looks = [target["POSITION"] for mesh in gltf["meshes"] for p in mesh["primitives"] for target in p.get("targets", [])]
+        self.assertGreaterEqual(len(looks), 8)
+        for a in looks:
+            accessor = gltf["accessors"][a]
+            self.assertNotIn("bufferView", accessor)
+            # 32-bit though a byte would do: UniVRM 0.115 and earlier read no 8-bit indices in VRM 1.0
+            self.assertEqual(accessor["sparse"]["indices"]["componentType"], 5125)
+            offsets = vrm_export._accessor_array(gltf, binary, a)
+            moved = offsets[offsets.any(axis=1)]
+            self.assertEqual(len(moved), accessor["sparse"]["count"])
+            # the one vertex each key lifts by a millimetre (Blender's +Z is glTF's +Y)
+            np.testing.assert_allclose(moved, [(0.0, 0.001, 0.0)] * len(moved), atol=1e-7)
+
 
 def glb(path, gltf, binary):
     vrm_export._write_glb(path, gltf, binary)
     return path
+
+
+class SparseMorphTargets(unittest.TestCase):
+    """A small mesh with its face shapes as the exporter writes them, every offset of every vertex:
+    "blink" moves two vertices and turns the normal of one, "aa" moves nothing, "puff" moves them
+    all, and "base" is the mesh's own positions used again. Its picture lies among them in the file."""
+
+    VERTICES = 60
+    PICTURE = b"\x89PNG, or 25 bytes of one"
+
+    def build(self, path):
+        n = self.VERTICES
+        rng = np.random.default_rng(7)
+        shape = lambda rows=(): np.zeros((n, 3), np.float32) if not len(rows) else self.offsets(rows, rng)  # noqa: E731
+        self.arrays = {"positions": rng.random((n, 3), np.float32), "indices": np.arange(n, dtype=np.uint16).reshape(-1, 1),
+                       "blink": shape((1, 5)), "blink_normals": shape((1,)), "aa": shape(), "aa_normals": shape(),
+                       "puff": np.full((n, 3), 0.01, np.float32), "puff_normals": shape()}
+        order = ("positions", "indices", "blink", None, "blink_normals", "aa", "aa_normals", "puff", "puff_normals")
+        binary, views = bytearray(), []
+        for name in order:
+            binary.extend(b"\0" * (-len(binary) % 4))
+            data = self.PICTURE if name is None else self.arrays[name].tobytes()
+            views.append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(data)})
+            binary.extend(data)
+        vec3 = lambda view, **more: {"bufferView": view, "componentType": 5126, "count": n, "type": "VEC3", **more}  # noqa: E731
+        bounds = lambda name: {"min": self.arrays[name].min(0).tolist(), "max": self.arrays[name].max(0).tolist()}  # noqa: E731
+        accessors = [vec3(0, **bounds("positions")), {"bufferView": 1, "componentType": 5123, "count": n, "type": "SCALAR"},
+                     vec3(2, **bounds("blink")), vec3(4), vec3(5, **bounds("aa")), vec3(6), vec3(7, **bounds("puff")), vec3(8)]
+        self.names = ("positions", "indices", "blink", "blink_normals", "aa", "aa_normals", "puff", "puff_normals")
+        targets = [{"POSITION": 2, "NORMAL": 3}, {"POSITION": 4, "NORMAL": 5}, {"POSITION": 6, "NORMAL": 7}, {"POSITION": 0}]
+        gltf = {"asset": {"version": "2.0"}, "scenes": [{"nodes": [0]}], "nodes": [{"name": "face", "mesh": 0}],
+                "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1, "targets": targets}],
+                            "extras": {"targetNames": ["blink", "aa", "puff", "base"]}}],
+                "images": [{"bufferView": 3, "mimeType": "image/png"}],
+                "accessors": accessors, "bufferViews": views, "buffers": [{"byteLength": len(binary)}]}
+        return glb(path, gltf, bytes(binary)), gltf
+
+    def offsets(self, rows, rng):
+        out = np.zeros((self.VERTICES, 3), np.float32)
+        out[list(rows)] = rng.random((len(rows), 3), np.float32) + 0.5
+        return out
+
+    def setUp(self):
+        self.path, self.before = self.build(FIXTURE_OUT / "sparse_morph_targets.glb")
+        self.size = self.path.stat().st_size
+        self.rewritten = vrm_export.sparse_morph_targets(self.path)
+        self.gltf, self.binary = vrm_export._read_glb(self.path)
+        self.accessor = dict(zip(self.names, self.gltf["accessors"]))
+
+    def read(self, name):
+        return vrm_export._accessor_array(self.gltf, self.binary, self.names.index(name))
+
+    def test_a_shape_is_stored_as_the_vertices_it_moves(self):
+        self.assertEqual(self.rewritten, 5)
+        for name, moved in (("blink", 2), ("blink_normals", 1)):
+            self.assertNotIn("bufferView", self.accessor[name])
+            self.assertEqual(self.accessor[name]["sparse"]["count"], moved)
+
+    def test_every_shape_reads_as_it_did(self):
+        for name, was in self.arrays.items():
+            with self.subTest(name):
+                np.testing.assert_array_equal(self.read(name), was)
+
+    def test_indices_are_32_bit_whatever_the_vertex_count(self):
+        # 60 vertices fit a byte, and UniVRM 0.115 and earlier can't read a byte here (VRM 1.0)
+        kinds = {a["sparse"]["indices"]["componentType"] for a in self.gltf["accessors"] if "sparse" in a}
+        self.assertEqual(kinds, {5125})
+
+    def test_a_shape_that_moves_nothing_keeps_one_entry_of_zeros(self):
+        for name in ("aa", "aa_normals", "puff_normals"):
+            self.assertEqual(self.accessor[name]["sparse"]["count"], 1, name)  # an empty sparse accessor isn't allowed
+            self.assertFalse(self.read(name).any(), name)
+
+    def test_a_shape_that_moves_every_vertex_stays_whole(self):
+        self.assertIn("bufferView", self.accessor["puff"])
+        self.assertNotIn("sparse", self.accessor["puff"])
+
+    def test_what_the_mesh_itself_reads_stays_whole(self):
+        # "base" is a morph target and the mesh's positions at once: an app may not take those sparse
+        for name in ("positions", "indices"):
+            self.assertIn("bufferView", self.accessor[name])
+            self.assertNotIn("sparse", self.accessor[name])
+
+    def test_counts_and_bounds_are_untouched(self):
+        kept = lambda accessor: {k: v for k, v in accessor.items() if k not in ("bufferView", "byteOffset", "sparse")}  # noqa: E731
+        self.assertEqual([kept(a) for a in self.gltf["accessors"]], [kept(a) for a in self.before["accessors"]])
+
+    def test_the_picture_is_where_the_file_says(self):
+        # buffer views keep their numbers: nothing that names one has to be told
+        self.assertEqual(self.gltf["images"], self.before["images"])
+        view = self.gltf["bufferViews"][3]
+        self.assertEqual(self.binary[view["byteOffset"]:view["byteOffset"] + view["byteLength"]], self.PICTURE)
+
+    def test_the_file_is_smaller_and_nothing_overlaps(self):
+        self.assertLess(self.path.stat().st_size, self.size)
+        self.assertEqual(self.gltf["buffers"][0]["byteLength"], len(self.binary))
+        spans = sorted((v["byteOffset"], v["byteOffset"] + v["byteLength"]) for v in self.gltf["bufferViews"])
+        self.assertTrue(all(a[1] <= b[0] for a, b in zip(spans, spans[1:])), spans)
+        self.assertLessEqual(spans[-1][1], len(self.binary))
+        self.assertTrue(all(start % 4 == 0 for start, _ in spans))
+
+    def test_a_second_run_finds_nothing_to_do(self):
+        once = self.path.read_bytes()
+        self.assertEqual(vrm_export.sparse_morph_targets(self.path), 0)
+        self.assertEqual(self.path.read_bytes(), once)
+
+    def test_a_file_that_would_read_back_differently_is_left_as_it_was(self):
+        path, _ = self.build(FIXTURE_OUT / "sparse_morph_targets_refused.glb")
+        whole, wrong = path.read_bytes(), lambda gltf, binary, index: np.ones((self.VERTICES, 3), np.float32)
+        with mock.patch.object(vrm_export, "_accessor_array", wrong):
+            with self.assertRaisesRegex(vrm_export.ExportMismatch, "5 morph targets don't read back as they were written"):
+                vrm_export.sparse_morph_targets(path)
+        self.assertEqual(path.read_bytes(), whole)
+
+
+class Mipmaps(unittest.TestCase):
+    """UniVRM reads a LINEAR min filter as "no mipmaps": thin drawn lines speckled in Warudo."""
+
+    def build(self, name, filters):
+        samplers = [{"magFilter": 9729, **({} if kind is None else {"minFilter": kind})} for kind in filters]
+        return glb(FIXTURE_OUT / name, {"asset": {"version": "2.0"}, "samplers": samplers}, b"")
+
+    def test_a_linear_sampler_gets_mipmaps_as_a_vroid_file_has(self):
+        path = self.build("mipmaps.glb", (9729, 9728, 9987, None))
+        self.assertEqual(vrm_export.use_mipmaps(path), 1)
+        after = [sampler.get("minFilter") for sampler in vrm_export._read_glb(path)[0]["samplers"]]
+        # NEAREST is somebody's choice (pixel art); the last two had mipmaps already
+        self.assertEqual(after, [9985, 9728, 9987, None])
+
+    def test_a_file_with_nothing_to_change_is_not_written_again(self):
+        path = self.build("mipmaps_already.glb", (9985,))
+        before = path.read_bytes()
+        self.assertEqual(vrm_export.use_mipmaps(path), 0)
+        self.assertEqual(path.read_bytes(), before)
 
 
 class NormalizeBones(unittest.TestCase):

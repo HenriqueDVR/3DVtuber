@@ -106,6 +106,51 @@ class TakeAVrmIn(unittest.TestCase):
             improve.load(plain)
 
 
+class TakeAVrmInAsItIsDrawn(unittest.TestCase):
+    """A toon avatar from elsewhere, drawn without mipmaps and its mouth shape stored sparse."""
+
+    @classmethod
+    def setUpClass(cls):
+        mesh, _ = load_fixture()
+        vrm_export.ensure_vrm_addon()
+        joints = landmarks.detect_body(meshdata.world_vertices(mesh), meshdata.triangles(mesh.data))
+        armature = rig.build_armature(joints)
+        rig.skin(mesh, armature)
+        mesh.shape_key_add(name="Basis", from_mix=False)
+        mesh.shape_key_add(name="aa", from_mix=False).data[0].co.z += 0.002
+        vrm_export.configure(armature, name="Elsewhere", author="Tests")
+        vrm_export.use_toon_shading(mesh)
+        vrm_export.bind_expressions(armature, mesh)
+        source = FIXTURE_OUT / "improve_drawn_source.vrm"
+        source.unlink(missing_ok=True)
+        vrm_export.export(source, armature)
+        gltf, binary = vrm_export._read_glb(source)
+        cls.built_here = [sampler["minFilter"] for sampler in gltf["samplers"]]
+        for sampler in gltf["samplers"]:
+            sampler["minFilter"] = 9729
+        vrm_export._write_glb(source, gltf, binary)
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        armature, _ = improve.load(source)
+        cls.path = FIXTURE_OUT / "improve_drawn_out.vrm"
+        cls.path.unlink(missing_ok=True)
+        vrm_export.export(cls.path, armature)
+        cls.after, cls.binary = vrm_export._read_glb(cls.path)
+
+    def test_its_pictures_keep_the_filter_they_came_with(self):
+        self.assertEqual(self.built_here, [9985])  # an avatar built here gets mipmaps
+        self.assertEqual([sampler["minFilter"] for sampler in self.after["samplers"]], [9729])
+
+    def test_its_mouth_shape_moves_what_it_moved(self):
+        # read by the VRM Add-on from a sparse accessor, and written as one again
+        opens = [target["POSITION"] for mesh in self.after["meshes"] for p in mesh["primitives"] for target in p.get("targets", [])]
+        self.assertEqual(len(opens), 1)
+        self.assertIn("sparse", self.after["accessors"][opens[0]])
+        offsets = vrm_export._accessor_array(self.after, self.binary, opens[0])
+        moved = offsets[offsets.any(axis=1)]
+        self.assertGreaterEqual(len(moved), 1)
+        np.testing.assert_allclose(moved, [(0.0, 0.002, 0.0)] * len(moved), atol=1e-7)
+
+
 def a_vrm_0_file(path):
     """The same small avatar written as VRM 0.x by the add-on's own exporter, under a licence that
     forbids changed versions, with the settings 0.x keeps elsewhere than 1.0 does."""

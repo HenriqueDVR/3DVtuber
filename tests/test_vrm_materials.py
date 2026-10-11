@@ -44,6 +44,11 @@ class ExportToonMaterials(unittest.TestCase):
         shade = mtoon["shadeColorFactor"]
         self.assertTrue(all(0.0 < channel < 1.0 for channel in shade), shade)
 
+    def test_its_pictures_are_drawn_from_mipmaps(self):
+        # LINEAR (9729), as the add-on writes it, is "no mipmaps" to UniVRM: thin lines speckled in Warudo
+        self.assertTrue(self.gltf["samplers"])
+        self.assertEqual({sampler["minFilter"] for sampler in self.gltf["samplers"]}, {9985})
+
 
 if __name__ == "__main__":
     unittest.main()

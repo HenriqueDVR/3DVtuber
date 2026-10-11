@@ -61,6 +61,16 @@ EXPORT_TOLERANCE = 1e-4
 # each wrote a .vrm nothing read, 6-9 s and 75-100 MB a step on model A. The .blend is the chain.
 SKIP_EXPORT = "VTUBER_MAKER_NO_EXPORT"
 
+# glTF accessor component types as NumPy reads them, and how many numbers an element of each type holds.
+COMPONENT_TYPES = {5120: "<i1", 5121: "<u1", 5122: "<i2", 5123: "<u2", 5125: "<u4", 5126: "<f4"}
+ELEMENT_WIDTHS = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}
+# Sparse indices are written 32-bit whatever the vertex count: UniVRM 0.115 and earlier read no 8-bit
+# ones in VRM 1.0, and an app's UniVRM can't be told from outside.
+SPARSE_INDEX_TYPE = 5125
+# glTF texture filters. UniVRM reads a LINEAR min filter as "no mipmaps"; a VRoid export carries
+# LINEAR_MIPMAP_NEAREST.
+GL_LINEAR, GL_LINEAR_MIPMAP_NEAREST = 9729, 9985
+
 
 def skipped():
     """Whether this run was told to leave the .vrm to a later step."""
@@ -259,6 +269,10 @@ def export(filepath, armature):
         origin = (origin.x, origin.z, -origin.y)
     normalize_bones(filepath, look_at_origin=origin)
     verify(filepath, armature)
+    sparse_morph_targets(filepath)
+    from . import improve  # it reads this module, so not at the top
+    if not improve.imported(armature):
+        use_mipmaps(filepath)  # a file taken in as it was keeps the samplers its author gave it
     if armature.get(BONE_NAMES_PROPERTY):
         rename_nodes(filepath, json.loads(armature[BONE_NAMES_PROPERTY]))
 
@@ -381,6 +395,117 @@ def normalize_bones(filepath, look_at_origin=None):
     _write_glb(filepath, gltf, binary)
 
 
+def sparse_morph_targets(filepath):
+    """Rewrite a .vrm so each morph target stores only the vertices it moves (glTF sparse
+    accessors); returns how many accessors were rewritten.
+
+    The exporter writes every target's position and normal offsets for every vertex of the mesh:
+    26 face shapes on a 35 000-vertex body were 21 MB of a 39 MB file, nearly all of it zeros, and
+    are 3 MB so (2026-10-11, nine characters: 30-66% of each file, 25-57% smaller after; the fox
+    girl's contact sheets the same pixel for pixel and, the user, the same in Warudo). The model is
+    untouched: the same accessors with the same counts, min and max, and every target is read back
+    from the new data, value for value, before the file is written (ExportMismatch otherwise).
+
+    Indices are 32-bit (SPARSE_INDEX_TYPE); the VRM Add-on's own sparse option, off for the same
+    reason, writes the smallest type that fits. A target that moves nothing keeps one entry of
+    zeros: a sparse accessor may not be empty. Left as they are: a target that is smaller stored
+    whole (it moves most of its vertices), an accessor something other than a morph target reads
+    too, and what the exporter doesn't write (interleaved or compressed data, a second buffer).
+    Buffer views keep their numbers, so nothing else in the file has to be told: a view that is no
+    longer read gives its place to one of the new ones.
+    """
+    gltf, binary = _read_glb(filepath)
+    accessors, views = gltf.get("accessors", []), gltf.get("bufferViews", [])
+    if len(gltf.get("buffers", [])) != 1 or any(view.get("buffer", 0) != 0 or "extensions" in view for view in views):
+        return 0
+    primitives = [p for mesh in gltf.get("meshes", []) for p in mesh.get("primitives", [])]
+    targets = {a for p in primitives for target in p.get("targets", []) for a in target.values()}
+    targets -= {a for p in primitives for a in (*p.get("attributes", {}).values(), p.get("indices"))}
+    targets -= {skin.get("inverseBindMatrices") for skin in gltf.get("skins", [])}
+    targets -= {a for animation in gltf.get("animations", []) for sampler in animation.get("samplers", [])
+                for a in (sampler.get("input"), sampler.get("output"))}
+    whole = {}
+    for a in sorted(targets):
+        accessor = accessors[a]
+        kind, width = COMPONENT_TYPES.get(accessor.get("componentType")), ELEMENT_WIDTHS.get(accessor.get("type"))
+        if kind is None or width is None or "bufferView" not in accessor or "sparse" in accessor:
+            continue
+        view, size = views[accessor["bufferView"]], np.dtype(kind).itemsize * width
+        if view.get("byteStride", size) != size:
+            continue
+        start = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+        dense = np.frombuffer(binary, kind, accessor["count"] * width, start).reshape(-1, width)
+        rows = np.flatnonzero((dense != 0).any(axis=1)).astype(COMPONENT_TYPES[SPARSE_INDEX_TYPE])
+        if not len(rows):
+            rows = np.zeros(1, rows.dtype)
+        if rows.nbytes + len(rows) * size < dense.nbytes:
+            whole[a] = (dense, rows)
+    if not whole:
+        return 0
+
+    # views only the rewritten targets read are free; whatever else reads a view keeps it
+    read = {accessor.get("bufferView") for a, accessor in enumerate(accessors) if a not in whole}
+    read |= {part["bufferView"] for accessor in accessors for part in _sparse_parts(accessor)}
+    read |= {image.get("bufferView") for image in gltf.get("images", [])}
+    free = sorted({accessors[a]["bufferView"] for a in whole} - read, reverse=True)
+    fresh = {}
+
+    def place(data):
+        index = free.pop() if free else len(views)
+        views[index:index + 1] = [{"buffer": 0, "byteLength": len(data)}]
+        fresh[index] = data
+        return index
+
+    for a, (dense, rows) in whole.items():
+        accessor = accessors[a]
+        del accessor["bufferView"]
+        accessor.pop("byteOffset", None)
+        accessor["sparse"] = {"count": len(rows),
+                              "indices": {"bufferView": place(rows.tobytes()), "componentType": SPARSE_INDEX_TYPE},
+                              "values": {"bufferView": place(dense[rows].tobytes())}}
+    packed = bytearray()
+    for index, view in enumerate(views):
+        start = view.get("byteOffset", 0)
+        # where it lay, give or take whole words: what reads it was aligned there
+        packed.extend(b"\0" * ((start - len(packed)) % 4))
+        view["byteOffset"] = len(packed)
+        packed.extend(fresh[index] if index in fresh else binary[start:start + view["byteLength"]])
+    packed.extend(b"\0" * (-len(packed) % 4))
+    gltf["buffers"][0]["byteLength"] = len(packed)
+    packed = bytes(packed)
+    changed = [a for a, (dense, _) in whole.items()
+               if not np.array_equal(_accessor_array(gltf, packed, a), dense, equal_nan=True)]
+    if changed:
+        raise ExportMismatch(f"{filepath}: {len(changed)} morph targets don't read back as they were written "
+                             f"(accessors {changed[:5]}); the file is left as it was")
+    _write_glb(filepath, gltf, packed)
+    return len(whole)
+
+
+def use_mipmaps(filepath):
+    """Rewrite a .vrm so its pictures are drawn from mipmaps, as a VRoid export's are; returns how
+    many samplers changed.
+
+    The VRM Add-on writes a material's min filter as LINEAR unless told otherwise, and UniVRM reads
+    that as "no mipmaps" (TextureSamplerUtil.ImportFilterMode): a 4096 px body picture shown a few
+    hundred pixels tall is read a texel in every dozen or more, and thin drawn lines (fur, hair
+    strands, gold trim) broke into speckles that crawl as the avatar moves. Seen on the contact
+    sheets of the fox girl and the slime, 2026-10-11; with this the fox girl's speckling was gone in
+    Warudo and nothing else changed (the user). Close up nothing differs; the pictures take a third
+    more memory.
+
+    Only LINEAR changes: NEAREST is somebody's choice (pixel art), and a sampler that names no min
+    filter already gets mipmaps. Not called for a .vrm taken in as it was (`export`).
+    """
+    gltf, binary = _read_glb(filepath)
+    plain = [sampler for sampler in gltf.get("samplers", []) if sampler.get("minFilter") == GL_LINEAR]
+    for sampler in plain:
+        sampler["minFilter"] = GL_LINEAR_MIPMAP_NEAREST
+    if plain:
+        _write_glb(filepath, gltf, binary)
+    return len(plain)
+
+
 # A roll axis this close (cosine: 5 degrees) to a model axis is renamed to it. VRoid names its
 # twist axes by the model axis nearest the limb in the same way, T-posed arms a degree off level.
 ROLL_ALONG = 0.9962
@@ -473,6 +598,30 @@ def _accessor_span(gltf, index):
     if view.get("byteStride", 64) != 64 or "sparse" in accessor:
         raise ValueError("unexpected inverse bind matrix layout")
     return view, view.get("byteOffset", 0) + accessor.get("byteOffset", 0), accessor["count"]
+
+
+def _sparse_parts(accessor):
+    """Where a sparse accessor keeps its indices and its values (nothing for one stored whole)."""
+    sparse = accessor.get("sparse")
+    return (sparse["indices"], sparse["values"]) if sparse else ()
+
+
+def _accessor_array(gltf, binary, index):
+    """A tightly packed accessor's elements, one row each, whether it is stored whole or sparse."""
+    accessor, views = gltf["accessors"][index], gltf["bufferViews"]
+    kind, width, count = COMPONENT_TYPES[accessor["componentType"]], ELEMENT_WIDTHS[accessor["type"]], accessor["count"]
+    read = lambda part, numbers_as, numbers: np.frombuffer(  # noqa: E731
+        binary, numbers_as, numbers, views[part["bufferView"]].get("byteOffset", 0) + part.get("byteOffset", 0))
+    if "bufferView" in accessor:
+        array = read(accessor, kind, count * width).reshape(count, width)
+    else:
+        array = np.zeros((count, width), kind)
+    if "sparse" in accessor:
+        indices, values = _sparse_parts(accessor)
+        array = array.copy()
+        rows = read(indices, COMPONENT_TYPES[indices["componentType"]], accessor["sparse"]["count"])
+        array[rows] = read(values, kind, len(rows) * width).reshape(-1, width)
+    return array
 
 
 def _read_glb(filepath):
