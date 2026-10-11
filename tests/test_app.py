@@ -11,7 +11,7 @@ from types import SimpleNamespace
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from app import cli, engine, errors, paint, server, update, vendor  # noqa: E402
+from app import cli, engine, errors, paint, server, slim, update, vendor  # noqa: E402
 from app.engine import Project, manifest  # noqa: E402
 
 
@@ -2782,6 +2782,192 @@ class Paint(unittest.TestCase):
         manifest.save(data, self.path)
         self.assertEqual(Project(self.path, blender="blender").model(), self.source.resolve())
         self.assertEqual(cli.paint_state(self.path)["orphans"], ["face_patch_head_000.png"])
+
+
+class Pictures(unittest.TestCase):
+    """The pictures of an exported file cut to what the avatar uses, its normal map halved (app/slim.py)."""
+
+    def setUp(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            # Blender's own Python, which runs this file too with the suite, has no Pillow; the app's has
+            self.skipTest("Pillow is not in this Python: run with python -m unittest tests.test_app")
+        self.Image = Image
+        self.folder = tempfile.TemporaryDirectory()
+        self.root = Path(self.folder.name)
+        # every texel its own colour, so a cut a texel off shows
+        self.face = Image.frombytes("RGB", (256, 256), bytes(v for y in range(256) for x in range(256) for v in (x, y, (x * 7 + y * 13) % 256)))
+
+    def tearDown(self):
+        if hasattr(self, "folder"):
+            self.folder.cleanup()
+
+    def png(self, picture):
+        import io
+        from PIL import PngImagePlugin
+        said = PngImagePlugin.PngInfo()
+        said.add(b"gAMA", struct.pack(">I", 45455))  # Blender writes each picture's colour space into its file
+        out = io.BytesIO()
+        picture.save(out, "PNG", pnginfo=said)
+        return out.getvalue()
+
+    def avatar(self, name="avatar.vrm", corners=(0.30, 0.35, 0.60, 0.70), face=None, normal=None, change=None):
+        """A small exported avatar: a body whose picture and normal map its triangles use all over, and a
+        face whose four corners read the middle of a 256 px picture. `change(gltf)` has the last word."""
+        u0, v0, u1, v1 = corners
+        floats = lambda *values: struct.pack(f"<{len(values)}f", *values)  # noqa: E731
+        parts = [floats(*range(12)), floats(0, 0, 1, 0, 1, 1, 0, 1),              # the body's positions and UVs
+                 floats(*range(12)), floats(u0, v0, u1, v0, u1, v1, u0, v1),      # the face's
+                 self.png(self.Image.new("RGB", (64, 64), (90, 120, 150))),
+                 normal or self.png(self.Image.new("RGB", (64, 64), (128, 128, 255))),
+                 face or self.png(self.face)]
+        binary, views = bytearray(), []
+        for data in parts:
+            binary += b"\0" * (-len(binary) % 4)
+            views.append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(data)})
+            binary += data
+        vec = lambda view, kind: {"bufferView": view, "componentType": 5126, "count": 4, "type": kind}  # noqa: E731
+        toon = lambda texture: {"VRMC_materials_mtoon": {"shadeMultiplyTexture": {"index": texture}}}  # noqa: E731
+        gltf = {"asset": {"version": "2.0"}, "nodes": [{}] * 20, "buffers": [{"byteLength": len(binary)}], "bufferViews": views,
+                "accessors": [vec(0, "VEC3"), vec(1, "VEC2"), vec(2, "VEC3"), {**vec(3, "VEC2"), "min": [u0, v0], "max": [u1, v1]}],
+                "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 1}, "material": 0},
+                                           {"attributes": {"POSITION": 2, "TEXCOORD_0": 3}, "material": 1}]}],
+                "images": [{"name": "body", "bufferView": 4}, {"name": "body_normal", "bufferView": 5}, {"name": "face_patch", "bufferView": 6}],
+                "samplers": [{"magFilter": 9729, "minFilter": 9985}],
+                "textures": [{"source": 0, "sampler": 0}, {"source": 1, "sampler": 0}, {"source": 2, "sampler": 0}],
+                "materials": [{"name": "body", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}, "normalTexture": {"index": 1},
+                               "extensions": toon(0)},
+                              {"name": "face_patch", "pbrMetallicRoughness": {"baseColorTexture": {"index": 2}}, "extensions": toon(2)}],
+                "extensions": {"VRMC_vrm": {"humanoid": {"humanBones": {b: {"node": i} for i, b in enumerate(sorted(engine.REQUIRED_BONES))}}}}}
+        if change:
+            change(gltf)
+        path = self.root / name
+        paint.write_glb(path, gltf, binary)
+        return path
+
+    def picture(self, path, image):
+        import io
+        gltf, binary = paint.read_glb(path)
+        view = gltf["bufferViews"][gltf["images"][image]["bufferView"]]
+        return self.Image.open(io.BytesIO(binary[view["byteOffset"]:view["byteOffset"] + view["byteLength"]]))
+
+    def numbers(self, path, accessor):
+        gltf, binary = paint.read_glb(path)
+        entry = gltf["accessors"][accessor]
+        count = entry["count"] * {"VEC2": 2, "VEC3": 3}[entry["type"]]
+        return struct.unpack_from(f"<{count}f", binary, gltf["bufferViews"][entry["bufferView"]]["byteOffset"])
+
+    def test_a_picture_is_cut_to_what_its_triangles_use(self):
+        path = self.avatar()
+        whole, was = path.stat().st_size, {a: self.numbers(path, a) for a in range(4)}
+        pictures = {i: self.picture(path, i).tobytes() for i in (0, 1)}
+        report = slim.pictures(path)
+        # corners on multiples of 16 texels, 16 clear of the triangles
+        self.assertEqual(report["cut"], [{"picture": "face_patch", "from": [256, 256], "to": [128, 144]}])
+        self.assertEqual(report["halved"], [])  # a normal map of 64 px is small already
+        self.assertEqual(report["loaded_megabytes"], [0.4, 0.1])
+        cut = self.picture(path, 2)
+        self.assertEqual(cut.size, (128, 144))
+        self.assertEqual(cut.tobytes(), self.face.crop((48, 64, 176, 208)).tobytes())  # its texels, as they were
+        self.assertAlmostEqual(cut.info["gamma"], 0.45455)                              # and what its file said of them
+        now = self.numbers(path, 3)
+        for i in range(0, 8, 2):  # each corner reads the texel it read
+            self.assertAlmostEqual(now[i] * 128 + 48, was[3][i] * 256, places=3)
+            self.assertAlmostEqual(now[i + 1] * 144 + 64, was[3][i + 1] * 256, places=3)
+        bounds = paint.read_glb(path)[0]["accessors"][3]
+        self.assertEqual((bounds["min"], bounds["max"]), ([min(now[0::2]), min(now[1::2])], [max(now[0::2]), max(now[1::2])]))
+        # the body's picture, used all over, and all the rest are untouched
+        self.assertEqual({i: self.picture(path, i).tobytes() for i in (0, 1)}, pictures)
+        self.assertEqual({a: self.numbers(path, a) for a in range(3)}, {a: was[a] for a in range(3)})
+        self.assertLess(path.stat().st_size, whole)
+        self.assertEqual(slim.pictures(path), {"left": "no picture is bigger than the avatar uses"})  # done once
+
+    def test_what_isnt_plainly_mapped_by_its_uvs_is_left_alone(self):
+        import io
+        jpeg = io.BytesIO()
+        self.face.save(jpeg, "JPEG")
+        toon = lambda gltf: gltf["materials"][1]["extensions"]["VRMC_materials_mtoon"]  # noqa: E731
+        cases = {
+            "used all over": {"corners": (0.02, 0.02, 0.98, 0.98)},
+            "it repeats": {"corners": (0.30, 0.35, 1.20, 0.70)},
+            "a JPEG can't be cut texel for texel": {"face": jpeg.getvalue()},
+            "its UVs scroll": {"change": lambda gltf: toon(gltf).update(uvAnimationScrollXSpeedFactor=0.1)},
+            "a matcap isn't mapped by UVs": {"change": lambda gltf: toon(gltf).update(matcapTexture={"index": 2})},
+            "an expression moves its UVs": {"change": lambda gltf: gltf["extensions"]["VRMC_vrm"].update(
+                expressions={"custom": {"wink": {"textureTransformBinds": [{"material": 1, "offset": [0.1, 0.0]}]}}})},
+            "a texture transform": {"change": lambda gltf: gltf["materials"][1]["pbrMetallicRoughness"]["baseColorTexture"].update(
+                extensions={"KHR_texture_transform": {"offset": [0.1, 0.0]}})},
+            "the body reads its UVs too": {"change": lambda gltf: gltf["meshes"][0]["primitives"][0]["attributes"].update(TEXCOORD_0=3)},
+        }
+        for number, (why, made) in enumerate(cases.items()):
+            with self.subTest(why):
+                path = self.avatar(f"kept_{number}.vrm", **made)
+                whole = path.read_bytes()
+                self.assertEqual(slim.pictures(path), {"left": "no picture is bigger than the avatar uses"})
+                self.assertEqual(path.read_bytes(), whole)
+
+    def test_a_big_normal_map_is_halved_and_its_vectors_made_unit(self):
+        from unittest import mock
+        normal = self.Image.new("RGB", (64, 64), (128, 128, 255))
+        normal.paste((255, 128, 128), (0, 0, 2, 1))  # the first four texels: two lean one way,
+        normal.paste((128, 255, 128), (0, 1, 2, 2))  # two another
+        path = self.avatar(normal=self.png(normal))
+        with mock.patch.object(slim, "NORMAL_FULL", 64):
+            report = slim.pictures(path)
+        self.assertEqual(report["halved"], [{"picture": "body_normal", "from": [64, 64], "to": [32, 32]}])
+        self.assertEqual(len(report["cut"]), 1)  # the face, in the same go
+        small = self.picture(path, 1)
+        self.assertEqual(small.size, (32, 32))
+        self.assertAlmostEqual(small.info["gamma"], 0.45455)
+        self.assertEqual(small.getpixel((5, 5)), (128, 128, 255))  # four of one direction stay that direction
+        # their mean, (191.5, 191.5, 128), is 90.5 from the middle; a unit vector is 127.5 from it
+        self.assertEqual(small.getpixel((0, 0)), (218, 218, 128))
+
+    def test_a_picture_that_cant_be_read_leaves_the_file_as_it_was(self):
+        path = self.avatar(face=self.png(self.face)[:400])  # the start of a PNG and no more
+        whole = path.read_bytes()
+        report = slim.pictures(path)
+        self.assertEqual(list(report), ["left"])
+        self.assertEqual(path.read_bytes(), whole)
+
+    def test_without_pillow_the_pictures_stay_at_full_size(self):
+        from unittest import mock
+        path = self.avatar()
+        whole = path.read_bytes()
+        with mock.patch.dict(sys.modules, {"PIL": None}):
+            self.assertIn("Pillow isn't installed", slim.pictures(path)["left"])
+        self.assertEqual(path.read_bytes(), whole)
+
+    def test_the_export_step_ends_with_it_and_a_vrm_taken_in_keeps_its_pictures(self):
+        exported = self.avatar("as_blender_writes_it.vrm").read_bytes()
+        real = engine._blender, engine.free_disk, engine.free_memory, engine.SETTINGS
+
+        def blender(blender, blend_in, args, log, extra):
+            Path(log).write_text("wrote it\n")
+            Path(args[1]).write_bytes(exported)
+            return 0
+        engine._blender, engine.free_disk, engine.free_memory, engine.SETTINGS = blender, lambda path: 100 << 30, lambda: 16 << 30, self.root / "settings.json"
+        try:
+            for source, cut in (("model.glb", True), ("avatar.vrm", False)):
+                home = self.root / source.replace(".", "_")
+                home.mkdir()
+                data = manifest.new(source, "Test")
+                data["out_dir"] = "out"
+                manifest.save(data, home / "character.json")
+                project = Project(home / "character.json", blender="blender")
+                blend = home / "12_mouth.blend"
+                blend.write_bytes(b"BLENDER-v402")
+                project._record("build", {"status": "done", "blend": str(blend)})
+                entry = project._run_step("export", engine.NAMES.index("export"), home)
+                self.assertEqual(entry["status"], "done")
+                self.assertEqual(project.improving, not cut)
+                self.assertEqual(self.picture(entry["vrm"], 2).size, (128, 144) if cut else (256, 256))
+                self.assertEqual((entry.get("report") or {}).get("pictures", {}).get("cut"),
+                                 [{"picture": "face_patch", "from": [256, 256], "to": [128, 144]}] if cut else None)
+                self.assertEqual("pictures: " in Path(entry["log"]).read_text(), cut)  # said in the step's log
+        finally:
+            engine._blender, engine.free_disk, engine.free_memory, engine.SETTINGS = real
 
 
 class Pages(unittest.TestCase):

@@ -32,7 +32,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from . import contracts, errors, face_guess, paint, trust, update, vendor
+from . import contracts, errors, face_guess, paint, slim, trust, update, vendor
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
@@ -785,6 +785,13 @@ class Project:
             if OUT_OF_MEMORY in output:
                 raise StepFailed(f"{name}: Blender ran out of memory (see {log}){said}", known)
             raise StepFailed(f"{name}: failed with exit code {code} (see {log}){said}\n{_tail(output)}", known)
+        pictures = None
+        if name == "export" and not self.improving:
+            # the export's last act, with the app's own Python: Blender's has no picture codec. Before
+            # the file is checked, so what is checked is what ships; a .vrm taken in keeps its pictures
+            pictures = slim.pictures(entry["vrm"])
+            with open(log, "a", encoding="utf-8") as handle:
+                handle.write(f"\npictures: {json.dumps(pictures)}\n")
         # checked here, at the step that made it: a truncated or half-exported file otherwise
         # surfaces steps later as someone else's traceback
         problem = output_problem(entry)
@@ -803,6 +810,8 @@ class Project:
             report = _tagged(output, tag)
             if report is not None:
                 entry["report"] = report
+        if pictures is not None:
+            entry["report"] = {**(entry.get("report") or {}), "pictures": pictures}
         if name in ("check", "vrm_check"):
             entry["report"] = {k: v for k, v in _read_json(entry["json"], {}).items() if k in ("failed", "worst", "unweighted", "spots")}
         if name == "vrm_check":
