@@ -252,6 +252,13 @@ def export(filepath, armature):
     # export, re-posing the fingers and mesh: every hand baked here (curled, relaxed or straight)
     # left the file with the same generic straightened hand, and tracking looked the same in all.
     armature.data.vrm_addon_extension.vrm1.humanoid.pose = "restPositionPose"
+    # Asked to export, the add-on first guesses a VRM 0.x humanoid for an armature that names none: a
+    # search through every way the bones could make a body, 22 of an export's 29 s on the fox girl's
+    # skeleton, for a mapping no VRM 1.0 file holds. Told the guess was made, it makes none: the files
+    # of five characters came out the same byte for byte, in 6 s.
+    humanoid0 = getattr(getattr(armature.data.vrm_addon_extension, "vrm0", None), "humanoid", None)
+    if hasattr(humanoid0, "initial_automatic_bone_assignment"):
+        humanoid0.initial_automatic_bone_assignment = False
     # the Guided Hand Setup empties are editing handles, not part of the avatar
     guides = [o for o in bpy.context.view_layer.objects if "vtuber_hand_side" in o and not o.hide_get()]
     for guide in guides:

@@ -304,14 +304,6 @@ def _saturation_value(rgb):
     return (top - bottom) / np.maximum(top, 1e-6), top
 
 
-def _hue(rgb):
-    """The hue of each pixel, 0 to 1 round the colour circle (red 0, green 1/3, blue 2/3); 0 for greys."""
-    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-    top, spread = rgb.max(axis=-1), np.maximum(np.ptp(rgb, axis=-1), 1e-9)
-    hue = np.where(top == r, (g - b) / spread, np.where(top == g, 2.0 + (b - r) / spread, 4.0 + (r - g) / spread))
-    return np.where(np.ptp(rgb, axis=-1) > 0, (hue / 6.0) % 1.0, 0.0)
-
-
 # --- the marked eyes --------------------------------------------------------------------------
 
 def _parabola(a, m, b):

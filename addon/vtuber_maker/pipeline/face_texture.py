@@ -121,11 +121,19 @@ def _seam(mesh_obj, head):
     rest = _outside_patch(rest, weld, seam)
     patch_pixels = texture_space.image_rgb(patch_image)
     cache = {}
+
+    def pixels_of(image):
+        # read once: `cache.setdefault(name, image_rgb(image))` reads before it looks, and a 4096 px
+        # picture was read whole for every corner along the seam (1,161 times, 50 of the 88 s the fox
+        # girl's rigging step took)
+        if image.name not in cache:
+            cache[image.name] = texture_space.image_rgb(image)
+        return cache[image.name]
+
     points, patch_colours, deltas = [], [], []
     for key in seam:
         here = np.mean([_sample(patch_pixels, *p) for p in inside[key]], axis=0)
-        there = np.mean([_sample(cache.setdefault(img.name, texture_space.image_rgb(img)), *p)
-                         for img, p in outside[key]], axis=0)
+        there = np.mean([_sample(pixels_of(img), *p) for img, p in outside[key]], axis=0)
         points.append(verts[key])
         patch_colours.append(here)
         if np.linalg.norm(there - here) <= SEAM_MAX_DIFFERENCE:
@@ -196,7 +204,7 @@ def blend_patch_seam(mesh_obj, head, smooth=False):
         by_image.setdefault(image.name, (image, []))[1].append(poly)
     for image, polys in by_image.values():
         width, height = image.size
-        rgba = np.array(image.pixels[:], dtype=np.float32).reshape(height, width, 4)
+        rgba = _rgba(image)
         values, covered = _rasterise(mesh, polys, per_vertex, width, height)
         values, covered = _bleed(values, covered, SEAM_BLEED)
         rgba[covered, :3] = np.clip(rgba[covered, :3] + values[covered], 0.0, 1.0)
@@ -285,7 +293,7 @@ def _smooth_head(mesh, patch_pixels, verts, weld, head, inside, rest, seam_point
         by_image.setdefault(image.name, (image, []))[1].append(poly)
     for image, polys in by_image.values():
         width, height = image.size
-        rgba = np.array(image.pixels[:], dtype=np.float32).reshape(height, width, 4)
+        rgba = _rgba(image)
         values, covered = _rasterise(mesh, polys, field, width, height)
         values, covered = _bleed(values, covered, SEAM_BLEED)
         rgba[covered, :3] = values[covered]
@@ -312,7 +320,7 @@ def clean_head_top(mesh_obj, head):
             by_image.setdefault(image.name, (image, []))[1].append(poly)
     for image, polys in by_image.values():
         width, height = image.size
-        rgba = np.array(image.pixels[:], dtype=np.float32).reshape(height, width, 4)
+        rgba = _rgba(image)
         facing, covered = _rasterise(mesh, polys, up, width, height)
         top = covered & (facing > TOP_FACING)
         if top.sum() < 20:
@@ -407,6 +415,18 @@ def _grow(mask, radius):
         for axis in (0, 1):
             out |= np.roll(mask, step, axis=axis) | np.roll(mask, -step, axis=axis)
     return out
+
+
+def _rgba(image):
+    """An image's pixels as a (height, width, 4) array of its own, rows bottom to top.
+
+    Read straight into the array: asked for as `image.pixels[:]`, a 4096 px picture comes as 67 million
+    Python numbers first, 2 s a read for the same values.
+    """
+    width, height = image.size
+    pixels = np.empty(width * height * 4, dtype=np.float32)
+    image.pixels.foreach_get(pixels)
+    return pixels.reshape(height, width, 4)
 
 
 def _store(image, rgba):

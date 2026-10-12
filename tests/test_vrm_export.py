@@ -91,6 +91,13 @@ class ExportSyntheticCharacter(unittest.TestCase):
     def test_declares_the_vrm_1_extension(self):
         self.assertIn("VRMC_vrm", self.gltf["extensionsUsed"])
 
+    def test_the_addon_guesses_no_vrm_0_humanoid_on_the_way(self):
+        # asked to export, it searched every way the bones could make a body for a VRM 0.x mapping that
+        # no VRM 1.0 file holds: 22 of an export's 29 s on the fox girl's skeleton
+        humanoid = self.armature.data.vrm_addon_extension.vrm0.humanoid
+        self.assertFalse(humanoid.initial_automatic_bone_assignment)
+        self.assertEqual([bone.node.bone_name for bone in humanoid.human_bones if bone.node.bone_name], [])
+
     def test_maps_every_required_human_bone_to_its_node(self):
         human_bones = self.gltf["extensions"]["VRMC_vrm"]["humanoid"]["humanBones"]
         for key in REQUIRED_VRM_BONES:

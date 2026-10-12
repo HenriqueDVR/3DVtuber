@@ -249,15 +249,19 @@ def standing_still(armature, seconds=2.0, fps=60):
     return Motion([pose] * frames, [np.eye(4)] * frames, 1.0 / fps)
 
 
-def clipping_report(mesh_obj, armature, design, motion):
-    """How far hanging hair sinks into the body while the springs follow `motion`."""
+def clipping_report(mesh_obj, armature, design, motion, frames=None):
+    """How far hanging hair sinks into the body while the springs follow `motion`.
+
+    `frames`: the springs already run through this motion (`spring_sim.simulate` of this design), when
+    the caller has them: the spring check ran the same four seconds twice."""
     verts = meshdata.world_vertices(mesh_obj)
     group_names = [group.name for group in mesh_obj.vertex_groups]
     influences = [[(group_names[g.group], g.weight) for g in v.groups if g.weight > 0] for v in mesh_obj.data.vertices]
     hair_bones = {name: (c, j) for c, chain in enumerate(design.chains) for j, name in enumerate(chain.names)}
     volume = body_volume.fit(mesh_obj, _joints(armature), set(hair_bones))
     hair = [i for i, weights in enumerate(influences) if any(name in hair_bones for name, _ in weights)][::VERTEX_STEP]
-    frames = spring_sim.simulate(design.chains, design.colliders, motion, len(motion.poses), motion.dt)
+    if frames is None:
+        frames = spring_sim.simulate(design.chains, design.colliders, motion, len(motion.poses), motion.dt)
 
     def in_torso_space(frame_index):
         """Posed hair vertices, carried back into the torso's rest space."""

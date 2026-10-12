@@ -162,7 +162,7 @@ def main():
                                 "point": [round(float(v), 4) for v in points[np.argmin(np.linalg.norm(points - points.mean(0), axis=1))]],
                                 "swings": bool(swinging[labels == label].any())})
     coming_away.sort(key=lambda r: -r["gap_cm"])
-    clipping = hair_physics.clipping_report(mesh, arm, design, sway)
+    clipping = hair_physics.clipping_report(mesh, arm, design, sway, frames)  # (the sway as it was run above)
     report(args.json, {"chains": len(design.chains), "sagging": sagging, "coming_away": coming_away,
                        "clipping": {"deepest_cm": round(clipping.deepest * 100, 1),
                                     "share": round(clipping.clipping_fraction, 4), "where": clipping.worst_detail}})
