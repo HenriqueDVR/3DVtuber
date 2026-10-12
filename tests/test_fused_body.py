@@ -98,6 +98,25 @@ class FusedBody(unittest.TestCase):
         self.assertEqual(weights_of(obj, hand[0]), {"LeftHand": 1.0})
         self.assertEqual(weights_of(obj, hair[0]), {"Head": .5, "Neck": .5})
 
+    def test_a_tail_held_up_behind_the_head_is_not_the_head(self):
+        # the pirate with a tail raised behind him: its end, at the head's height and between the shoulders,
+        # 50 to 70 cm behind the head joint, went to the head (to 1.0) and its root stayed on the hips:
+        # 21.7 cm of stretch with the head turn. The head's own reaches 20 cm behind the joint on him
+        # (hair, hat) and 25 cm before it on model B (her collar), 1.2 and 1.6 of the shoulder's distance
+        points, faces = [], []
+        zs = list(np.arange(1.34, 1.541, .02))
+        tail = strip(points, faces, [-.02, .02], zs, .55)
+        back = strip(points, faces, [-.02, .02], zs, .21)
+        front = strip(points, faces, [-.02, .02], zs, -.24)
+        obj = mesh(points, faces, {"Hips": [(i, 1.0) for i in tail], "Head": [(i, .5) for i in back + front],
+                                   "Neck": [(i, .5) for i in back + front]}, self.arm)
+        rig.follow_head_column(obj, self.arm)
+        for i in tail:
+            self.assertEqual(weights_of(obj, i), {"Hips": 1.0}, points[i])
+        for i in back + front:
+            if points[i][2] > 1.4 + rig.COLUMN_BLEND / 2 + 1e-6:
+                self.assertEqual(weights_of(obj, i), {"Head": 1.0}, points[i])
+
     def test_a_body_in_one_surface_with_its_head_is_not_headwear(self):
         # the pirate again: most of his body's vertices are his head's, so the piece read as mostly
         # on the head and all of it went there: arms, coat and legs stood still

@@ -210,6 +210,14 @@ bsdf = patch.node_tree.nodes["Principled BSDF"]
 tex_node = _upstream_texture(bsdf.inputs["Base Color"].links[0].from_node)
 for link in list(bsdf.inputs["Normal"].links):   # the normal map follows the atlas UVs, not the patch's
     patch.node_tree.links.remove(link)
+# ... and so does an alpha read from a node of its own: Blender's FBX import gives a model whose
+# texture also cuts it one node for the colour and another for the alpha. The export then wrote the
+# atlas's alpha into the face's picture, stretched over it: a tester's flat-colour model (a palette
+# 2048 x 512, its unused right part see-through) had the right 40% of the face picture cut away, the
+# face half gone on the Face page. The picture is a render and has no holes.
+for link in list(bsdf.inputs["Alpha"].links):
+    if link.from_node != tex_node:
+        patch.node_tree.links.remove(link)
 img = bpy.data.images.load(IMAGE)
 img.colorspace_settings.name = "sRGB"
 tex_node.image = img

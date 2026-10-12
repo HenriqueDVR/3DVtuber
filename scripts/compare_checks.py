@@ -19,6 +19,16 @@ from pathlib import Path
 # Changes smaller than these are noise from the voxel remesh, not a rule doing something.
 STRETCH_NOISE = 0.5  # cm
 SQUASH_NOISE = 0.03  # share of the edge's rest length
+# What the rig check counts beside its poses, where in the report, and the change that is noise.
+# A report from before the check counted one of them says nothing of it.
+FINDINGS = [("places torn at a seam", ("seams", "torn"), 0), ("vertices hanging from the head bone", ("hair", "hangs_on_head"), 20),
+            ("edges at a ledge in the hair", ("hair", "ledge_edges"), 5),
+            ("mm beside the left iris", ("face", "eyes", "Left", "beside_mm"), 2.0),
+            ("mm beside the right iris", ("face", "eyes", "Right", "beside_mm"), 2.0),
+            ("mixes turning the drawn mouth inside out", ("face", "mouth_turned", "mixes"), 0),
+            # the exported file as apps draw it (app/inside.py, kept in the vrm_check's report): the same
+            # file drawn twice gives the same count, a rebuilt eye within a few mm2
+            ("mm2 seen deep through a hole in the surface", ("seen", "deep_mm2"), 20)]
 
 
 def main():
@@ -61,7 +71,19 @@ def changes(before, after, worse_than=STRETCH_NOISE):
             better.append(f"{pose}: squash {old['squash']} -> {new['squash']}")
     if after.get("unweighted", 0) > before.get("unweighted", 0):
         worse.append(f"unweighted vertices {before['unweighted']} -> {after['unweighted']}")
+    for what, path, noise in FINDINGS:
+        old, new = _at(before, path), _at(after, path)
+        if _grew(old, new, noise):
+            worse.append(f"{what} {old:g} -> {new:g}")
+        elif _grew(new, old, noise):
+            better.append(f"{what} {old:g} -> {new:g}")
     return worse, better
+
+
+def _at(report, path):
+    for key in path:
+        report = report.get(key) if isinstance(report, dict) else None
+    return report
 
 
 def _pair(old, new):

@@ -455,3 +455,55 @@ class APieceWithNoBody(unittest.TestCase):
     def test_without_named_legs_anything_below_the_hips_is(self):
         joints = {"hips": self.JOINTS["hips"], "neck": self.JOINTS["neck"]}
         self.assertTrue(parts._holds_body(self.verts, self.piece((0, self.head + 60)), joints))
+
+
+class ClothingOfTheHairsColour(unittest.TestCase):
+    """A tester's game model: white hair, and a white dress in one piece that reaches above the head
+    joint. The dress goes round the waist; hair down the back or over both shoulders doesn't."""
+    JOINTS = {"hips": np.array([0.0, 0.0, 0.8]), "neck": np.array([0.0, 0.0, 1.3])}
+
+    @staticmethod
+    def arc(z, degrees, radius=0.15, count=120):
+        angles = np.radians(np.linspace(-degrees / 2, degrees / 2, count))
+        # centred behind the body (+Y), as hair hangs
+        return np.column_stack([radius * np.sin(angles), radius * np.cos(angles), np.full(count, z)])
+
+    def test_a_ring_round_the_waist_is_clothing(self):
+        self.assertTrue(parts.goes_round_body(self.arc(0.95, 360), self.JOINTS))
+        self.assertTrue(parts.goes_round_body(self.arc(0.75, 360, radius=0.3), self.JOINTS))  # a skirt under the hips
+
+    def test_hair_down_the_back_and_over_the_shoulders_is_not(self):
+        # OC3's hair measures 6 of 12 directions at the hips and 10 at the shoulders
+        self.assertFalse(parts.goes_round_body(self.arc(0.9, 180), self.JOINTS))
+        self.assertFalse(parts.goes_round_body(self.arc(1.2, 360), self.JOINTS))
+        self.assertFalse(parts.goes_round_body(np.concatenate([self.arc(z, 200) for z in np.arange(0.7, 1.3, 0.02)]), self.JOINTS))
+
+
+class RolesOffTheMarkedFace(unittest.TestCase):
+    """A tester's fox girl: every suggestion of a listing made before her eyes were marked accepted,
+    her face among them as hair. The face and all its shapes swung on hair chains."""
+
+    def found(self):
+        # part 0 the face, 1 and 2 the eyes, 3 the mouth, 4 hair, 5 face and hair in one piece (mostly hair)
+        labels = np.repeat([0, 1, 2, 3, 4, 5], [10, 2, 2, 2, 10, 10])
+        return parts.MeshParts(labels, labels == 4, 0, {"left": 1, "right": 2}, 3, np.zeros(3), labels == 0)
+
+    def test_the_face_and_its_eyes_do_not_swing(self):
+        found = self.found()
+        named = {name: found.labels == part for name, part in (("face", 0), ("eye", 1), ("mouth", 3), ("locks", 4))}
+        pieces = [{"name": "face", "role": "hair"}, {"name": "eye", "role": "appendage"},
+                  {"name": "mouth", "role": "hat"}, {"name": "locks", "role": "hair"}]
+        notes = []
+        kept = build._off_the_face(pieces, named, found, notes)
+        # a hat is wholly on the head, as the face is: left as the user gave it
+        self.assertEqual([p["name"] for p in kept], ["mouth", "locks"])
+        self.assertEqual(len(notes), 2)
+        self.assertIn("piece face is the face the eyes are marked on", notes[0])
+
+    def test_a_piece_that_is_mostly_hair_keeps_its_role(self):
+        found = self.found()
+        fused = found._replace(face=5, face_area=(found.labels == 5) & (np.arange(len(found.labels)) % 3 == 0))
+        notes = []
+        pieces = [{"name": "head", "role": "hair"}]
+        self.assertEqual(build._off_the_face(pieces, {"head": fused.labels == 5}, fused, notes), pieces)
+        self.assertEqual(notes, [])

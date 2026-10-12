@@ -124,6 +124,8 @@ def design(mesh_obj, armature, chains, joints, cloth_chains=(), tip_chains=(), a
     head = _head_collider(mesh_obj, joints, hair_bones)
     if head is not None:
         colliders[0] = head
+    # a rig taken in as it came may have no upper chest (kept.py): its colliders ride the chest
+    colliders = [c if c.bone in bones else spring_sim.Collider(BONE_NAMES["chest"], c.radius, c.offset, c.tail) for c in colliders]
     return SpringDesign(springs, _clear_of_resting_hair(colliders, springs))
 
 

@@ -90,6 +90,23 @@ class CapeOnTheArms(unittest.TestCase):
         self.assertTrue(all(any(name.startswith("Cloth") for name in w) for w in hem))
         self.assertGreaterEqual(len(self.chains), 1)
 
+    def test_far_from_the_spine_it_changes_bones_slowly(self):
+        # model D's cape went from Hips to Spine within 7 cm of height, 29 cm from her spine: its edge
+        # kinked there in a twist and a side bend (6.6 cm of stretch, 14 edges folded). The further out
+        # the cloth hangs, the longer the handover: no shorter than HANG_BLEND of its distance
+        torso = ("Hips", "Spine", "Chest", "UpperChest")
+        column = lambda x: sorted((i for i in self.cape if abs(self.verts[i][0] - x) < 1e-6 and 0.9 < self.verts[i][2] < 1.25),  # noqa: E731
+                                  key=lambda i: self.verts[i][2])
+        for x in (0.45, -0.45, 0.0):
+            rows = column(x)
+            self.assertGreater(len(rows), 4)
+            held = self.weights(rows)
+            distance = float(np.hypot(x, 0.2))
+            for lower, upper, a, b in zip(rows, rows[1:], held, held[1:]):
+                step = max(abs(a.get(name, 0.0) - b.get(name, 0.0)) for name in torso)
+                rise = float(self.verts[upper][2] - self.verts[lower][2])
+                self.assertLessEqual(step, rise / (cloth.HANG_BLEND * distance) + 0.02, (x, self.verts[lower][2], a, b))
+
     def test_the_body_keeps_its_arms_and_its_legs(self):
         # one surface with arms and a head: most of it is far from the leg bones, and its legs
         # once went onto cloth chains

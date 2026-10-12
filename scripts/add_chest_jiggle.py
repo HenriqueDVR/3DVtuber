@@ -15,7 +15,7 @@ import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 
-from vtuber_maker.pipeline import chest, improve, vrm_export  # noqa: E402
+from vtuber_maker.pipeline import chest, improve, rig, vrm_export  # noqa: E402
 from vtuber_maker.pipeline.rig import BONE_NAMES  # noqa: E402
 
 
@@ -46,6 +46,8 @@ def main():
         sys.exit(f"chest: {error}")
     for side, count in weighted.items():
         print(f"{side} chest bone: {count} vertices")
+    # a chest bone is a fifth on some vertices, and the file holds four
+    print(f"{mesh.name}: {rig.limit_influences(mesh, arm)} vertices left on their four strongest bones, as the file holds them")
     bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath(args.out_blend), copy=True)
     vrm_export.export(Path(bpy.path.abspath(args.out_vrm)), arm)
     print(f"VTUBER_MAKER_REPORT {json.dumps({'chest': weighted})}")

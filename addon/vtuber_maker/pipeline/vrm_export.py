@@ -8,6 +8,7 @@ import addon_utils
 import bpy
 import numpy as np
 from mathutils import Vector
+from mathutils.kdtree import KDTree
 
 from . import fingers, texture_space
 from .face_rig import BLINK_LEFT, BLINK_RIGHT, VOWELS
@@ -288,7 +289,8 @@ def rename_nodes(filepath, names):
 
 def verify(filepath, armature):
     """Check a written .vrm against the armature it came from: every joint unrotated, at its
-    bone's rest head. Raises ExportMismatch naming the worst joints.
+    bone's rest head, and every skinned vertex on the mesh as it rests (`_off_the_mesh`). Raises
+    ExportMismatch naming the worst joints.
 
     The .blend can be right and the file wrong: the add-on's "Auto" pose replaced the baked rest
     pose in every export until 2026-09-22, and a session of finger variants all tracked alike
@@ -296,7 +298,7 @@ def verify(filepath, armature):
     is in the rest pose the file was exported with (it is, straight after `export`). A joint a
     node constraint is on or reads may rest turned (`normalize_bones` says which and why).
     """
-    gltf, _ = _read_glb(filepath)
+    gltf, binary = _read_glb(filepath)
     nodes = gltf["nodes"]
     parent = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
     worlds = {}
@@ -323,13 +325,56 @@ def verify(filepath, armature):
         off = float(np.linalg.norm(world(joint)[:3, 3] - (head.x, head.z, -head.y)))
         if off > EXPORT_TOLERANCE:
             moved.append((off, name))
-    if turned or moved:
+    stray = _off_the_mesh(gltf, binary)
+    if turned or moved or stray:
         moved.sort(reverse=True)
         raise ExportMismatch(
             f"{filepath}: " + "; ".join(filter(None, (
                 moved and f"{len(moved)} joints aren't where the rest pose has them (worst: "
                 + ", ".join(f"{name} {off * 1000:.1f} mm" for off, name in moved[:3]) + ")",
-                turned and f"{len(turned)} joints are rotated ({', '.join(turned[:3])})"))))
+                turned and f"{len(turned)} joints are rotated ({', '.join(turned[:3])})",
+                stray and f"{stray[0]} of {stray[1]} vertices aren't on the mesh as it rests (worst: {stray[2] * 1000:.1f} mm)"))))
+
+
+def _off_the_mesh(gltf, binary):
+    """(how many, of how many, the furthest in m) of a written .vrm's skinned vertices that lie
+    off every mesh of the scene at rest, or None when all are on one.
+
+    The joints alone don't say the surface is right: the add-on's "Auto" pose moved the vertices
+    with them (model A's old exports: 31,000 of 98,867 over a centimetre off, up to 75 mm; model
+    B's up to 98 mm), and a joint check can pass a file whose mesh was posed, scaled or swapped.
+    A vertex counts as on the mesh near any vertex of any mesh object, as its data has it or as
+    it stands now with every modifier, in the world or in the object's own frame (the exporter
+    writes one of these); which vertex is not asked, since the export splits and reorders them.
+    """
+    points = []
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    for obj in bpy.context.scene.objects:
+        if obj.type != "MESH":
+            continue
+        matrix = np.array(obj.matrix_world)
+        for data in (obj.data, obj.evaluated_get(depsgraph).data):
+            co = np.empty(len(data.vertices) * 3, np.float32)
+            data.vertices.foreach_get("co", co)
+            co = co.reshape(-1, 3).astype(float)
+            points.append(co @ matrix[:3, :3].T + matrix[:3, 3])
+            if not np.allclose(matrix, np.eye(4), atol=1e-6):
+                points.append(co)
+    skinned = {node["mesh"] for node in gltf["nodes"] if "skin" in node and "mesh" in node}
+    accessors = sorted({primitive["attributes"]["POSITION"] for index in skinned
+                        for primitive in gltf["meshes"][index]["primitives"]})
+    if not points or not accessors:
+        return None
+    points = np.concatenate(points)
+    tree = KDTree(len(points))
+    for index, point in enumerate(points):
+        tree.insert(point, index)
+    tree.balance()
+    written = np.concatenate([_accessor_array(gltf, binary, a) for a in accessors]).astype(float)
+    # glTF is Y up with the model facing +Z: its (x, y, z) is Blender's (x, -z, y)
+    far = np.array([tree.find((x, -z, y))[2] for x, y, z in written])
+    off = far > EXPORT_TOLERANCE
+    return (int(off.sum()), len(far), float(far.max())) if off.any() else None
 
 
 def normalize_bones(filepath, look_at_origin=None):

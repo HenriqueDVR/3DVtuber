@@ -123,14 +123,16 @@ class Manifest(unittest.TestCase):
         # Mixamo's and Character Creator's rigs are readable, but only Tripo's was measured against ours
         with tempfile.TemporaryDirectory() as folder:
             files = {"mixamo.fbx": b"Kaydara\0Model::mixamorig:Hips\0", "creator.fbx": b"\0" * ((1 << 20) - 4) + b"CC_Base_Hip\0",
-                     "tripo.fbx": b"J_Bip_C_Hips", "plain.fbx": b"Model::Body"}
+                     "tripo.fbx": b"J_Bip_C_Hips", "plain.fbx": b"Model::Body",
+                     "cats.fbx": b"Kaydara\0Left elbow\0\1Model", "pmx.fbx": "Model::左ひじ".encode()}
             for name, content in files.items():
                 (Path(folder) / name).write_bytes(content)
             kinds = {name: manifest.rig_kind(Path(folder) / name) for name in files}
             taken = {name: manifest.carries_rig(Path(folder) / name) for name in files}
         self.assertEqual(kinds, {"mixamo.fbx": "Mixamo", "creator.fbx": "Character Creator / AccuRig",
-                                 "tripo.fbx": "Tripo / VRoid", "plain.fbx": None})
-        self.assertEqual(taken, {"mixamo.fbx": False, "creator.fbx": False, "tripo.fbx": True, "plain.fbx": False})
+                                 "tripo.fbx": "Tripo / VRoid", "plain.fbx": None, "cats.fbx": "MMD", "pmx.fbx": "MMD"})
+        self.assertEqual(taken, {"mixamo.fbx": False, "creator.fbx": False, "tripo.fbx": True, "plain.fbx": False,
+                                 "cats.fbx": False, "pmx.fbx": False})
 
     def test_a_glb_edited_from_a_rigged_fbx_finds_its_rig(self):
         # the texture steps write the mesh alone as GLB: the FBX they read it from stays the rig

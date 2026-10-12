@@ -210,6 +210,61 @@ class ClothBesideTheForearm(unittest.TestCase):
         self.assertGreater(self.arm_share(obj)[panel | sleeve].min(), .99)
 
 
+class ArmWeightHandedBack(unittest.TestCase):
+    """The back of a collar between the shoulders, 8 cm under the neck joint, on the shoulder bones as
+    bone heat leaves it: who takes over what the shoulders give up (rig._keep_arms_off_chest)."""
+
+    def setUp(self):
+        for obj in list(bpy.data.objects):
+            bpy.data.objects.remove(obj, do_unlink=True)
+        joints = {"hips": (0, 0, .8), "neck": (0, 0, 1.3), "head": (0, 0, 1.4)}
+        for side, sign in (("left", 1), ("right", -1)):
+            joints.update({f"{side}_upper_arm": (sign * .15, 0, 1.2), f"{side}_lower_arm": (sign * .23, 0, 1.0),
+                           f"{side}_hand": (sign * .30, 0, .8), f"{side}_upper_leg": (sign * .07, 0, .75),
+                           f"{side}_lower_leg": (sign * .07, 0, .4), f"{side}_foot": (sign * .07, 0, .08)})
+        self.arm = rig.build_armature(joints)
+
+    def handed_back(self, *weights):
+        """A row of collar vertices, one per {bone: weight}, after the rule: [{bone: weight}]."""
+        data = bpy.data.meshes.new("Collar")
+        data.from_pydata([(-.03 + .06 * i / max(len(weights) - 1, 1), .05, 1.22) for i in range(len(weights))],
+                         [(i, i + 1) for i in range(len(weights) - 1)], [])
+        data.update()
+        obj = bpy.data.objects.new("Collar", data)
+        bpy.context.scene.collection.objects.link(obj)
+        for i, held in enumerate(weights):
+            for bone, weight in held.items():
+                (obj.vertex_groups.get(bone) or obj.vertex_groups.new(name=bone)).add([i], weight, "REPLACE")
+        rig._keep_arms_off_chest(obj, self.arm, np.zeros(len(weights), dtype=bool))
+        names = {g.index: g.name for g in obj.vertex_groups}
+        return [{names[g.group]: g.weight for g in v.groups if g.weight > 1e-6} for v in obj.data.vertices]
+
+    def torso(self, held):
+        return sum(held.get(rig.BONE_NAMES[k], 0.0) for k in rig.TORSO_KEYS)
+
+    def test_a_trace_of_the_head_does_not_take_all_the_shoulders_give_up(self):
+        # model A's collar under the back hair: Head 0.003 beside shoulders 0.99 became Head 1.0, its
+        # neighbours with no trace went to the chest, and the edges between stretched 6.5 cm as the head turned
+        trace, none = self.handed_back({"LeftShoulder": .55, "RightShoulder": .44, "Head": .01},
+                                       {"LeftShoulder": .6, "RightShoulder": .4})
+        # each side's shoulder gives up in turn, so the trace is at most doubled twice
+        self.assertLess(trace.get("Head", 0.0), .04 + 1e-6)
+        self.assertGreater(self.torso(trace), .96 - 1e-6)
+        self.assertAlmostEqual(self.torso(none), 1.0, places=5)
+        for held in (trace, none):
+            self.assertFalse({"LeftShoulder", "RightShoulder"} & set(held))
+            self.assertAlmostEqual(sum(held.values()), 1.0, places=5)
+
+    def test_a_torso_bone_that_holds_the_vertex_takes_it_all(self):
+        held, = self.handed_back({"Chest": .05, "LeftShoulder": .95})
+        self.assertAlmostEqual(held["Chest"], 1.0, places=5)
+
+    def test_a_head_that_holds_half_takes_the_other_half(self):
+        # hair lying on a shoulder stays the head's
+        held, = self.handed_back({"Head": .5, "RightShoulder": .5})
+        self.assertAlmostEqual(held["Head"], 1.0, places=5)
+
+
 class FillUnweighted(unittest.TestCase):
     def setUp(self):
         verts = [
@@ -250,6 +305,60 @@ class FillUnweighted(unittest.TestCase):
     def test_isolated_piece_takes_the_nearest_weights(self):
         rig.fill_unweighted(self.obj)
         self.assertEqual(self.weights(10), {"Head": 1.0})
+
+
+class FourBonesAVertex(unittest.TestCase):
+    """A .vrm holds four bones a vertex; the .blend is left on the same four, or it isn't what ships."""
+
+    def setUp(self):
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        data = bpy.data.armatures.new("bones")
+        self.armature = bpy.data.objects.new("bones", data)
+        bpy.context.scene.collection.objects.link(self.armature)
+        bpy.context.view_layer.objects.active = self.armature
+        bpy.ops.object.mode_set(mode="EDIT")
+        for i, name in enumerate("ABCDEF"):
+            bone = data.edit_bones.new(name)
+            bone.head, bone.tail = (i, 0, 0), (i, 0, 1)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        mesh = bpy.data.meshes.new("skin")
+        mesh.from_pydata([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)])
+        self.obj = bpy.data.objects.new("skin", mesh)
+        bpy.context.scene.collection.objects.link(self.obj)
+        groups = {name: self.obj.vertex_groups.new(name=name) for name in ("A", "B", "C", "D", "E", "F", "marker")}
+        for name, weight in zip("ABCDEF", (0.30, 0.25, 0.20, 0.15, 0.06, 0.04)):  # six bones
+            groups[name].add([0], weight, "REPLACE")
+        groups["marker"].add([0], 1.0, "REPLACE")  # not a bone: a flag some step reads
+        for name, weight in zip("ABCD", (0.4, 0.3, 0.2, 0.1)):  # four already
+            groups[name].add([1], weight, "REPLACE")
+        for name, weight in zip("ABCDE", (0.4, 0.3, 0.1, 0.1, 0.1)):  # the fourth and fifth alike
+            groups[name].add([2], weight, "REPLACE")
+
+    def weights(self, index):
+        return {self.obj.vertex_groups[g.group].name: round(g.weight, 3) for g in self.obj.data.vertices[index].groups}
+
+    def test_a_vertex_on_six_bones_keeps_its_four_strongest(self):
+        self.assertEqual(rig.limit_influences(self.obj, self.armature), 2)
+        self.assertEqual(set(self.weights(0)) - {"marker"}, set("ABCD"))
+
+    def test_the_four_share_what_all_six_held(self):
+        rig.limit_influences(self.obj, self.armature)
+        held = {self.obj.vertex_groups[g.group].name: g.weight for g in self.obj.data.vertices[0].groups}
+        self.assertAlmostEqual(sum(held[name] for name in "ABCD"), 1.0, places=5)
+        # in the proportions they had: the exporter scales its four the same way
+        self.assertAlmostEqual(held["A"] / held["D"], 2.0, places=5)
+
+    def test_a_group_that_is_no_bone_is_left_alone(self):
+        rig.limit_influences(self.obj, self.armature)
+        self.assertEqual(self.weights(0)["marker"], 1.0)
+
+    def test_a_vertex_on_four_bones_is_untouched(self):
+        rig.limit_influences(self.obj, self.armature)
+        self.assertEqual(self.weights(1), {"A": 0.4, "B": 0.3, "C": 0.2, "D": 0.1})
+
+    def test_equal_weights_keep_the_first_listed_as_the_exporter_does(self):
+        rig.limit_influences(self.obj, self.armature)
+        self.assertEqual(set(self.weights(2)), set("ABCD"))
 
 
 if __name__ == "__main__":

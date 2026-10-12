@@ -100,5 +100,41 @@ class TextureStepsOnARiggedFbx(unittest.TestCase):
             self.assertEqual(normalize.import_unrigged(glb), fbx)  # the next step names it again
 
 
+class AlphaOfAPictureOpaqueWhereItIsUsed(unittest.TestCase):
+    """A flat-colour FBX (a palette, its unused cells clear) came in with the palette's alpha wired
+    in: the app drew the whole model see-through, the back hair over the face."""
+
+    def plane(self, u):
+        """A square whose UVs all lie at `u` across a picture clear on its right 40%, the alpha wired in."""
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        bpy.ops.mesh.primitive_plane_add()
+        mesh = bpy.context.object
+        for loop in mesh.data.uv_layers.active.data:
+            loop.uv = (u, 0.5)
+        pixels = np.ones((8, 32, 4), np.float32)
+        pixels[:, 19:, 3] = 0.0
+        image = bpy.data.images.new("palette", 32, 8, alpha=True)
+        image.pixels.foreach_set(pixels.ravel())
+        material = bpy.data.materials.new("palette")
+        material.use_nodes = True
+        node = material.node_tree.nodes.new("ShaderNodeTexImage")
+        node.image = image
+        self.alpha = material.node_tree.nodes["Principled BSDF"].inputs["Alpha"]
+        material.node_tree.links.new(node.outputs["Alpha"], self.alpha)
+        mesh.data.materials.append(material)
+        return mesh
+
+    def test_the_alpha_comes_off_where_only_opaque_cells_are_used(self):
+        mesh = self.plane(0.3)
+        self.assertEqual(normalize.opaque_where_used([mesh]), ["palette"])
+        self.assertEqual(len(self.alpha.links), 0)
+        self.assertEqual(self.alpha.default_value, 1.0)
+
+    def test_a_picture_used_where_it_is_clear_keeps_its_alpha(self):
+        mesh = self.plane(0.8)
+        self.assertEqual(normalize.opaque_where_used([mesh]), [])
+        self.assertEqual(len(self.alpha.links), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

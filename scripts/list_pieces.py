@@ -1,13 +1,15 @@
 """List a model's separate pieces, with the role each one looks like, for a character manifest.
 
     blender -b -P scripts/list_pieces.py -- <model.glb> --json pieces.json [--manifest character.json]
+                                            [--face face.json --marked-on <model with the face patch>]
 
 Each piece gets what a manifest names it by (a point on its surface and its vertex count, in
 the normalized A-pose), its box, and a suggested role with the reason: hair and face inserts as
 parts.find reads them, head pieces that aren't hair or face as a hat, and pieces hanging free
 of the legs below the knee as swinging cloth. Suggestions only: the user decides (a hanging
 sleeve looks like cloth until an arm moves). With --manifest its joints override detection
-and its pieces show their chosen role. Changes nothing.
+and its pieces show their chosen role. With --face the eye inserts are the pair where the eyes
+were marked, as in the build. Changes nothing.
 """
 
 import argparse
@@ -21,7 +23,8 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "addon"))
 
-from vtuber_maker.pipeline import cloth, landmarks, manifest, meshdata, normalize, parts, preview, texture_space  # noqa: E402
+from vtuber_maker.pipeline import (cloth, face_points, landmarks, manifest, meshdata, normalize, parts, preview, roles,  # noqa: E402
+                                   texture_space)
 from vtuber_maker.pipeline.rig import BONE_NAMES  # noqa: E402
 
 # Pieces smaller than this share of the vertices are listed only when named in the manifest,
@@ -46,18 +49,28 @@ def main():
                                                  "piece label as the _PIECE attribute, for the app's 3D view")
     parser.add_argument("--picture", type=Path, help="also draw the model from the front, as it came, on a clear ground: "
                                                      "the app's picture of a character that has no build to pose yet")
+    parser.add_argument("--face", type=Path, help="face.json, once the eyes are marked: the eye inserts are found at the marks")
+    parser.add_argument("--marked-on", type=Path, help="the model the marks were made on, the one with the face patch "
+                                                       "(default: the model itself)")
     args = parser.parse_args(argv)
     data = manifest.load(args.manifest) if args.manifest else None
     height = data["options"]["height"] if data else 1.6
 
     bpy.ops.wm.read_homefile(use_empty=True)
+    # the marked eyes say which pieces are the eyes, as they do for the survey and the build: by size the
+    # fox girl's inner ears were, an ear her face, and her face was suggested as hair, her mouth and an
+    # eye as a hat (a tester accepted all of it: the face swung on hair springs)
+    eyes_at = None
+    if args.face:
+        with roles.reference(args.marked_on or args.model, height=height) as marked:
+            eyes_at = face_points.eye_places(marked, face_points.load(args.face))
     normalize.import_model(args.model)
     mesh = normalize.prepare(list(bpy.context.scene.objects), height=height)
     verts = meshdata.world_vertices(mesh)
     joints = landmarks.detect_body(verts, meshdata.triangles(mesh.data), [])
     if data:
         joints.update({k: np.asarray(v, dtype=float) for k, v in data["joints"].items()})
-    found = parts.find(mesh, joints)
+    found = parts.find(mesh, joints, eyes_at=eyes_at)
     labels = meshdata.pieces(mesh, verts)
     named = {}
     for piece in (data["pieces"] if data else []):
@@ -138,7 +151,8 @@ def main():
                             "suggested": "appendage", "bone": BONE_NAMES["head"], "where": f"head, {side}",
                             "why": "stands over the top of the head on one side, with its like on the other: "
                                    "an animal ear (it swings) or a horn (it stays still)?"})
-    report = {"model": str(args.model.resolve()), "vertices": len(verts), "pieces": listed, "parts": found_parts,
+    report = {"model": str(args.model.resolve()), "vertices": len(verts), "eyes_marked": eyes_at is not None,
+              "pieces": listed, "parts": found_parts,
               "joints": {k: np.asarray(v, dtype=float).round(4).tolist() for k, v in joints.items()}}
     args.json.write_text(json.dumps(report, indent=2), encoding="utf-8")
     if args.glb:
@@ -185,6 +199,7 @@ def export_labelled(mesh, labels, path):
     bpy.ops.object.select_all(action="DESELECT")
     mesh.select_set(True)
     bpy.context.view_layer.objects.active = mesh
+    normalize.opaque_where_used([mesh])
     bpy.ops.export_scene.gltf(filepath=str(path.resolve()), export_format="GLB", use_selection=True,
                               export_attributes=True, export_yup=True)
 

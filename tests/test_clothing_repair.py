@@ -149,6 +149,21 @@ class ClothingRepair(unittest.TestCase):
         for bone in self.arm.pose.bones:
             self.assertEqual(bone.matrix_basis, Matrix.Identity(4))
 
+    def test_a_hanging_hand_reaches_what_lies_inside_its_forearm(self):
+        # the hip under each wrist, and the outside of the right forearm
+        points = np.array([(-.14, -.03, .90), (.14, -.03, .90), (-.33, 0, .85)])
+        reach = loose.hand_reach(self.arm, points)
+        self.assertGreater(reach[0], .99)
+        self.assertGreater(reach[1], .99)
+        self.assertEqual(reach[2], 0)
+        # arms held out reach nothing: a T-pose model's hands rest on no skirt
+        level = {"hips": (0, 0, .8), "neck": (0, 0, 1.3), "head": (0, 0, 1.4)}
+        for side, sign in (("left", 1), ("right", -1)):
+            level.update({f"{side}_upper_arm": (sign * .15, 0, 1.2), f"{side}_lower_arm": (sign * .37, 0, 1.2),
+                          f"{side}_hand": (sign * .58, 0, 1.2), f"{side}_upper_leg": (sign * .07, 0, .75),
+                          f"{side}_lower_leg": (sign * .07, 0, .4), f"{side}_foot": (sign * .07, 0, .08)})
+        self.assertEqual(float(loose.hand_reach(rig.build_armature(level), points).max()), 0.0)
+
     def test_cut_skirt_copies_rejoin_without_dragging_sleeve_or_hand(self):
         points = [(-.14, -.03, .90), (-.14, -.03, .90), (-.16, -.03, .92),
                   (-.16, -.03, .92), (-.29, 0, .90), (-.30, 0, .78), (.14, -.03, .90)]
@@ -198,6 +213,30 @@ class ClothingRepair(unittest.TestCase):
             self.assertGreater(np.linalg.norm(moved[i] - points[i]), .06)
         np.testing.assert_allclose(moved[[2, 3, 5]], np.array(points)[[2, 3, 5]], atol=1e-6)
         self.assertGreater(np.linalg.norm(moved[4] - points[4]), .1)
+        self.assert_normalized(obj)
+
+    def test_on_arms_held_out_the_mantle_over_the_arm_follows_it_wholly(self):
+        # a T-pose copy of model B: "above the elbow" was read by height, and an arm held out has its
+        # elbow at the shoulder's height: what lay 6 cm over the arm took half its weight and stood
+        # out as a wing at each shoulder once the arms came down
+        for obj in list(bpy.data.objects):
+            bpy.data.objects.remove(obj, do_unlink=True)
+        joints = {"hips": (0, 0, .8), "neck": (0, 0, 1.3), "head": (0, 0, 1.4)}
+        for side, sign in (("left", 1), ("right", -1)):
+            joints.update({f"{side}_upper_arm": (sign * .15, 0, 1.25), f"{side}_lower_arm": (sign * .40, 0, 1.25),
+                           f"{side}_hand": (sign * .62, 0, 1.25), f"{side}_upper_leg": (sign * .07, 0, .75),
+                           f"{side}_lower_leg": (sign * .07, 0, .4), f"{side}_foot": (sign * .07, 0, .08)})
+        self.arm = rig.build_armature(joints)
+        # over the left upper arm, just under it, far under it (the hem), the collar, past the elbow;
+        # and the arm's own surface where the first lies, to say where the arm carries it
+        points = [(.26, 0, 1.31), (.26, 0, 1.22), (.26, 0, 1.11), (0, 0, 1.33), (.46, 0, 1.31), (.26, 0, 1.31)]
+        obj = self.mesh(points, [{"Chest": 1}] * 5 + [{"LeftUpperArm": 1}])
+        loose.follow_shoulder_cloth(obj, self.arm, np.array([True] * 5 + [False]))
+        tpose._point_arm(self.arm, "LeftUpperArm", "LeftHand", Vector((.25, 0, -1)))
+        moved = deformed(obj)
+        np.testing.assert_allclose(moved[0], moved[5], atol=1e-4)
+        self.assertGreater(np.linalg.norm(moved[1] - points[1]), .06)
+        np.testing.assert_allclose(moved[[2, 3, 4]], np.array(points)[[2, 3, 4]], atol=1e-6)
         self.assert_normalized(obj)
 
     def test_hanging_sleeve_rides_upper_arm_and_keeps_other_groups(self):

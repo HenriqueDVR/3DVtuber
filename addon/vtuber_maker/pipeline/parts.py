@@ -60,6 +60,19 @@ SHADED_SIZE = 0.05
 SHADE_FLOOR = 0.7
 SHADES_SHARE = 0.7
 SHADES_PLAIN = 0.15
+# A piece of the hair's colour that goes all the way round the body below the middle of the trunk is
+# clothing, not hair: in a band ROUND_BAND (m) high it has ROUND_MIN vertices in at least ROUND_BODY
+# of ROUND_BINS directions from the line hips to neck. A tester's game model (white hair, white
+# dress, the dress one piece with the collar above the head joint): 19 088 vertices of dress, arms
+# and skirt were hair, 12 of 12 at the waist, and eleven chains hung her skirt from the head (33 cm
+# torn on a head turn, the skirt up at her chest on a nod). Hair to the hips goes 6 of 12 at most
+# there (OC3, OC3_Tpose); up at the shoulders it goes 10 (OC3), so only below the middle counts.
+ROUND_BINS = 12
+ROUND_BODY = 10
+ROUND_BAND = 0.02
+ROUND_MIN = 12
+# ... looked for from this far (m) under the hips up.
+ROUND_BELOW = 0.2
 
 
 # Ears and horns: a pair standing over the crown, one either side of it, each rising at least
@@ -188,6 +201,11 @@ def find(mesh_obj, joints, eyes_at=None):
                   and (share[p] >= HAIR_SHARE
                        or (shades[p] >= SHADES_SHARE and share[p] >= SHADES_PLAIN)
                        or (shaded[p] >= SHADED_SHARE and size[p] >= SHADED_SIZE * len(verts) and low[p][2] < joints["neck"][2]))]
+    worn = [p for p in hair_parts if low[p][2] < (joints["hips"][2] + joints["neck"][2]) / 2
+            and goes_round_body(verts[labels == p], joints)]
+    if worn:
+        print(f"hair: {int(np.isin(labels, worn).sum())} vertices of the hair's colour go round the body: clothing, left off the hair")
+        hair_parts = [p for p in hair_parts if p not in worn]
     hair = np.isin(labels, hair_parts)
     face_area = labels == face
     if face >= 0 and low[face][2] < joints["neck"][2] - head_height:
@@ -246,6 +264,25 @@ def find(mesh_obj, joints, eyes_at=None):
             hair |= fused
         face_area &=(verts[:, 2] > joints["neck"][2]) & ~hair
     return MeshParts(labels, hair, face, eyes, mouth, hair_color, face_area)
+
+
+def goes_round_body(points, joints):
+    """Whether `points` (one piece's vertices) ring the body somewhere below the middle of the trunk:
+    see ROUND_BODY. Assumes the normalized frame, standing; hair down the back or over both
+    shoulders doesn't, a dress, a belt or a skirt does."""
+    a, b = np.asarray(joints["hips"], dtype=float), np.asarray(joints["neck"], dtype=float)
+    points = points[(points[:, 2] >= a[2] - ROUND_BELOW) & (points[:, 2] < (a[2] + b[2]) / 2)]
+    if len(points) < ROUND_MIN:
+        return False
+    along = np.clip((points[:, 2] - a[2]) / max(float(b[2] - a[2]), 1e-12), 0.0, 1.0)
+    axis = a + along[:, None] * (b - a)
+    direction = np.floor((np.arctan2(points[:, 0] - axis[:, 0], points[:, 1] - axis[:, 1]) + np.pi)
+                         / (2 * np.pi) * ROUND_BINS).astype(np.int64) % ROUND_BINS
+    band = np.floor((points[:, 2] - (a[2] - ROUND_BELOW)) / ROUND_BAND).astype(np.int64)
+    for k in np.flatnonzero(np.bincount(band) >= ROUND_MIN):
+        if len(np.unique(direction[band == k])) >= ROUND_BODY:
+            return True
+    return False
 
 
 def _smooth_onward(mesh_obj, verts, skin, allowed):

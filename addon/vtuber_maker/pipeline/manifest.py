@@ -64,7 +64,10 @@ OPTIONS = {
     "skinning": "heat",       # "heat" (bone heat and the arm/body rules), "template" (template_skin.py) or "voxel" (voxel_skin.py, same rules)
     "tpose": "spec",          # "spec" (spec hands, straight fingers), "plain" or "none"
     "repair_shoulder_seams": True,
-    "eyes": None,             # eye tracking: "iris" (moving iris), "modelled" (the model's own iris discs slide),
+    "auto_pieces": False,     # true: the pieces step also gives each piece the arms leave behind or tear the role the
+                              # movement check suggests for it (follow_bone, shoulder_cloth, fitted_skirt), found on
+                              # the modelled pose; pieces named here keep their own. Off: only the pieces named here
+    "eyes": None,            # eye tracking: "iris" (moving iris), "modelled" (the model's own iris discs slide),
                               # "slide" (painted patch), "none" (still, they blink),
                               # "hidden" (behind a visor or glasses: not marked, no blink); None: from the survey
     "slide": [],              # with "slide": [horizontal, vertical] travel in mm
@@ -85,6 +88,8 @@ OPTIONS = {
     "licence_read": False,    # a .vrm whose licence has to be read before it is changed (VRM 0.x): the user has, and may
     "facing": None,           # None: front and back are found from the feet (orient.py); "file": the model
                               # faces the way its file has it, for one the app turned around
+    "keep_rig": None,         # a model that came whole (an MMD model as FBX): None or true keeps its skeleton, weights,
+                              # swinging bones and face shapes (pipeline/kept.py); false builds it as a bare surface
 }
 FACING = (None, "file")
 IRIS_SHAPE = (None, "circle", "oval")
@@ -118,20 +123,43 @@ def improves(data):
     return str(data.get("source") or "").lower().endswith(".vrm")
 
 
+# Skeletons that are a whole character's own, face shapes and swinging bones and all (rig_kind's names).
+KEPT_RIGS = ("MMD",)
+
+
+def keeps_rig(data):
+    """Whether this character's source came whole and is taken in with its own rig (pipeline/kept.py):
+    an FBX carrying one of KEPT_RIGS, unless the option `keep_rig` says no. A tester's game model was
+    built as a bare surface and lost its weights, its 400 bones and its 117 face shapes to it."""
+    if (data.get("options") or {}).get("keep_rig") is False or not str(data.get("source") or "").lower().endswith(".fbx"):
+        return False
+    source = path_of(data, "source")
+    return source is not None and rig_kind(source) in KEPT_RIGS
+
+
+def taken_in(data):
+    """Whether the build takes this character in as it came (a finished .vrm, or a model with its
+    own rig) instead of rigging a bare surface: the steps that make a rig, a face or hair don't run."""
+    return improves(data) or keeps_rig(data)
+
+
 # The options such a character reads. The others belong to steps that don't run on one (the app's
 # engine.KEPT): a tester set `skinning` on a VRoid file and compared four identical exports.
 VRM_OPTIONS = ("licence_read", "chest", "chest_amount")
+# ... and the ones a model taken in with its own rig reads.
+KEPT_OPTIONS = ("keep_rig", "height", "tpose", "repair_shoulder_seams", "hair_hits_body")
 
 
 def inert(data):
     """The options set away from their defaults that change nothing in this character's avatar:
     none for a model, every one outside VRM_OPTIONS for a finished .vrm. One left at null was not
     chosen (`mouth_fix` in a manifest written before it had a default)."""
-    if not improves(data):
+    if not taken_in(data):
         return []
     options = data.get("options") or {}
+    read = VRM_OPTIONS if improves(data) else KEPT_OPTIONS
     return sorted(key for key, default in OPTIONS.items()
-                  if key not in VRM_OPTIONS and options.get(key, default) not in (default, None))
+                  if key not in read and options.get(key, default) not in (default, None))
 
 
 def carries_rig(path):
@@ -143,7 +171,9 @@ def carries_rig(path):
 
 # The hip bone's name in the skeletons adopt.py reads, by the tool that names it so.
 TRIPO_RIG = "Tripo / VRoid"
-RIG_MARKERS = {b"J_Bip_C_Hips": TRIPO_RIG, b"mixamorig:Hips": "Mixamo", b"CC_Base_Hip": "Character Creator / AccuRig"}
+RIG_MARKERS = {b"J_Bip_C_Hips": TRIPO_RIG, b"mixamorig:Hips": "Mixamo", b"CC_Base_Hip": "Character Creator / AccuRig",
+               # an MMD model: as the Cats plugin renames its bones (most game models passed round), or in Japanese
+               b"Left elbow": "MMD", "左ひじ".encode(): "MMD"}
 
 
 def rig_kind(path):
@@ -156,6 +186,19 @@ def rig_kind(path):
     path = Path(path)
     if path.suffix.lower() != ".fbx" or not path.is_file():
         return None
+    # asked on every look at a character's status: read once for a file as it is now
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if key not in _RIG_KINDS:
+        _RIG_KINDS.clear()
+        _RIG_KINDS[key] = _read_rig_kind(path)
+    return _RIG_KINDS[key]
+
+
+_RIG_KINDS = {}
+
+
+def _read_rig_kind(path):
     keep, tail = max(map(len, RIG_MARKERS)), b""
     with path.open("rb") as f:
         while chunk := f.read(1 << 20):
@@ -311,7 +354,7 @@ def validate(data):
                          ("iris_shape", IRIS_SHAPE), ("eye_shown", EYE_SHOWN)):
         if options.get(key, OPTIONS[key]) not in allowed:
             problems.append(f"option {key} must be one of {', '.join('null (automatic)' if a is None else a for a in allowed)}")
-    for key in ("chest", "hair_hits_body", "licence_read"):
+    for key in ("chest", "hair_hits_body", "licence_read", "auto_pieces"):
         if not isinstance(options.get(key, OPTIONS[key]), bool):
             problems.append(f"option {key} must be true or false")
     amount = options.get("chest_amount", OPTIONS["chest_amount"])

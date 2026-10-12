@@ -36,6 +36,15 @@ VERTEX_ARM_SHARE = 0.4
 # Arm weight below the hips this far (fraction of the height) from the arm's bones isn't a sleeve's
 # (hang_from_torso): model D's cape hem is 0.5 from them, a cuff by a hanging hand under 0.1.
 ARM_REACH = 0.15
+# Cloth taken back onto the torso changes from one torso bone to the next over at least this share
+# of its distance from the spine (HANG_SAMPLES heights about its own averaged): a turn of the spine
+# moves a point by that distance, so far out a handover as short as the body's own shears the
+# cloth. Model D's cape went from Hips to Spine within 7 cm of height, 29 cm out: 6.6 cm of stretch
+# in a twist, 14 edges folded in a side bend, a step in its outline. At a half it shears about as
+# her body under it does (7 cm of handover 12 cm out). Averaged upward only, to keep every bone below
+# the cloth out of it, the cape left the hips above its chains' roots and stretched 5.6 cm there.
+HANG_BLEND = 0.5
+HANG_SAMPLES = 9
 # ... and it is at least this fraction of the height long (boots and soles aren't cloth).
 MIN_CLOTH_LENGTH = 0.2
 # Chains hanging less than this fraction of the height below the hips aren't worth swinging.
@@ -168,7 +177,8 @@ def hang_from_torso(mesh_obj, armature, joints, skip=None, force=None):
     counts when it passes that function's tests for hanging cloth (or is named in `force`) and
     most of what hangs below the hips is on an arm from further than ARM_REACH: a sleeve's cuff
     below the hips is by the hand. All of the piece's shoulder and arm weight then goes to the
-    torso bone at its height, so it hangs from the chest and the arms move free under it. Run
+    torso bones at its height (changing from one to the next the slower the further out it hangs,
+    HANG_BLEND), so it hangs from the chest and the arms move free under it. Run
     before `build_cloth_chains`, on the rig's own weights; `skip` as there.
     """
     from .loose import _blend_skinning
@@ -208,7 +218,11 @@ def hang_from_torso(mesh_obj, armature, joints, skip=None, force=None):
                 or np.mean((arm_share[below] > VERTEX_ARM_SHARE) & (arm_distance[below] > ARM_REACH * height)) < 0.5):
             continue
         for index in np.flatnonzero(members & (arm_share > 0)):
-            target = _torso_weights(mesh_obj.vertex_groups, torso, verts[index, 2])
+            span = HANG_BLEND * float(np.linalg.norm(verts[index, :2] - j["hips"][:2]))
+            target = {}
+            for z in np.linspace(verts[index, 2] - span / 2, verts[index, 2] + span / 2, HANG_SAMPLES):
+                for group, weight in _torso_weights(mesh_obj.vertex_groups, torso, float(z)).items():
+                    target[group] = target.get(group, 0.0) + weight / HANG_SAMPLES
             for group in arm_groups:
                 mesh_obj.vertex_groups[group].remove([int(index)])
             _blend_skinning(mesh_obj, armature, int(index), target, float(arm_share[index]))

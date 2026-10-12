@@ -6,7 +6,9 @@ Acts on the "pieces" roles (fitted_skirt, shoulder_cloth, follow_bone, detail; s
 pipeline/manifest.py) on the modelled A-pose, before the T-pose bake. The pieces are found on
 the manifest's `reference` model (else its `source`), which must be the unmodified model the
 rig was built from. Hands (other than vertices of the named pieces), shape keys and UVs are
-checked unchanged; nothing is deleted.
+checked unchanged; nothing is deleted. A piece marked `found` was given its role by the movement
+check, not by the user (the app's option auto_pieces): with any such piece the rig is measured
+before and after (loose.worst_stretch), and a tear refuses the whole step, as the tidy-up's does.
 Refuses an existing output and a posed rig. Writes a JSON report next to the output.
 """
 import argparse
@@ -18,7 +20,7 @@ import bpy
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
-from vtuber_maker.pipeline import manifest, roles, vrm_export  # noqa: E402
+from vtuber_maker.pipeline import loose, manifest, roles, vrm_export  # noqa: E402
 
 
 def main():
@@ -43,12 +45,18 @@ def main():
         masks = roles.find(mesh, named, ref)
     clothing = np.any([masks[p["name"]] for p in pieces], axis=0)
     hands = roles.hands_snapshot(mesh, exclude=clothing)
+    found = [p["name"] for p in pieces if p.get("found")]
+    before = loose.worst_stretch([mesh], arm) if found else {}
     report, origin = roles.apply(mesh, arm, pieces, masks)
+    torn = loose.tore(before, loose.worst_stretch([mesh], arm)) if found else []
+    if torn:
+        sys.exit("the roles found for pieces by themselves (" + ", ".join(found) + ") tore the rig: "
+                 + "; ".join(f"{pose} {was * 100:.1f} -> {now * 100:.1f} cm" for pose, was, now in torn) + ": nothing saved")
     if roles.hands_snapshot(mesh, origin, exclude=clothing) != hands:
         sys.exit("the piece roles changed the hands' geometry, keys, weights or UVs: nothing saved")
     report = {"source": bpy.data.filepath, "manifest": str(args.manifest.resolve()),
               "pieces": {p["name"]: {"role": p["role"], "vertices": int(masks[p["name"]].sum())} for p in named},
-              "changed": report, "hands_unchanged": True}
+              "changed": report, "hands_unchanged": True, "found": found}
     print("VTUBER_MAKER_PIECES " + json.dumps(report))
     args.out_blend.with_suffix(".json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     vrm_export.ensure_vrm_addon()

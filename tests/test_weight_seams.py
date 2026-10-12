@@ -232,6 +232,18 @@ class ChainsAreNotTornFromWhatTheyHangOn(unittest.TestCase):
         self.assertEqual(loose.share_seam_copies(cut), 0)
         self.assertEqual(self.weights(cut, 0), {"RightUpperLeg": 1.0})
 
+    def test_a_bake_that_parts_copies_on_one_bone_is_counted(self):
+        # model A's lower back, 2026-10-07: the bake moved one copy of 30 seam vertices and not its twin
+        obj = self.seam("Spine", "Spine")
+        copy, twin = loose.seam_copies_on_one_bone(obj)
+        self.assertEqual((copy.tolist(), twin.tolist()), ([3, 4], [0, 1]))
+        self.assertEqual(loose.parted_copies(obj, copy, twin), 0)
+        obj.data.vertices[3].co.z += 0.004
+        self.assertEqual(loose.parted_copies(obj, copy, twin), 1)
+        # the two sides of a cut are meant to part in the bake: not among the seams that must stay closed
+        cut = self.seam("RightUpperLeg", "LeftLowerArm")
+        self.assertEqual(len(loose.seam_copies_on_one_bone(cut)[0]), 0)
+
     def test_a_copy_on_the_body_keeps_its_own_weights(self):
         # the other side of a cut that is meant to part (a sleeve cut free of the skirt)
         obj = self.seam("Cloth0_0", "LeftLowerArm")

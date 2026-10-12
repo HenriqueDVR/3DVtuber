@@ -24,7 +24,7 @@ import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 
-from vtuber_maker.pipeline import hand_setup, loose, tpose, vrm_export  # noqa: E402
+from vtuber_maker.pipeline import hand_setup, loose, rig, tpose, vrm_export  # noqa: E402
 
 
 def parse_args(argv=None):
@@ -60,6 +60,8 @@ def main():
             # past the shoulders too: any copies on one bone that an earlier step left a little apart
             shared = loose.share_seam_copies(mesh)
             print(f"{mesh.name}: {shared} copies of vertices along texture seams given one set of weights")
+    # the seams that must come out of the bake as they went in: copies of a vertex led by one bone
+    seams = [(mesh, *loose.seam_copies_on_one_bone(mesh)) for mesh in meshes]
     down = math.radians(args.angle)
     direction = (math.cos(down), 0.0, -math.sin(down))
     turned = tpose.to_t_pose(meshes[0], armature, direction=direction, extra_meshes=meshes[1:],
@@ -73,6 +75,16 @@ def main():
         print(f"{side} arm raised {angle:.1f} degrees")
     if not any(turned.values()):
         print("arms were already in the rest pose; nothing moved")
+    for mesh, copy, twin in seams:
+        parted = loose.parted_copies(mesh, copy, twin)
+        print(f"{mesh.name}: {parted} of {len(copy)} seam copies on one bone lie apart after the bake")
+        if parted:
+            sys.exit(f"{mesh.name}: {parted} copies of a vertex along a texture seam, led by one bone, lie apart after the "
+                     "bake: a slit in the surface. Their weights differ; --repair-shoulder-seams (the option "
+                     "repair_shoulder_seams) gives such copies one set. Nothing saved")
+    # after the bake, which moved every vertex by all its weights: from here the .blend is the rig the file holds
+    for mesh in meshes:
+        print(f"{mesh.name}: {rig.limit_influences(mesh, armature)} vertices left on their four strongest bones, as the file holds them")
 
     vrm_export.ensure_vrm_addon()
     bpy.ops.wm.save_as_mainfile(filepath=str(args.out_blend.resolve()), copy=True)

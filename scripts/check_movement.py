@@ -16,7 +16,9 @@ turns out from under. A piece under the neck that goes with the head while what 
 is found the same way. Nearness to a bone can't tell that apart: an A-pose arm hangs beside the
 chest, and model B's brooch and model A's corset trims sat nearer the upper arm than any torso bone
 while rightly staying with the chest they sit on. A piece whose own edges stretch is torn
-(part goes, part stays: a skirt pulled up by the hands resting on it). Each finding gets the
+(part goes, part stays: a skirt pulled up by the hands resting on it). A piece that mostly stays
+while a hand hanging against it takes a patch of it along is found by that patch: behind a sleeve
+cut it goes with the wrist whole, no edge stretching (model A's skirt, 52 cm). Each finding gets the
 manifest role that fixed it last time. A piece left behind by a forearm or hand gets none: the
 hanging hand rested on it, and on model A (its 762-vertex waist piece) what was wrong was the part
 of the skirt the hand took along -- following the arm would have put the waist on it. Changes
@@ -36,7 +38,7 @@ from mathutils.kdtree import KDTree
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "addon"))
 
-from vtuber_maker.pipeline import manifest, meshdata, roles  # noqa: E402
+from vtuber_maker.pipeline import loose, manifest, meshdata, roles  # noqa: E402
 from vtuber_maker.pipeline.rig import BONE_NAMES  # noqa: E402
 
 # Where the left arm is pointed (shoulder to wrist; the right mirrors), as in check_avatar.py.
@@ -59,8 +61,13 @@ LEFT_SHARE = 0.35
 # past its first 10%, within DRAPE of it) are compared with where the upper arm would carry them rigidly (1 = with it, 0 = not
 # at all); a median under DRAPE_FOLLOWS over at least MIN_LEFT of them and DRAPE_SHARE of the piece
 # stays behind. Model B's mantle: 43 such vertices (4%), following 0 before its repair.
+# The limit stood at 0.3 until a T-pose copy of her was read at 0.33 and passed: her mantle went a
+# third of the way down with her arms and stood out as a wing at each shoulder (2026-10-11). The
+# builds that look right read 0.75 to 0.87 (her own mantle, arms hanging as modelled) and 0.98 (the
+# copy once its blend was right); every other piece over an arm, 0.96 to 1.0. Between a half and
+# 0.75 nothing has been seen either way.
 DRAPE = 0.12
-DRAPE_FOLLOWS = 0.3
+DRAPE_FOLLOWS = 0.5
 DRAPE_SHARE = 0.02
 MIN_TRAVEL = 0.03
 # A piece draped over both shoulders that reaches below this share of the hips' height is a cape,
@@ -72,6 +79,17 @@ SWINGS = ("hair", "swing_cloth", "appendage")
 SWINGING = 0.5
 # A piece is torn when one of its own edges grows by more than this (m): check_avatar.py's limit.
 TORN = 0.06
+# A hand takes a patch of a piece along when at least MIN_TAKEN of the piece's vertices in the
+# hand's reach (loose.hand_reach over REACH, the sleeve's own tube left out) travel further than
+# TAKEN (m) with the arms, while MOSTLY_STAYS of the piece moves under STILL (m). Model A built
+# without her skirt named: the sleeve cut freed a patch of the skirt under each wrist with the
+# sleeve, 3,142 vertices in reach of which the furthest went 52 cm with the arms out; no contact
+# was left behind and no edge stretched, so nothing here said a word.
+REACH = 0.5
+TAKEN = 0.05
+STILL = 0.01
+MIN_TAKEN = 20
+MOSTLY_STAYS = 0.5
 
 
 def main():
@@ -101,6 +119,8 @@ def main():
     same_piece = mapped[edges[:, 0]] == mapped[edges[:, 1]]
     rest_length = np.linalg.norm(rest[edges[:, 0]] - rest[edges[:, 1]], axis=1)
     partner = _partners(rest, mapped, CONTACT * scale)
+    in_reach = loose.hand_reach(arm, rest) > REACH
+    sleeves = {}  # label -> the piece's vertices on an arm's own sleeve, found when first asked for
 
     # the body bone each vertex is nearest, to name the bone a left-behind piece should follow
     body = [b for b in BONE_NAMES.values() if b in arm.data.bones]
@@ -210,6 +230,13 @@ def main():
             entry = {"left_behind": int(left.sum()), "stretch_cm": round(float(growth.max()) * 100, 1),
                      "moved_cm": round(float(np.linalg.norm(moved[members], axis=1).max()) * 100, 1)}
             row["poses"][pose] = entry
+            travel = np.linalg.norm(moved, axis=1)
+            taken = members & in_reach & (travel > TAKEN * scale)
+            if (pose.startswith("arms") and taken.sum() >= MIN_TAKEN and (travel[members] < STILL * scale).mean() >= MOSTLY_STAYS):
+                if int(label) not in sleeves:
+                    sleeves[int(label)] = loose.sleeve_tube(mesh, arm, members, rest)
+                taken &= ~sleeves[int(label)]
+                entry["taken"] = int(taken.sum())
             behind = bool(left.sum() >= max(MIN_LEFT, LEFT_SHARE * len(contact)))
             drape_bone = None
             # a collar rightly stays on the chest while the head turns out of it: only what sits
@@ -252,6 +279,10 @@ def main():
                                         "share": round(float(taken_along.mean()), 2)})
             elif entry["stretch_cm"] > TORN * scale * 100:
                 row["findings"].append({"pose": pose, "kind": "torn", "stretch_cm": entry["stretch_cm"]})
+            elif (entry.get("taken", 0) >= MIN_TAKEN and row.get("role") not in (*SWINGS, "fitted_skirt")
+                  and np.median(on_springs[members]) < SWINGING):
+                row["findings"].append({"pose": pose, "kind": "taken by a hand", "count": entry["taken"],
+                                        "moved_cm": round(float(travel[taken].max()) * 100, 1)})
         if row["findings"]:
             row["suggested"], row["why"] = _suggest(row, rest[members], shoulder_x, hips_z, looks.get(int(label)), named)
             # seen, and right as it is (a cape the arms move under): listed so the user knows it was
@@ -318,6 +349,11 @@ def _suggest(row, points, shoulder_x, hips_z, looks=None, named=None):
                         f"which the hand took along, may hang off the forearm (T-pose render): Fitted skirt on {taken}; "
                         f"if it is part of the sleeve or glove, give it Follows a bone, {side}LowerArm, on Parts")
         return "follow_bone", f"hangs from the {side.lower()} arm but stays when it moves: follow {side}UpperArm"
+    taken = [f for f in row["findings"] if f["kind"] == "taken by a hand"]
+    if taken and not torn:
+        most = max(taken, key=lambda f: f["count"])
+        return "fitted_skirt", (f"a hanging hand rests on it and takes {most['count']} of its vertices along "
+                                f"({most['moved_cm']:g} cm with the {most['pose']}) while the rest stays: a skirt the hands touch")
     # a skirt the hands rest on (model A's) sits about the hips; a coat tearing at the armpit isn't one
     if torn and points[:, 2].mean() < hips_z:
         return "fitted_skirt", "part of it goes with a hand resting on it and part stays: a skirt the hands touch"

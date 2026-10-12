@@ -25,6 +25,8 @@ FINGERS = ("Thumb", "Index", "Middle", "Ring", "Little")
 MOVED = 1e-5
 # Weight below this is the trace every smoothing pass leaves, not a bone holding the vertex
 HELD = 0.05
+# Vertices this close (metres) are at one place: the copies an import makes along a texture seam
+PLACE = 1e-5
 
 
 def fingerprint():
@@ -39,7 +41,7 @@ def fingerprint():
         mesh.polygons.foreach_get("material_index", used)
         names = [slot.material.name if slot.material else "" for slot in obj.material_slots] or [""]
         found["meshes"][obj.name] = {
-            "vertices": len(mesh.vertices), "polygons": len(mesh.polygons),
+            "vertices": len(mesh.vertices), "polygons": len(mesh.polygons), "open_edges": _open_edges(mesh),
             "materials": {names[i] if i < len(names) else str(i): int(n) for i, n in enumerate(np.bincount(used)) if n}}
         if not mesh.shape_keys:
             continue
@@ -60,6 +62,28 @@ def _positions(block):
     co = np.zeros(len(block.data) * 3)
     block.data.foreach_get("co", co)
     return co.reshape(-1, 3)
+
+
+def _open_edges(mesh):
+    """How many edges lie on the surface's border, vertices at one place counted as one: the two
+    copies of a vertex along a texture seam close the surface there, the two rims of a slit don't.
+    A step that moves one copy and not its twin opens edges without adding or removing anything."""
+    if not len(mesh.edges) or not len(mesh.loops):
+        return 0
+    co = np.zeros(len(mesh.vertices) * 3)
+    mesh.vertices.foreach_get("co", co)
+    _, place = np.unique(np.round(co.reshape(-1, 3) / PLACE).astype(np.int64), axis=0, return_inverse=True)
+    ends = np.zeros(len(mesh.edges) * 2, dtype=np.int64)
+    mesh.edges.foreach_get("vertices", ends)
+    ends = np.sort(place.ravel()[ends].reshape(-1, 2), axis=1)
+    of_loop = np.zeros(len(mesh.loops), dtype=np.int64)
+    mesh.loops.foreach_get("edge_index", of_loop)
+    faces = np.bincount(of_loop, minlength=len(ends))
+    _, joined = np.unique(ends, axis=0, return_inverse=True)
+    uses = np.bincount(joined.ravel(), weights=faces)
+    lengths = np.zeros(len(uses), dtype=bool)
+    lengths[joined.ravel()] = ends[:, 0] != ends[:, 1]
+    return int(((uses == 1) & lengths).sum())
 
 
 def _spring_bones(armature):

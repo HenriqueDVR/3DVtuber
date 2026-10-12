@@ -145,6 +145,11 @@ ARM_SPAN = (0.6, 1.0)
 # its height (arm lengths): arm weight is full within the first value and gone past the second,
 # so the torso's sides beside a hanging arm stay with the torso.
 ARM_INWARD = (0.2, 0.35)
+# What the arm gives up there goes to the vertex's other bones in their own proportions, but a bone
+# that is not the torso's (head, neck, a leg) gains at most this multiple of what it held from each
+# arm, and the torso takes the rest by height: a collar vertex with Head 0.003 beside shoulders 0.99 became Head
+# 1.0 next to neighbours on the chest, and the blur that follows smooths torso weights only.
+TAKEOVER_GAIN = 1.0
 # Cuts between sleeve and torso are stitched shut only within this many arm lengths of the
 # shoulder joint (the armpit); further down the sleeve simply parts from the torso.
 STITCH_REACH = 0.3
@@ -416,6 +421,7 @@ def _keep_arms_off_chest(mesh_obj, armature_obj, skip):
     body = (verts[:, 2] > torso[0][1]) & (verts[:, 2] < neck_z) & ~np.asarray(skip, dtype=bool)
     arms = {groups[BONE_NAMES[f"{s}_{k}"]].index for s in ("left", "right")
             for k in ("shoulder", "upper_arm", "lower_arm", "hand") if BONE_NAMES[f"{s}_{k}"] in groups}
+    trunk = {groups[name].index for name, _z in torso if name in groups}
     for side in ("left", "right"):
         joint = np.array(matrix @ bones[BONE_NAMES[f"{side}_upper_arm"]].head_local)
         span = abs(joint[0] - centre_x)
@@ -452,13 +458,20 @@ def _keep_arms_off_chest(mesh_obj, armature_obj, skip):
             if moved <= 1e-4:
                 continue
             new = {g: w * (1.0 - remove[g][i]) if g in remove else w for g, w in weights.items()}
-            # the torso (or whatever else, bar the arms, holds the vertex) takes over what the arm gives up
+            # the torso (or whatever else, bar the arms, holds the vertex) takes over what the arm gives
+            # up; what else holds a trace of it takes no more than TAKEOVER_GAIN of that trace
             rest = {g: w for g, w in weights.items() if g not in arms and w > 1e-6}
-            if sum(rest.values()) <= 1e-6:
-                rest = _torso_weights(groups, torso, verts[i, 2])
             total_rest = sum(rest.values())
+            left = moved
             for g, w in rest.items():
-                new[g] = new.get(g, 0.0) + moved * w / total_rest
+                share = moved * w / total_rest
+                if g not in trunk:
+                    share = min(share, TAKEOVER_GAIN * w)
+                new[g] = new.get(g, 0.0) + share
+                left -= share
+            if left > 1e-6:
+                for g, w in _torso_weights(groups, torso, verts[i, 2]).items():
+                    new[g] = new.get(g, 0.0) + left * w
             total = sum(new.values())
             for g in weights.keys() - {g for g, w in new.items() if w > 1e-6}:
                 groups[g].remove([i])
@@ -830,6 +843,44 @@ def fill_unweighted(mesh_obj, max_influences=4, skip=None):
             for i in empty:
                 assign(i, weights(weighted[tree.find(verts[i])[1]]))
     return filled_count
+
+
+# The bones a vertex can have in a .vrm (glTF's JOINTS_0); the export keeps the strongest.
+MOST_BONES = 4
+
+
+def limit_influences(mesh_obj, armature_obj, most=MOST_BONES):
+    """Leave each vertex on its `most` strongest bones, scaled up to what all of them held;
+    returns how many vertices lost a bone.
+
+    The file can't hold more, so the export drops the weakest and scales the rest up: a .blend
+    with more is not the rig that ships. Model B's had 1,675 of 29,292 vertices on up to 11 bones
+    (the tidy-up's averaging, the blur across a sleeve cut) and stood up to 19 mm from its own
+    .vrm once the arms moved, model A's 10 mm, the approved model A copy 18 mm; at rest all three
+    matched to 0.003 mm (2026-10-11). Every check, render and movement finding read on such a
+    .blend is of a rig no app ever loads. The bones kept are the ones the exporter keeps
+    (strongest first, equal ones in the order the vertex lists them), so the file is as it was.
+
+    Only groups named for a deforming bone count and change: marker groups stay. Run once the
+    pose is baked: a bake moves each vertex by all its weights, and dropping some before it
+    would move what ships.
+    """
+    deform = {bone.name for bone in armature_obj.data.bones if bone.use_deform}
+    groups = mesh_obj.vertex_groups
+    bones = {group.index for group in groups if group.name in deform}
+    cut = 0
+    for vertex in mesh_obj.data.vertices:
+        held = [(g.group, g.weight) for g in vertex.groups if g.group in bones and g.weight > 0]
+        if len(held) <= most:
+            continue
+        held.sort(key=lambda item: -item[1])  # stable, as the exporter's own sort is
+        scale = sum(w for _, w in held) / sum(w for _, w in held[:most])
+        for group, _ in held[most:]:
+            groups[group].remove([vertex.index])
+        for group, weight in held[:most]:
+            groups[group].add([vertex.index], weight * scale, "REPLACE")
+        cut += 1
+    return cut
 
 
 def _keep_arms_off_parts(mesh_obj, armature_obj, labels, skip):
@@ -1352,6 +1403,11 @@ def weight_head(mesh_obj, armature_obj, face_mask, labels=None, chin_z=None, beh
 
 # The height (m) about the head joint over which the rest of the head is handed to it.
 COLUMN_BLEND = 0.06
+# ... and how far before or behind the joint, in shoulder joints' distances from the neck: all of it
+# within the first, none past the second. The head's own reaches 1.2 behind (the pirate's hair and hat,
+# 20 cm) and 1.6 before (model B's collar, 25 cm); the end of a tail held up behind the pirate lay 3.1 to
+# 4.4 away (50 to 70 cm), went to the head and stretched 21.7 cm from its root when the head turned.
+COLUMN_DEPTH = (1.75, 2.25)
 
 
 def follow_head_column(mesh_obj, armature_obj, chin_z=None, skip=None):
@@ -1363,7 +1419,8 @@ def follow_head_column(mesh_obj, armature_obj, chin_z=None, skip=None):
     heat) the top half of the head turned and the lower half lagged behind it. Vertices from
     half of COLUMN_BLEND above the joint (or the chin, when lower) take the head fully, fading in
     from as far below it; what the head holds already stays. Only within the shoulder joints' width of the neck:
-    hands and sleeves held up beside the head are not it. `skip` masks vertices left as they are
+    hands and sleeves held up beside the head are not it; and only within COLUMN_DEPTH of it before
+    and behind: a tail raised behind the head is not it either. `skip` masks vertices left as they are
     (hair, which gets its own chains). Returns the number of vertices changed.
     """
     groups = mesh_obj.vertex_groups
@@ -1378,6 +1435,8 @@ def follow_head_column(mesh_obj, armature_obj, chin_z=None, skip=None):
     # the face's 2 cm above it (the pirate's hair beside his jaw: 90 edges over 3 cm on a head turn)
     share = np.clip((verts[:, 2] - head_z + COLUMN_BLEND / 2) / COLUMN_BLEND, 0.0, 1.0)
     share[np.abs(verts[:, 0] - joint.x) >= reach] = 0.0
+    near, far = COLUMN_DEPTH
+    share *= np.clip((far - np.abs(verts[:, 1] - joint.y) / max(reach, 1e-6)) / (far - near), 0.0, 1.0)
     if skip is not None:
         share[np.asarray(skip, dtype=bool)[:len(share)]] = 0.0
     changed = 0

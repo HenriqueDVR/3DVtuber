@@ -47,6 +47,8 @@ LIMB_JOINTS = {side + name for side in ("Left", "Right")
 # with the arms raised. Joining shells at the armpit stretches too, by design: model B's 7.0 -> 13.6 cm.
 GUARD_ARMS = {"arms T-pose": (1, 0, 0), "arms forward": (0.3, -1, -0.3), "arms raised": (0.5, 0, 1)}
 TEARS = 0.2
+# Copies of a vertex further apart than this (m) after a bake are no longer one place (parted_copies)
+SLIT = 1e-4
 
 
 def synchronize_shoulder_seams(mesh_obj, armature_obj, reach=0.4):
@@ -613,6 +615,33 @@ def share_seam_copies(mesh_obj, verts=None):
     return int(len(touched))
 
 
+def seam_copies_on_one_bone(mesh_obj, verts=None):
+    """(copy, twin): each vertex that lies where an earlier one does, at a place whose copies are all
+    led by one and the same bone, and that first vertex. The seams share_seam_copies closes: read
+    before a step that moves the mesh, they say afterwards whether it opened one (parted_copies).
+    The two sides of a cut, led by different bones, are not among them."""
+    verts = world_vertices(mesh_obj) if verts is None else verts
+    count = len(verts)
+    weld, _, _ = welded_edges(mesh_obj, verts)
+    weights = _weight_table(mesh_obj, count)
+    leader = np.argmax(weights, axis=0)
+    leader[weights.max(axis=0) <= 0.0] = -1
+    low, high = np.full(count, len(weights)), np.full(count, -2)
+    np.minimum.at(low, weld, leader)
+    np.maximum.at(high, weld, leader)
+    copy = np.flatnonzero((low[weld] == high[weld]) & (low[weld] >= 0) & (weld != np.arange(count)))
+    return copy, weld[copy]
+
+
+def parted_copies(mesh_obj, copy, twin):
+    """How many of the copies (seam_copies_on_one_bone, read earlier) no longer lie with their twin,
+    by over SLIT. The T-pose bake moved one copy of 30 seam vertices across model A's lower back
+    and not its twin (6 to 12% of an upper arm on the one, none on the other): a slit above her
+    belt, under her hair at rest, that no pose measured and no contact sheet showed."""
+    verts = world_vertices(mesh_obj)
+    return int((np.linalg.norm(verts[copy] - verts[twin], axis=1) > SLIT).sum())
+
+
 def _patches_of(leader, weld, edge_a, edge_b, count):
     """Connected runs of vertices that share a leading bone."""
     label = np.arange(count)
@@ -654,23 +683,11 @@ def restore_skirt_weights(mesh_obj, armature_obj, garment):
     from . import rig
     verts = world_vertices(mesh_obj)
     garment = np.asarray(garment, dtype=bool)
-    strength = np.zeros(len(verts))
     bones, matrix = armature_obj.data.bones, armature_obj.matrix_world
     sleeve = _sleeve_tube(mesh_obj, armature_obj, verts, garment)
-    for side, sign in (("Left", 1), ("Right", -1)):
-        lower = bones[side + "LowerArm"]
-        elbow = np.array(matrix @ lower.head_local)
-        wrist = np.array(matrix @ lower.tail_local)
-        shoulder = np.array(matrix @ bones[side + "UpperArm"].head_local)
-        length = np.linalg.norm(elbow - shoulder) + np.linalg.norm(wrist - elbow)
-        if elbow[2] - wrist[2] < .1 * length:
-            raise ValueError("skirt repair requires the modelled arms-down pose, not a baked T-pose")
-        along = np.clip((elbow[2] - verts[:, 2]) / (elbow[2] - wrist[2]), 0, 1)
-        axis_x = elbow[0] + along * (wrist[0] - elbow[0])
-        inward = sign * (axis_x - verts[:, 0]) / length
-        medial = rig._smoothstep((inward - .015) / .055)
-        below = rig._smoothstep((elbow[2] + .02 * length - verts[:, 2]) / (.10 * length))
-        strength = np.maximum(strength, medial * below * (sign * verts[:, 0] >= 0))
+    if not all(_hangs(armature_obj, side) for side in ("Left", "Right")):
+        raise ValueError("skirt repair requires the modelled arms-down pose, not a baked T-pose")
+    strength = hand_reach(armature_obj, verts)
     strength[sleeve] = 0
     torso = [(name, (matrix @ bones[name].head_local).z) for name in ("Hips", "Spine", "Chest", "UpperChest")]
     changed = 0
@@ -678,6 +695,47 @@ def restore_skirt_weights(mesh_obj, armature_obj, garment):
         target = rig._torso_weights(mesh_obj.vertex_groups, torso, verts[index, 2])
         changed += _blend_skinning(mesh_obj, armature_obj, int(index), target, float(strength[index]))
     return changed
+
+
+def _hangs(armature_obj, side):
+    """Whether this arm hangs, as modelled in an A-pose: its wrist well under its elbow."""
+    bones, matrix = armature_obj.data.bones, armature_obj.matrix_world
+    lower = bones[side + "LowerArm"]
+    elbow, wrist = np.array(matrix @ lower.head_local), np.array(matrix @ lower.tail_local)
+    shoulder = np.array(matrix @ bones[side + "UpperArm"].head_local)
+    return elbow[2] - wrist[2] >= .1 * (np.linalg.norm(elbow - shoulder) + np.linalg.norm(wrist - elbow))
+
+
+def hand_reach(armature_obj, verts):
+    """How far each vertex lies in where a hanging hand rests on what is beside it (0 to 1): inside
+    the forearm, toward the body, from just above the elbow down. What is there and isn't the
+    sleeve belongs to the body: restore_skirt_weights returns a garment's part of it to the torso,
+    and the movement check counts what travels with the arm from it. Zero beside an arm that
+    doesn't hang (a T-pose) or isn't in the rig."""
+    from . import rig
+    strength = np.zeros(len(verts))
+    bones, matrix = armature_obj.data.bones, armature_obj.matrix_world
+    for side, sign in (("Left", 1), ("Right", -1)):
+        if side + "LowerArm" not in bones or side + "UpperArm" not in bones or not _hangs(armature_obj, side):
+            continue
+        lower = bones[side + "LowerArm"]
+        elbow = np.array(matrix @ lower.head_local)
+        wrist = np.array(matrix @ lower.tail_local)
+        shoulder = np.array(matrix @ bones[side + "UpperArm"].head_local)
+        length = np.linalg.norm(elbow - shoulder) + np.linalg.norm(wrist - elbow)
+        along = np.clip((elbow[2] - verts[:, 2]) / (elbow[2] - wrist[2]), 0, 1)
+        axis_x = elbow[0] + along * (wrist[0] - elbow[0])
+        inward = sign * (axis_x - verts[:, 0]) / length
+        medial = rig._smoothstep((inward - .015) / .055)
+        below = rig._smoothstep((elbow[2] + .02 * length - verts[:, 2]) / (.10 * length))
+        strength = np.maximum(strength, medial * below * (sign * verts[:, 0] >= 0))
+    return strength
+
+
+def sleeve_tube(mesh_obj, armature_obj, garment, verts=None):
+    """`_sleeve_tube` for callers outside this module: the garment's vertices on an arm's own sleeve."""
+    return _sleeve_tube(mesh_obj, armature_obj, world_vertices(mesh_obj) if verts is None else verts,
+                        np.asarray(garment, dtype=bool))
 
 
 def _sleeve_tube(mesh_obj, armature_obj, verts, garment):
@@ -751,7 +809,8 @@ def follow_shoulder_cloth(mesh_obj, armature_obj, garment):
     This is opt-in: a garment mask is required because hair and shoulder accessories
     can occupy the same space. The spatial ramps avoid a hard boundary in the cloth;
     lower cape spring weights, fingers, and unselected surfaces remain untouched.
-    Run on the modelled A-pose, not on already displaced cloth in a baked T-pose.
+    Run on the pose as modelled (arms hanging or held out), not on already displaced cloth in a
+    baked T-pose.
     """
     from . import rig
     verts = world_vertices(mesh_obj)
@@ -764,7 +823,18 @@ def follow_shoulder_cloth(mesh_obj, armature_obj, garment):
         wrist = np.array(matrix @ bones[side + "LowerArm"].tail_local)
         length = np.linalg.norm(elbow - shoulder) + np.linalg.norm(wrist - elbow)
         lateral = rig._smoothstep((sign * (verts[:, 0] - shoulder[0]) / length + .03) / .22)
-        above = rig._smoothstep((verts[:, 2] - elbow[2]) / (.25 * length))
+        # before the elbow: by height for an arm hanging beside the body, as ever; an arm held out
+        # (a T-pose) has its elbow at the shoulder's height, and by height only the half of the
+        # mantle lying over the arm took its weight: the half hanging under it stayed on the chest,
+        # a wing at each shoulder once the arms came down. There it is the place along the arm
+        upper = elbow - shoulder
+        reach = float(np.linalg.norm(upper))
+        if -upper[2] > rig.ARM_HANGS * reach:
+            above = rig._smoothstep((verts[:, 2] - elbow[2]) / (.25 * length))
+        else:
+            # ... and what hangs under the arm's line fades out as the hem does under a hanging elbow
+            along = rig._smoothstep((reach - (verts - shoulder) @ upper / max(reach, 1e-9)) / (.25 * length))
+            above = along * rig._smoothstep((verts[:, 2] - elbow[2] + .25 * length) / (.25 * length))
         distance = np.linalg.norm(verts - shoulder, axis=1) / length
         near = rig._smoothstep((.65 - distance) / .20)
         strength = lateral * above * near

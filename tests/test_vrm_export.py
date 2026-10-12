@@ -76,6 +76,18 @@ class ExportSyntheticCharacter(unittest.TestCase):
         with self.assertRaisesRegex(vrm_export.ExportMismatch, rf"1 joints are rotated \({hips}\)"):
             vrm_export.verify(turned, self.armature)
 
+    def test_a_file_whose_vertices_moved_is_refused(self):
+        # every joint where the rest pose has it and the surface 2 cm off: the other half of what the
+        # add-on's automatic pose did, which a look at the joints alone lets through
+        gltf, binary = vrm_export._read_glb(self.path)
+        accessor = gltf["accessors"][gltf["meshes"][0]["primitives"][0]["attributes"]["POSITION"]]
+        start = gltf["bufferViews"][accessor["bufferView"]].get("byteOffset", 0) + accessor.get("byteOffset", 0)
+        moved = np.frombuffer(binary, "<f4", accessor["count"] * 3, start).reshape(-1, 3) + np.float32((0.02, 0, 0))
+        binary = binary[:start] + moved.astype("<f4").tobytes() + binary[start + moved.nbytes:]
+        shifted = glb(FIXTURE_OUT / "synthetic_shifted.vrm", gltf, binary)
+        with self.assertRaisesRegex(vrm_export.ExportMismatch, r"vertices aren't on the mesh as it rests \(worst: 20\.0 mm\)"):
+            vrm_export.verify(shifted, self.armature)
+
     def test_declares_the_vrm_1_extension(self):
         self.assertIn("VRMC_vrm", self.gltf["extensionsUsed"])
 

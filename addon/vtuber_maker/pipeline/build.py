@@ -53,8 +53,10 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
     joints = landmarks.detect_body(meshdata.world_vertices(mesh), meshdata.triangles(mesh.data), warnings)
     joints.update(override)
     # the eye inserts are the pair where the eyes were marked, when they were
-    found = parts.find(mesh, joints, eyes_at=face_points.eye_places(mesh, points))
+    eyes_at = face_points.eye_places(mesh, points)
+    found = parts.find(mesh, joints, eyes_at=eyes_at)
     pieces = pieces or []
+    notes = []
     # found on the source as it came in, before any step adds or cuts vertices
     named = {}
     if pieces and pieces_reference:
@@ -62,6 +64,8 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
             named = roles.find(mesh, pieces, ref)
     elif pieces:
         named = roles.find(mesh, pieces)
+    if pieces and eyes_at is not None:
+        pieces = _off_the_face(pieces, named, found, notes)
     if pieces:
         found = found._replace(hair=roles.hair_mask(found.hair, pieces, named))
     joints = landmarks.refine_limbs(meshdata.world_vertices(mesh), meshdata.triangles(mesh.data), joints, exclude=found.hair)
@@ -218,6 +222,7 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
         "orientation": normalize.orientation_of(mesh),
         # what clothing hid, so a rig that comes out wrong can be traced to a guessed joint
         "warnings": [w for w in dict.fromkeys(warnings) if not override],
+        "notes": notes,
         "hair_chains": len(chains),
         "cloth_chains": len(cloth_chains),
         "hat_tip": bool(tip_chains),
@@ -227,6 +232,32 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
         "face_points": bool(points),
         "free_mouth": bool(free_mouth),
     }
+
+
+# A piece given one of these roles swings on springs.
+SWINGS = ("hair", "swing_cloth", "appendage")
+
+
+def _off_the_face(pieces, named, found, notes):
+    """`pieces` without the swinging roles given to the face the eyes are marked on, or to its eye and
+    mouth pieces: each one left out is said in `notes`.
+
+    Only called with the eyes marked: the marks are the user's own word for where the face is. A
+    listing made before them took the fox girl's inner ears for her eyes and suggested her face as
+    hair; a tester accepted every suggestion, and the face and all its shapes swung on hair chains.
+    A piece that is face and hair in one (the catgirl's) is mostly hair, and keeps its role.
+    """
+    inserts = [p for p in [found.mouth, *found.eyes.values()] if p >= 0]
+    facial = found.face_area | np.isin(found.labels, inserts)
+    kept = []
+    for piece in pieces:
+        mask = named[piece["name"]]
+        if piece["role"] in SWINGS and mask.any() and facial[mask].mean() > 0.5:
+            notes.append(f"piece {piece['name']} is the face the eyes are marked on (or an eye or the mouth): "
+                         f"not treated as {piece['role']}. Give it another role, or none, on the Parts page")
+            continue
+        kept.append(piece)
+    return kept
 
 
 def _share_on(mesh_obj, bone_names):

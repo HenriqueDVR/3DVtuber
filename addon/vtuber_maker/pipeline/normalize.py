@@ -63,10 +63,64 @@ def import_unrigged(path):
     return manifest.rig_of(path)
 
 
+# A picture's alpha counts as none with this share of the corners that use it opaque (kept.OPAQUE_SHARE).
+OPAQUE_SHARE = 0.99
+
+
+def opaque_where_used(objects):
+    """Take the alpha off every material whose picture is opaque wherever its polygons use it;
+    returns the names of those materials. Call before writing a GLB the app will show.
+
+    An FBX whose texture also cuts it imports with the picture's alpha wired in, and the GLB then
+    says BLEND of the whole model. A tester's flat-colour model (a palette, its unused cells clear)
+    was drawn in the app without depth: the hair down the back over the face, slivers of what lies
+    behind at every edge. Read at the polygons' corners, since the rest of a picture is often empty.
+    A picture clear anywhere it is used (lashes, a cut-out hem) keeps its alpha. Materials whose
+    alpha comes from no picture are left alone.
+    """
+    done = []
+    for obj in objects:
+        data = obj.data if obj.type == "MESH" else None
+        if data is None or data.uv_layers.active is None or not len(data.polygons):
+            continue
+        material, total = np.empty(len(data.polygons), np.int32), np.empty(len(data.polygons), np.int32)
+        data.polygons.foreach_get("material_index", material)
+        data.polygons.foreach_get("loop_total", total)
+        of_loop = np.repeat(material, total)
+        uv = np.empty(len(data.loops) * 2, np.float32)
+        data.uv_layers.active.data.foreach_get("uv", uv)
+        uv = uv.reshape(-1, 2)
+        for index, slot in enumerate(obj.material_slots):
+            tree = slot.material.node_tree if slot.material else None
+            bsdf = tree.nodes.get("Principled BSDF") if tree else None
+            links = [link for link in bsdf.inputs["Alpha"].links if link.from_node.type == "TEX_IMAGE"] if bsdf else []
+            image = links[0].from_node.image if links else None
+            at = uv[of_loop == index]
+            if image is None or not len(at) or not image.size[0] or slot.material.name in done:
+                continue
+            width, height = image.size
+            if image.channels == 4:
+                pixels = np.empty(width * height * 4, np.float32)
+                image.pixels.foreach_get(pixels)
+                alpha = pixels.reshape(height, width, 4)[..., 3]
+                at = at % 1.0
+                used = alpha[np.clip((at[:, 1] * height).astype(int), 0, height - 1), np.clip((at[:, 0] * width).astype(int), 0, width - 1)]
+                if (used > 0.95).mean() < OPAQUE_SHARE:
+                    continue
+            for link in links:
+                tree.links.remove(link)
+            bsdf.inputs["Alpha"].default_value = 1.0
+            if hasattr(slot.material, "blend_method"):
+                slot.material.blend_method = "OPAQUE"
+            done.append(slot.material.name)
+    return done
+
+
 def export_glb(path, rig=None):
     """Write the scene as a GLB for the texture steps; with `rig`, its glTF scene names that file
     (manifest.RIG_KEY), so the app given this GLB still finds the rig."""
     scene = bpy.context.scene
+    opaque_where_used(scene.objects)
     if rig is not None:
         scene[manifest.RIG_KEY] = str(Path(rig).resolve())
     elif manifest.RIG_KEY in scene:
