@@ -51,6 +51,20 @@ class NamesOfOtherRigs(unittest.TestCase):
         self.assertEqual((vroid["J_Bip_C_Hips"], vroid["J_Bip_L_UpperArm"]), ("Hips", "LeftUpperArm"))
         self.assertEqual(adopt.names(), adopt.names(["J_Bip_C_Hips"]))  # no names given: Tripo's, as before
 
+    def test_mmd_names_as_cats_and_as_pmx_give_them(self):
+        cats = adopt.names(["Hips", "Spine", "Chest", "Left arm", "Left elbow", "Right wrist", "Right knee", "Thumb0_L", "IndexFinger3_R"])
+        self.assertEqual([cats[n] for n in ("Left arm", "Left elbow", "Right wrist", "Right knee", "Left ankle", "Left shoulder")],
+                         ["LeftUpperArm", "LeftLowerArm", "RightHand", "RightLowerLeg", "LeftFoot", "LeftShoulder"])
+        self.assertEqual(cats["Thumb0_L"], fingers.bone_name("left", "thumb", "metacarpal"))
+        self.assertEqual(cats["IndexFinger3_R"], fingers.bone_name("right", "index", "distal"))
+        self.assertNotIn("Left toe", cats)  # lends to the foot it hangs from, as any unnamed bone
+        pmx = adopt.names(["下半身", "上半身", "左ひじ", "右足D"])
+        self.assertEqual([pmx[n] for n in ("下半身", "上半身", "上半身2", "左腕", "左ひじ", "右手首", "右足", "右足D", "左親指０", "右小指３")],
+                         ["Hips", "Spine", "Chest", "LeftUpperArm", "LeftLowerArm", "RightHand", "RightUpperLeg", "RightUpperLeg",
+                          fingers.bone_name("left", "thumb", "metacarpal"), fingers.bone_name("right", "little", "distal")])
+        self.assertTrue(adopt._lends_only("右足D", pmx))
+        self.assertFalse(adopt._lends_only("右足", pmx))
+
     def test_names_no_tool_uses_are_refused_by_name(self):
         with self.assertRaisesRegex(ValueError, "LeftUpperArm.*Mixamo"):
             adopt.required(adopt.names(["Bone", "Bone.001"]), ["Bone", "Bone.001"], "rig.fbx")
@@ -166,3 +180,52 @@ class ArmsOffTheHead(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+CATS = {"hips": "Hips", "spine": "Spine", "chest": "Chest", "neck": "Neck", "head": "Head", "shoulder": "shoulder",
+        "upper_arm": "arm", "lower_arm": "elbow", "hand": "wrist", "upper_leg": "leg", "lower_leg": "knee", "foot": "ankle"}
+
+
+class ReadCatsRig(unittest.TestCase):
+    """The fixture character rigged by us and renamed as Cats names an MMD model's bones, with no
+    upper chest (its weight on the chest, as such a rig has it)."""
+
+    @classmethod
+    def setUpClass(cls):
+        mesh, _ = load_fixture()
+        joints = landmarks.detect_body(meshdata.world_vertices(mesh), meshdata.triangles(mesh.data))
+        armature = rig.build_armature(joints)
+        rig.skin(mesh, armature)
+        cls.before = ReadMixamoRig.weights(mesh)
+        rig.make_active(armature)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bones = armature.data.edit_bones
+        for child in list(bones["UpperChest"].children):
+            child.parent = bones["Chest"]
+        bones.remove(bones["UpperChest"])
+        bpy.ops.object.mode_set(mode="OBJECT")
+        chest, upper = mesh.vertex_groups["Chest"], mesh.vertex_groups["UpperChest"]
+        for v in mesh.data.vertices:
+            moved = sum(g.weight for g in v.groups if g.group == upper.index)
+            if moved > 0:
+                chest.add([v.index], moved, "ADD")
+        mesh.vertex_groups.remove(upper)
+        for key, ours in BONE_NAMES.items():
+            if key == "upper_chest":
+                continue
+            side, _, part = key.partition("_") if key.startswith(("left_", "right_")) else ("", "", key)
+            armature.data.bones[ours].name = f"{side.capitalize()} {CATS[part]}" if side else CATS[part]
+        cls.bones, cls.surface, (cls.table, cls.order) = adopt.read(armature, [mesh], "fixture")
+
+    def test_every_body_bone_is_read_and_an_upper_chest_stands_between_chest_and_neck(self):
+        self.assertEqual(set(self.bones), set(BONE_NAMES.values()))
+        self.assertEqual((self.bones["UpperChest"][2], self.bones["Neck"][2]), ("Chest", "UpperChest"))
+        np.testing.assert_allclose(self.bones["UpperChest"][0], (self.bones["Chest"][0] + self.bones["Neck"][0]) / 2, atol=1e-9)
+        self.assertNotIn("UpperChest", self.order)
+
+    def test_the_weights_come_through_under_our_names(self):
+        total = sum(self.before.values())
+        for name in ("LeftLowerArm", "RightUpperLeg", "Head"):
+            np.testing.assert_allclose(self.table[:, self.order.index(name)], self.before[name] / np.maximum(total, 1e-9), atol=1e-5)
+        np.testing.assert_allclose(self.table[:, self.order.index("Chest")],
+                                   (self.before["Chest"] + self.before["UpperChest"]) / np.maximum(total, 1e-9), atol=1e-5)

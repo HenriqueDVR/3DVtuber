@@ -49,7 +49,23 @@ _CREATOR = ({"Hip": "hips", "Waist": "spine", "Spine01": "chest", "Spine02": "up
             {"Clavicle": "shoulder", "Upperarm": "upper_arm", "Forearm": "lower_arm", "Hand": "hand",
              "Thigh": "upper_leg", "Calf": "lower_leg", "Foot": "foot"},
             {"Thumb": "thumb", "Index": "index", "Mid": "middle", "Ring": "ring", "Pinky": "little"})
-KNOWN = "VRoid/Tripo (J_Bip_*), Mixamo, Character Creator/AccuRig (CC_Base_*), VRM humanoid names"
+# MMD models as the Cats plugin renames them, which is how most game models are passed round as FBX:
+# Hips, Spine, Chest, "Left arm", "Left elbow", "Left wrist", "Left leg", Thumb0_L, IndexFinger1_L.
+# A tester's (417 bones, 342 of them weighted) was built as if it had no rig at all.
+_CATS = ({"Hips": "hips", "Spine": "spine", "Chest": "chest", "Upper Chest": "upper_chest", "Neck": "neck", "Head": "head"},
+         {"shoulder": "shoulder", "arm": "upper_arm", "elbow": "lower_arm", "wrist": "hand",
+          "leg": "upper_leg", "knee": "lower_leg", "ankle": "foot"},
+         {"Thumb": "thumb", "IndexFinger": "index", "MiddleFinger": "middle", "RingFinger": "ring", "LittleFinger": "little"})
+# ... and under their own Japanese names, as mmd_tools imports a .pmx. The legs' weights are on the
+# "D" bones beside the legs (左足D), which hang from the hips: each lends to the leg it doubles.
+_PMX = ({"下半身": "hips", "上半身": "spine", "上半身2": "chest", "上半身3": "upper_chest", "首": "neck", "頭": "head"},
+        {"肩": "shoulder", "腕": "upper_arm", "ひじ": "lower_arm", "手首": "hand", "足": "upper_leg", "ひざ": "lower_leg", "足首": "foot"},
+        {"親指": "thumb", "人指": "index", "中指": "middle", "薬指": "ring", "小指": "little"})
+_PMX_DOUBLES = ("足", "ひざ", "足首")
+KNOWN = ("VRoid/Tripo (J_Bip_*), Mixamo, Character Creator/AccuRig (CC_Base_*), MMD (Cats' English names or Japanese), "
+         "VRM humanoid names")
+# Bones a humanoid needn't have: one is put between its neighbours, holding no weight (see `read`).
+OPTIONAL = ("upper_chest",)
 # The source and the rig's mesh must agree this closely (95th percentile, m) once both are normalized.
 MATCH = 0.01
 # The face follows the head alone in front of the Head joint, fading to the rig's own weights over
@@ -63,8 +79,8 @@ def names(found=None):
     """{rig bone name: our bone name} under the naming the rig uses: whichever known one
     (KNOWN) names the most of `found`, the rig's bone names. Without `found`, Tripo's.
 
-    Only Tripo's has been through real builds (model C); the others are read by name alone and
-    tested on a renamed synthetic rig. A bone no table names (a twist or helper bone) lends its
+    Only Tripo's has been through real builds (model C), and Cats' through a tester's game model;
+    the others are read by name alone and tested on a renamed synthetic rig. A bone no table names (a twist or helper bone) lends its
     weights to the nearest named bone up its chain: see `read`.
     """
     if found is None:
@@ -72,7 +88,8 @@ def names(found=None):
     found = set(found)
     prefix = next((m.group(0) for m in (re.match(r"mixamorig\d*:", name) for name in found) if m), "")
     return max((_vroid(), _numbered(prefix, "{side}", ("Left", "Right"), *_MIXAMO),
-                _numbered("CC_Base_", "{side}_", ("L", "R"), *_CREATOR), _humanoid()), key=lambda table: len(found & set(table)))
+                _numbered("CC_Base_", "{side}_", ("L", "R"), *_CREATOR), _cats(), _pmx(), _humanoid()),
+               key=lambda table: len(found & set(table)))
 
 
 def _vroid():
@@ -101,6 +118,34 @@ def _numbered(prefix, side_form, sides, torso, limbs, finger_names):
     return table
 
 
+def _cats():
+    table = {k: BONE_NAMES[v] for k, v in _CATS[0].items()}
+    for side in ("left", "right"):
+        table.update({f"{side.capitalize()} {k}": BONE_NAMES[f"{side}_{v}"] for k, v in _CATS[1].items()})
+        for stem, finger in _CATS[2].items():
+            # the thumb counts from 0, the others from 1
+            for number, segment in enumerate(fingers._segments(finger), 0 if finger == "thumb" else 1):
+                table[f"{stem}{number}_{side[0].upper()}"] = fingers.bone_name(side, finger, segment)
+    return table
+
+
+def _pmx():
+    table = {k: BONE_NAMES[v] for k, v in _PMX[0].items()}
+    for mark, side in (("左", "left"), ("右", "right")):
+        table.update({mark + k: BONE_NAMES[f"{side}_{v}"] for k, v in _PMX[1].items()})
+        table.update({f"{mark}{k}D": BONE_NAMES[f"{side}_{_PMX[1][k]}"] for k in _PMX_DOUBLES})
+        for stem, finger in _PMX[2].items():
+            for number, segment in zip("０１２" if finger == "thumb" else "１２３", fingers._segments(finger)):
+                table[f"{mark}{stem}{number}"] = fingers.bone_name(side, finger, segment)
+    return table
+
+
+def _lends_only(name, table):
+    """Bones that map to one of ours only to hand it their weights: the skeleton's joint is another's."""
+    return (name == "Root" or name.startswith("J_Adj") or name.endswith("ToeBase")
+            or (name.endswith("D") and name[:-1] in table and name[:1] in "左右"))
+
+
 def _humanoid():
     # a rig already under VRM's humanoid names, which are ours: UniVRM's, or one this pipeline exported
     table = {name: name for name in BONE_NAMES.values()}
@@ -114,7 +159,7 @@ def _humanoid():
 def required(table, found, path):
     """Raise ValueError unless the rig has every body bone under names the table knows."""
     have = {table[name] for name in found if name in table}
-    missing = sorted(set(BONE_NAMES.values()) - have)
+    missing = sorted(set(BONE_NAMES.values()) - have - {BONE_NAMES[key] for key in OPTIONAL})
     if missing:
         raise ValueError(f"{path}: the rig has no {', '.join(missing)} under any bone naming the app knows ({KNOWN}). "
                          "Clear the rig to let the app place the skeleton itself")
@@ -158,13 +203,22 @@ def read(armature, meshes, path, height=1.6):
         lends[bone.name] = table[up.name] if up is not None else BONE_NAMES["hips"]
         ours = table.get(bone.name)
         # Root, the eye helpers and the toes only lend their weights to the bone they map to
-        if ours is None or bone.name == "Root" or bone.name.startswith("J_Adj") or bone.name.endswith("ToeBase"):
+        if ours is None or _lends_only(bone.name, table):
             continue
         head, tail = ((world @ np.array([*p, 1.0]))[:3] for p in (bone.head_local, bone.tail_local))
         parent = bone.parent
         while parent is not None and (parent.name not in table or table[parent.name] == ours):
             parent = parent.parent
-        raw[ours] = (head, tail, table[parent.name] if parent is not None else None)
+        # an MMD skeleton hangs the upper body beside the hips (下半身), not from them
+        root = None if ours == BONE_NAMES["hips"] else BONE_NAMES["hips"]
+        raw[ours] = (head, tail, table[parent.name] if parent is not None else root)
+    chest, upper, neck = (BONE_NAMES[key] for key in ("chest", "upper_chest", "neck"))
+    if upper not in raw and chest in raw and neck in raw:
+        # VRM's upper chest is optional and MMD rigs have none; the steps after this name it, so one
+        # stands halfway from chest to neck with no weight of its own
+        middle = (raw[chest][0] + raw[neck][0]) / 2
+        raw[upper] = (middle, raw[neck][0], chest)
+        raw[neck] = (*raw[neck][:2], upper)
     if np.isnan(np.array([h for h, _, _ in raw.values()])).any():
         raise ValueError(f"{path}: the rig's joints don't import (NaN); Tripo's GLB is broken, use its FBX")
 
