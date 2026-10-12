@@ -169,4 +169,7 @@ A failed step's log is matched against `app/errors.py`; the Build page and `stat
 | A command fails in PowerShell | quoted program paths need `&` in front |
 | `export_scene.vrm` missing when running a script by hand | the VRM Add-on is off: start Blender with `-P scripts/_startup.py`, or without `--factory-startup` |
 | A glTF exporter traceback prints during export but it says FINISHED | harmless; check the `.vrm` loads in the viewer |
-| Blender hangs with two runs at once | run one Blender at a time |
+| Blender hangs with two runs at once | by hand, run one Blender at a time (the engine's own side-by-side steps ask for room first, `engine._room`) |
+| A step fails or comes out otherwise in a build, and not when its script is run by hand | the run's kept Blender (`scripts/_worker.py`) or the last steps side by side: build once with `"one_blender": false, "blenders": 1` in `out/settings.json` (or `OC2VRM_ONE_BLENDER=0`, `OC2VRM_BLENDERS=1`). If that mends it, it is a bug: keep both runs' folders (`worker.log` is in them) |
+| The computer crawls while a build does its last steps | they run side by side when there is room: `python -m app setup --blenders 1` for one at a time (`--blenders auto` to undo) |
+| A build stood five minutes at the exported file's check, then went on | the browser that draws the file never asked for its page (2026-10-12, once). It is now ended after 25 s and started again (`sheet.NEVER_ASKED`); a report that still says "wasn't drawn" says which it was |

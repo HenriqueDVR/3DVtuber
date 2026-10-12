@@ -94,8 +94,23 @@ For a model (a finished `.vrm` runs fewer: see "Improving a finished avatar"). I
   a step marks every later step `stale`.
 - A step that stops the chain keeps its last good output; the failure is kept beside it as
   `last_failure`, with an error code (`docs/agent/troubleshooting.md`, "Error codes").
-- Only one Blender runs at a time: the engine holds `out/.blender.lock`. Don't start Blender
-  yourself while a run holds it.
+- One run at a time: the engine holds `out/.blender.lock` for it, and no Blender of a run outlives
+  it. Don't start Blender yourself while a run holds it. Inside a run (since 2026-10-12, SETUP.md
+  "One Blender for a build's steps; the last steps side by side"; the files are the same byte for
+  byte either way):
+  - the steps that start from a `.blend` are told to **one Blender the run keeps**
+    (`engine._Worker`, `scripts/_worker.py`) instead of each starting its own. A step's output is in
+    its own log as before; the kept Blender's own is `<run>/worker.log`. Off: `"one_blender": false`
+    in `out/settings.json`, or `OC2VRM_ONE_BLENDER=0`.
+  - the **last steps** (check, export, vrm_check, movement, springs, the portraits) run **side by
+    side**, each in a Blender of its own, when the computer has room (`Project._room`: the memory
+    still to be had against what each step's Blender took in this character's last build, `peak_mb`
+    in `state.json`; two processor cores idle; four at most). A step that runs short of memory or
+    fails in company is run again by itself, and the run goes on one at a time. Never more than N:
+    `python -m app setup --blenders N` (`auto` to undo; `"blenders"` in `out/settings.json`,
+    `OC2VRM_BLENDERS`); 1 is one at a time. Setup's "Speed" line says what there is room for now.
+  - events: a step run side by side says `running` as it starts, `ahead` as it is over, and
+    `done` or `failed` when the chain takes it, in the build's order.
 - Every Blender the engine starts runs with `--factory-startup` and `scripts/_startup.py`, so none
   of the user's own add-ons load and the VRM Add-on is on. To run a chain script by hand the same
   way: `blender -b --factory-startup -P scripts/_startup.py in.blend --python-exit-code 1 -P scripts/<step>.py -- ...`.
@@ -150,6 +165,9 @@ a piece should move when detection gets it wrong.
 
 A piece is named by a surface point and its vertex count in the source model (normalized: 1.6 m
 tall, facing -Y, +X = character left). `pieces` lists both for every piece; `--label` copies them.
+A piece given another role leaves what the old role was told (`bone`, `anchor`, `tip`) unless the same
+call says it again: a hanging sleeve's arm bone, kept, hung the tail it was then called from the arm.
+Under the same role they stay as they are; the page takes a hat's tip off again with `"tip": false`.
 
 **`auto_pieces`** (option, off by default; Options page "Fix clothing the arms leave behind"): the
 `pieces` step first runs the movement check on the model as it stands (`<run>/07_pieces_movement.json`)
