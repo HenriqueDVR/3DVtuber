@@ -322,11 +322,12 @@ try {
         bottom points just above and just below its middle, the same distance from it. Only the corners set how big the
         talking mouth is; the top and bottom only say how high it sits, so there is no need to mark a bigger box. For a
         bigger mouth, raise "size ×" under Mouth below.</p>
-      <div class="row"><button class="act alt" id="points-guess" data-job>Place them for me</button><span class="msg" id="guess-msg"></span></div>
+      <div class="row"><button class="act alt" id="points-guess" data-job>Place them for me</button>
+        <button class="act alt" id="marker-wide" aria-pressed="false">Bigger picture</button><span class="msg" id="guess-msg"></span></div>
       <p class="help">A face detector puts all twelve points down as a first guess (about 15 seconds). Check each one and
         drag any that is off: it is usually within a few pixels, and now and then plainly wrong.</p>
-      <div class="split">
-        <iframe id="marker" title="Face marker" style="height:600px"></iframe>
+      <div class="split" id="marker-split">
+        <div class="sizable" id="marker-box" style="height:600px"><iframe id="marker" title="Face marker"></iframe></div>
         <div class="stack">
           <div class="view small" id="face-view"><div class="hint">the marked points on the model · drag to orbit</div></div>
           <div id="face-checks"></div>

@@ -63,7 +63,7 @@ async function openProject(path) {
     [S.manifest, S.status] = await Promise.all([call("manifest"), call("status")]);
     resetPaint();
     const pieces = await call("pieces");
-    S.listing = pieces.listing;
+    S.listing = pieces.listing; S.listingStale = !!pieces.stale;
     const gltf = await loadParts(pieces.glb);
     setGhost(gltf?.scene);
     renderAll();

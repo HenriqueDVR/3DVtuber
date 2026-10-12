@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What shows through the avatar</title>
+<style>
+  html, body { margin: 0; font: 13px/1.4 system-ui, sans-serif; background: #202329; color: #e6e6e6; }
+  #status { padding: 8px 12px; }
+  canvas.sheet { display: block; max-width: 100%; margin: 0 0 12px; }
+  #stage { position: absolute; left: -9999px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.5.5/lib/three-vrm.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="status">Open with ?model=/out/file.vrm</div>
+<div id="stage"></div>
+<div id="sheets"></div>
+<script type="module">
+// The exported file drawn from many cameras round the face, and counted pixel by pixel: where the
+// first surface on the ray is one its picture cuts a hole in (alphaMode MASK: the eye's frame is an
+// opaque sheet with a window), how far behind that surface lies what shows through the hole. The fox
+// girl's eye white lay 3 cm down her socket (2026-10-10): right from the front, the inside of her head
+// from the side, and no ray through the mesh told it from a patch standing off a round face, since a
+// ray doesn't know the frame is cut and the patch is blended. `python -m app inside`, app/inside.py.
+// ?model=/out/x.vrm ; &deep=12 (mm) ; &size=384 ; &post=1 sends the report (and with &pictures=1 the
+// sheets) to the server; &blend=1 counts holes in blended materials too (to see why they aren't).
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+
+const said = [];
+for (const kind of ["warn", "error"]) {
+  const real = console[kind].bind(console);
+  console[kind] = (...parts) => { said.push(parts.join(" ")); real(...parts); };
+}
+const query = new URLSearchParams(location.search);
+const model = query.get("model"), post = query.has("post"), pictures = query.has("pictures") || !post, blended = query.has("blend");
+const S = +(query.get("size") ?? 384), DEEP = +(query.get("deep") ?? 12) / 1000, LABEL = 18;
+const statusBox = document.getElementById("status");
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(S, S, false);
+document.getElementById("stage").appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const GREY = new THREE.Color(0x6a6f7a);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+sun.position.set(1, 2, 3);
+scene.add(sun);
+const camera = new THREE.PerspectiveCamera(20, 1, 0.01, 50);
+// numbers, not colours: one float target for what is seen, one for the first surface whatever its picture cuts
+const target = () => new THREE.WebGLRenderTarget(S, S, { type: THREE.FloatType, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+const seenTarget = target(), firstTarget = target();
+const seenPixels = new Float32Array(S * S * 4), firstPixels = new Float32Array(S * S * 4);
+
+let vrm = null;
+const meshes = [], names = [], cutOut = new Set();
+
+// A material's stand-in for one pass. "seen": the file's own culling and its picture's alpha honoured
+// (a blended one counts as cut at a half), giving material and side, depth, and how much of the vertex
+// hangs from springs and from the head. "first": a surface its picture cuts drawn whole and from both
+// sides, giving its picture's alpha there and how it lies to the ray, so depth behind it is read square
+// to it. A blended sheet stays cut in both: it is an overlay, and a window under its clear part is still
+// the first surface there.
+function standIn(original, id, pass) {
+  const map = original.map ?? original.uniforms?.map?.value ?? null;
+  const cut = original.alphaTest > 0 ? original.alphaTest : (original.transparent ? 0.5 : 0);
+  if (original.alphaTest > 0) cutOut.add(id);
+  const whole = pass === "first" && (original.alphaTest > 0 || blended);
+  const material = new THREE.MeshBasicMaterial({ map, side: pass === "first" ? THREE.DoubleSide : original.side, alphaTest: whole ? 0 : cut, blending: THREE.NoBlending });
+  const side = `float(${id}) * 2.0 + (gl_FrontFacing ? 1.0 : 0.0)`;
+  const shared = "varying float vSprung;\nvarying float vHead;\nvarying float vDepth;\nvarying vec3 vAt;";
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", `#include <common>\nattribute float aSprung;\nattribute float aHead;\n${shared}`)
+      .replace("#include <project_vertex>", "#include <project_vertex>\nvDepth = -mvPosition.z; vSprung = aSprung; vHead = aHead; vAt = mvPosition.xyz;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", `#include <common>\n${shared}`)
+      .replace("#include <dithering_fragment>", pass === "seen" ? `gl_FragColor = vec4(${side}, vDepth, vSprung, vHead);`
+        : `gl_FragColor = vec4(${side}, vDepth, diffuseColor.a, abs(dot(normalize(cross(dFdx(vAt), dFdy(vAt))), normalize(vAt))));`);
+  };
+  material.customProgramCacheKey = () => `${pass}:${id}:${cut}`;
+  return material;
+}
+
+async function load(url) {
+  const loader = new GLTFLoader();
+  loader.register((parser) => new VRMLoaderPlugin(parser));
+  const gltf = await loader.loadAsync(url);
+  if (!gltf.userData.vrm) throw new Error(`${url} is not a VRM file`);
+  vrm = gltf.userData.vrm;
+  VRMUtils.rotateVRM0(vrm);
+  scene.add(vrm.scene);
+  vrm.scene.updateMatrixWorld(true);
+  vrm.update(0);
+  const sprung = new Set([...(vrm.springBoneManager?.joints ?? [])].map((joint) => joint.bone));
+  const headish = new Set();
+  vrm.humanoid.getRawBoneNode("head")?.traverse((node) => headish.add(node));
+  vrm.scene.traverse((node) => {
+    if (!node.isMesh) return;
+    const count = node.geometry.attributes.position.count, aSprung = new Float32Array(count), aHead = new Float32Array(count);
+    const index = node.geometry.attributes.skinIndex, weight = node.geometry.attributes.skinWeight, bones = node.skeleton?.bones;
+    if (index && bones) {
+      for (let i = 0; i < count; i++) {
+        for (let k = 0; k < 4; k++) {
+          const bone = bones[index.getComponent(i, k)], w = weight.getComponent(i, k);
+          if (sprung.has(bone)) aSprung[i] += w;
+          if (headish.has(bone)) aHead[i] += w;
+        }
+      }
+    }
+    node.geometry.setAttribute("aSprung", new THREE.BufferAttribute(aSprung, 1));
+    node.geometry.setAttribute("aHead", new THREE.BufferAttribute(aHead, 1));
+    const list = Array.isArray(node.material) ? node.material : [node.material];
+    const ids = list.map((material) => { let id = names.indexOf(material.name); if (id < 0) { id = names.length; names.push(material.name); } return id + 1; });
+    const both = (pass) => { const made = list.map((material, k) => standIn(material, ids[k], pass)); return Array.isArray(node.material) ? made : made[0]; };
+    meshes.push({ node, original: node.material, seen: both("seen"), first: both("first") });
+  });
+}
+
+function bonePoint(name) {
+  const node = vrm.humanoid.getRawBoneNode(name) ?? vrm.humanoid.getRawBoneNode("hips");
+  return node.getWorldPosition(new THREE.Vector3());
+}
+
+// The face as sheet.html finds it: where the vertices its blink and "aa" move stand at rest.
+function faceBox() {
+  const box = new THREE.Box3(), v = new THREE.Vector3();
+  for (const name of ["blink", "aa"]) {
+    const expression = vrm.expressionManager?.getExpression(name);
+    for (const bind of expression?.binds ?? expression?._binds ?? []) {
+      for (const mesh of bind.index == null ? [] : bind.primitives ?? []) {
+        const moved = mesh.geometry.morphAttributes.position?.[bind.index];
+        for (let i = 0; i < (moved?.count ?? 0); i++) {
+          if (Math.abs(moved.getX(i)) + Math.abs(moved.getY(i)) + Math.abs(moved.getZ(i)) < 1e-5) continue;
+          box.expandByPoint(mesh.getVertexPosition(i, v).applyMatrix4(mesh.matrixWorld));
+        }
+      }
+    }
+  }
+  return box.isEmpty() ? null : box;
+}
+
+function aim(point, span, [round, up]) {
+  const r = THREE.MathUtils.degToRad(round), u = THREE.MathUtils.degToRad(up);
+  const distance = span / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+  camera.position.copy(point).add(new THREE.Vector3(Math.sin(r) * Math.cos(u), Math.sin(u), Math.cos(r) * Math.cos(u)).multiplyScalar(distance));
+  camera.lookAt(point);
+  camera.updateMatrixWorld(true);
+}
+
+// The head's poses of sheet.html, and its swing: the hair still on its way.
+const TURNS = { "head turn": [[0, 1, 0], 0.4], "head turn right": [[0, 1, 0], -0.4], "head tilt": [[0, 0, 1], 0.6], "head tilt right": [[0, 0, 1], -0.6] };
+let posed = null;
+function pose(name) {
+  if (name === posed) return;
+  posed = name;
+  const humanoid = vrm.humanoid, head = humanoid.getNormalizedBoneNode("head");
+  vrm.scene.position.x = 0;
+  for (const bone of Object.keys(humanoid.humanBones)) humanoid.getNormalizedBoneNode(bone)?.quaternion.identity();
+  if (name in TURNS) head?.quaternion.setFromAxisAngle(new THREE.Vector3(...TURNS[name][0]), TURNS[name][1]);
+  vrm.springBoneManager?.reset();
+  for (let frame = 0; frame < 90; frame++) vrm.update(1 / 60);
+  const swing = name === "swing left" ? 1 : name === "swing right" ? -1 : 0;
+  for (let frame = 0; swing && frame < 24; frame++) {
+    const time = frame / 60;
+    vrm.scene.position.x = swing * Math.sin(time * 4) * 0.15;
+    head?.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), swing * Math.sin(time * 6) * 0.6);
+    vrm.update(1 / 60);
+  }
+  vrm.scene.updateMatrixWorld(true);
+}
+
+// One camera: what the counts are, and with `draw` the file as apps draw it beside a picture of the counts.
+function measure(draw, x0, y0) {
+  if (draw) {
+    scene.background = GREY;
+    renderer.setRenderTarget(null);
+    renderer.render(scene, camera);
+    draw.drawImage(renderer.domElement, x0, y0);
+  }
+  scene.background = null;
+  renderer.setClearColor(0x000000, 0);
+  for (const [pass, into, pixels] of [["seen", seenTarget, seenPixels], ["first", firstTarget, firstPixels]]) {
+    for (const mesh of meshes) mesh.node.material = mesh[pass];
+    renderer.setRenderTarget(into);
+    renderer.clear();
+    renderer.render(scene, camera);
+    renderer.readRenderTargetPixels(into, 0, 0, S, S, pixels);
+  }
+  renderer.setRenderTarget(null);
+  for (const mesh of meshes) mesh.node.material = mesh.original;
+
+  const image = draw?.createImageData(S, S), out = image?.data;
+  const found = { model: 0, window: 0, deep: 0, through: 0, hairInside: 0, headInside: 0, by: {} };
+  const behindAll = [];
+  for (let row = 0; row < S; row++) {
+    for (let col = 0; col < S; col++) {
+      const at = ((S - 1 - row) * S + col) * 4, to = (row * S + col) * 4;
+      const code = Math.round(seenPixels[at]), firstCode = Math.round(firstPixels[at]), firstId = firstCode >> 1;
+      // a window: the first surface on the ray is one its picture cuts, and is cut away here
+      const cut = firstCode > 0 && firstPixels[at + 2] < 0.5 && (blended || cutOut.has(firstId));
+      let r = 32, g = 35, b = 41;
+      if (code > 0) {
+        found.model++;
+        r = g = b = 110 + 100 * Math.max(0, Math.min(1, 1 - (seenPixels[at + 1] - camera.near) / 6));
+        if (code % 2 === 0) {
+          // the back of a surface: of hair on springs, or of what is the head's and on none
+          if (seenPixels[at + 2] > 0.5) { found.hairInside++; r = 255; g = 170; b = 0; }
+          else if (seenPixels[at + 3] > 0.5) { found.headInside++; r = 230; g = 30; b = 30; }
+        }
+        if (cut) {
+          const behind = (seenPixels[at + 1] - firstPixels[at + 1]) * firstPixels[at + 3];
+          found.window++;
+          behindAll.push(behind);
+          if (behind > DEEP) { found.deep++; found.by[names[firstId - 1]] = (found.by[names[firstId - 1]] ?? 0) + 1; }
+          if (behind > 0.005) { const t = Math.min(1, behind / 0.03); r = 40 + 215 * t; g = 60; b = 255 - 100 * t; }
+        }
+      } else if (cut) {
+        found.through++;  // every surface on this ray is cut away: one sees right through the avatar
+        r = 0; g = 255; b = 120;
+      }
+      if (out) { out[to] = r; out[to + 1] = g; out[to + 2] = b; out[to + 3] = 255; }
+    }
+  }
+  behindAll.sort((a, b) => a - b);
+  found.behind90 = behindAll.length ? +(behindAll[Math.floor(behindAll.length * 0.9)] * 1000).toFixed(1) : null;
+  if (draw) draw.putImageData(image, x0 + S, y0);
+  return found;
+}
+
+function note(shot, found) {
+  const mm2 = (shot.span / S * 1000) ** 2;
+  return { label: shot.label, from: shot.from, pose: shot.pose ?? "rest", model: found.model, window_mm2: +(found.window * mm2).toFixed(1), deep_mm2: +(found.deep * mm2).toFixed(1),
+    through_mm2: +(found.through * mm2).toFixed(1), behind90_mm: found.behind90, by: found.by, hair_inside_mm2: +(found.hairInside * mm2).toFixed(1), head_inside_mm2: +(found.headInside * mm2).toFixed(1) };
+}
+
+// Every shot counted; with `name`, drawn on a sheet too (the file beside its counts) and sent.
+async function shoot(shots, name) {
+  const columns = 3, rows = Math.ceil(shots.length / columns);
+  const canvas = name ? Object.assign(document.createElement("canvas"), { width: Math.min(columns, shots.length) * 2 * S, height: rows * (S + LABEL), className: "sheet" }) : null;
+  const draw = canvas?.getContext("2d", { willReadFrequently: true });
+  if (draw) { draw.fillStyle = "#202329"; draw.fillRect(0, 0, canvas.width, canvas.height); draw.font = "13px system-ui, sans-serif"; draw.textBaseline = "middle"; }
+  const results = [];
+  for (const [index, shot] of shots.entries()) {
+    const x = (index % columns) * 2 * S, y = Math.floor(index / columns) * (S + LABEL);
+    pose(shot.pose ?? "rest");
+    aim(shot.at, shot.span, shot.from);
+    results.push(note(shot, measure(draw, x, y + LABEL)));
+    if (draw) {
+      const last = results[results.length - 1];
+      draw.fillStyle = "#e6e6e6";
+      draw.fillText(`${shot.label}: ${last.deep_mm2} mm² over ${DEEP * 1000} mm deep through ${last.window_mm2} mm² of holes; hair's inside ${last.hair_inside_mm2} mm²`, x + 6, y + LABEL / 2);
+    }
+  }
+  if (canvas) {
+    document.getElementById("sheets").append(canvas);
+    if (post) {
+      const blob = await new Promise((done) => canvas.toBlob(done, "image/png"));
+      await fetch(`/inside?name=${name}`, { method: "POST", body: blob });
+    }
+  }
+  return results;
+}
+
+function drawnBy() {
+  const gl = renderer.getContext(), info = gl.getExtension("WEBGL_debug_renderer_info");
+  return info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+}
+
+if (model) {
+  statusBox.textContent = `Loading ${model}…`;
+  try {
+    // without it the counts read back as nothing, and nothing would pass for "no hole anywhere"
+    if (!renderer.extensions.has("EXT_color_buffer_float")) throw new Error("this browser's graphics can't be read back as numbers (no EXT_color_buffer_float)");
+    await load(model);
+    const lost = said.filter((line) => /load texture/i.test(line));
+    if (lost.length) throw new Error(`a texture didn't load (the browser's profile drive may be full): ${lost[0]}`);
+    pose("rest");
+    const box = faceBox();
+    const face = box ? box.getCenter(new THREE.Vector3()) : bonePoint("head").add(new THREE.Vector3(0, 0.07, 0));
+    const faceSpan = box ? Math.max(0.3, 1.6 * Math.max(box.max.x - box.min.x, box.max.y - box.min.y)) : 0.3;
+    const neck = bonePoint("neck").add(new THREE.Vector3(0, 0.03, 0));
+    // the face from 60 degrees either side and 30 above and below: judged (app/inside.py)
+    const faceShots = [], hairShots = [];
+    for (const up of [30, 0, -30]) for (const round of [-60, -40, -20, 0, 20, 40, 60]) faceShots.push({ label: `face ${round},${up}`, at: face, span: faceSpan, from: [round, up] });
+    // the neck from either side at its own height, the head turned, tilted and swung: measured, not judged
+    for (const stance of ["rest", "head turn", "head turn right", "head tilt", "head tilt right", "swing left", "swing right"]) {
+      for (const up of [-10, 10]) for (const round of [80, 100, 120, 240, 260, 280]) hairShots.push({ label: `${stance} ${round},${up}`, at: neck, span: 0.4, from: [round, up], pose: stance });
+    }
+    statusBox.textContent = "Counting…";
+    await new Promise((next) => setTimeout(next, 0));  // not a frame: a hidden or headless page gets none
+    const faces = await shoot(faceShots), hair = await shoot(hairShots);
+    if (!faces.some((shot) => shot.model > 0)) throw new Error("nothing of the avatar was read back from any camera");
+    const worst = faces.reduce((a, b) => (b.deep_mm2 > a.deep_mm2 ? b : a)), inside = hair.reduce((a, b) => (b.hair_inside_mm2 > a.hair_inside_mm2 ? b : a));
+    if (pictures) {
+      await shoot(faceShots, "face");
+      await shoot([faceShots[faces.indexOf(worst)], hairShots[hair.indexOf(inside)]], "worst");
+    }
+    const report = { model, materials: names, cut_out: [...cutOut].map((id) => names[id - 1]), deep_mm: DEEP * 1000, size: S, face: faces, hair,
+      springJoints: vrm.springBoneManager?.joints.size ?? 0, drawnBy: drawnBy(), warnings: said };
+    statusBox.textContent = `${worst.deep_mm2} mm² over ${DEEP * 1000} mm deep through a hole (${worst.label}); hair's inside ${inside.hair_inside_mm2} mm² (${inside.label})`;
+    if (post) await fetch("/inside?name=done", { method: "POST", body: JSON.stringify(report) });
+    window.insideReport = report;
+  } catch (error) {
+    statusBox.textContent = `${error}`;
+    if (post) await fetch("/inside?name=failed", { method: "POST", body: JSON.stringify({ error: `${error}` }) });
+  }
+}
+</script>
+</body>
+</html>

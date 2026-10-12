@@ -96,6 +96,16 @@ def close(process):
 def render(vrm, out_dir, browser=None, timeout=TIMEOUT):
     """{"images": the sheets' PNGs, "report": what the page said of the file (expressions the
     shots asked for and it lacks, spring joints)}. Raises NoBrowser, TimeoutError, RuntimeError."""
+    got = browse(PAGE, vrm, out_dir, browser, timeout)
+    report = dict(got["report"], model=str(Path(vrm).resolve()))
+    (Path(out_dir).resolve() / "sheet.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
+    return {"images": got["images"], "report": report}
+
+
+def browse(page, vrm, out_dir, browser=None, timeout=TIMEOUT, query="", prefix="sheet_"):
+    """A page of viewer/ opened on `vrm` in a browser without a window: {"images": the PNGs it sent
+    (kept in `out_dir` as <prefix><name>.png), "report": what it said when it was done}.
+    Raises NoBrowser, TimeoutError, RuntimeError (the page said it failed)."""
     # whole paths: Edge shows a dialog ("can't read and write to its data directory") for a relative profile
     vrm, out_dir = Path(vrm).resolve(), Path(out_dir).resolve()
     if not vrm.is_file():
@@ -113,9 +123,9 @@ def render(vrm, out_dir, browser=None, timeout=TIMEOUT):
             path = unquote(urlparse(self.path).path)
             if path == "/model.vrm":
                 return self._send(vrm)
-            if path == "/viewer/sheet.html":
+            if path == f"/viewer/{page.name}":
                 # three.js by its CDN address, or the app's own copy when it keeps one (offline)
-                return self._send(PAGE, vendor.local(PAGE.read_text(encoding="utf-8")).encode("utf-8"))
+                return self._send(page, vendor.local(page.read_text(encoding="utf-8")).encode("utf-8"))
             target = (GUI / path[5:]).resolve() if path.startswith("/gui/") else None
             if target is None or GUI.resolve() not in target.parents or not target.is_file():
                 return self.send_error(404)
@@ -129,7 +139,7 @@ def render(vrm, out_dir, browser=None, timeout=TIMEOUT):
                 got["report"], got["error"] = (said, None) if name == "done" else (None, said.get("error") or "the page failed")
                 finished.set()
             elif name.isalnum():
-                path = out_dir / f"sheet_{name}.png"
+                path = out_dir / f"{prefix}{name}.png"
                 path.write_bytes(body)
                 got["images"].append(str(path))
             self.send_response(204)
@@ -151,11 +161,11 @@ def render(vrm, out_dir, browser=None, timeout=TIMEOUT):
     # beside the sheets, not in %TEMP%: the browser keeps large blobs (a 4096 px texture) in its
     # profile, and on a system drive with 3.7 GB free it refused the main texture: a white body
     profile = tempfile.mkdtemp(prefix=".browser_", dir=out_dir)
-    url = f"http://127.0.0.1:{server.server_port}/viewer/sheet.html?model=/model.vrm&post=1"
+    url = f"http://127.0.0.1:{server.server_port}/viewer/{page.name}?model=/model.vrm&post=1{query}"
     process = launch(browser, profile, url, "--window-size=1280,900")
     try:
         if not finished.wait(timeout):
-            raise TimeoutError(f"the sheets weren't drawn in {timeout} s ({browser})")
+            raise TimeoutError(f"{page.name} wasn't drawn in {timeout} s ({browser})")
         if got["error"]:
             raise RuntimeError(got["error"])
     finally:
@@ -163,6 +173,4 @@ def render(vrm, out_dir, browser=None, timeout=TIMEOUT):
         server.shutdown()
         server.server_close()
         shutil.rmtree(profile, ignore_errors=True)
-    report = dict(got["report"], model=str(vrm))
-    (out_dir / "sheet.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
-    return {"images": sorted(got["images"]), "report": report}
+    return {"images": sorted(got["images"]), "report": got["report"]}

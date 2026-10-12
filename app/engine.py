@@ -32,7 +32,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from . import contracts, errors, face_guess, paint, slim, trust, update, vendor
+from . import contracts, errors, face_guess, inside, paint, slim, trust, update, vendor
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
@@ -164,7 +164,9 @@ CHECKS = {"movement", "springs"}
 # Face features that, when their own checks refuse, leave the avatar without them rather than
 # without an avatar: model C's eye step refused (iris over the lids) and the chain ended with no .vrm.
 # Chest bounce too: a chest it can't find leaves the avatar without the bounce.
-SOFT = {"face_tracking", "chest", "eyes", "mouth"}
+# And the finger guides: hands they can't read (a tester's game model, gloves with trims: "found 2
+# digits standing out from the hand, need 5") keep the fingers the step before gave them.
+SOFT = {"face_tracking", "chest", "eyes", "mouth", "finger_guides"}
 # Steps that make what a finished .vrm already has, with what of the file's stays instead: a
 # character whose source is a .vrm (manifest.improves) is taken in as it is and these don't run.
 KEPT = {"survey": "a finished .vrm is read as it is, not surveyed",
@@ -174,15 +176,32 @@ KEPT = {"survey": "a finished .vrm is read as it is, not surveyed",
         "finger_guides": "the file's own fingers stay", "tpose": "the file's own rest pose stays",
         "eyes": "the file's own eyes stay", "mouth": "the file's own mouth stays",
         "movement": "it reads the modelled pose of a model built here"}
+# A model that came with its own rig (manifest.keeps_rig, pipeline/kept.py) is taken in the same way,
+# but for its rest pose: it is baked to the T-pose like any model's.
+KEPT_RIG = {**{name: why.replace("file's", "model's") for name, why in KEPT.items() if name != "tpose"},
+            "survey": "a model that came rigged is read as it is, not surveyed",
+            "chest": "the model's own bones stay: chest bounce is for a rig made here"}
 # Run before a check on a character taken in from a .vrm: its meshes joined in memory (the checks
 # measure one mesh, and a VRoid file's body, face and hair are three).
 WHOLE_BODY = ["--python-exit-code", "1", "-P", str(SCRIPTS / "_whole_body.py")]
+# The piece roles the movement check may give by itself (option `auto_pieces`): the ones the pieces
+# step acts on. A hair, hat or cloth role changes what the build step makes and stays the user's.
+AUTO_ROLES = ("follow_bone", "shoulder_cloth", "fitted_skirt")
 # An automatic iris the eye step refuses is tried again, in this order (see _eyes_fall_back).
 EYES_FALLBACK = {
     "modelled": ("the moving iris showed over the lids (the drawn iris is as tall as the eye, or its lashes read as "
                  "iris), so the model's own iris discs slide instead"),
     "slide": ("the moving iris was refused and the model's own iris discs couldn't be used either, "
               "so the eyes slide as a painted patch instead"),
+    "iris": ("the sliding patch an earlier build fell back to was refused, so the moving iris is tried again"),
+}
+# What the page offers when the eye step refuses the very mode its own advice names (errors.KNOWN: "set
+# eyes to slide"): a tester's fox girl failed with `eyes: slide` and was told to set eyes to slide.
+EYES_REFUSED_AGAIN = {
+    True: ("the sliding patch was refused too. This model has eye pieces of its own: set eyes to modelled",
+           {"eyes": "modelled"}),
+    False: ("the sliding patch was refused too: check the eye marks on the Face page against the eye close-ups "
+            "in the step's log folder", None),
 }
 
 
@@ -255,13 +274,19 @@ class Project:
 
     @property
     def improving(self):
-        """Whether the character is a finished .vrm being added to, not a model being built."""
-        return manifest.improves(self.data)
+        """Whether the character is taken in as it came (a finished .vrm being added to, or a model
+        with its own rig), not a bare model being built."""
+        return manifest.taken_in(self.data)
+
+    @property
+    def keeping(self):
+        """Whether the character is a model that came whole, taken in with its own rig (kept.py)."""
+        return manifest.keeps_rig(self.data)
 
     def source_holds(self):
         """What the .vrm this character started from holds (`shipped`); None for a model."""
         source = manifest.path_of(self.data, "source")
-        return shipped(source) if self.improving and source and source.exists() else None
+        return shipped(source) if manifest.improves(self.data) and source and source.exists() else None
 
     def model(self):
         """The model the steps read: the source, or its painted copy when the character has paint."""
@@ -325,7 +350,7 @@ class Project:
         """[(step, will it run, why not)] for the whole chain."""
         o = self.options()
         face = bool(self.data.get("face"))
-        pieces = bool(manifest.pieces_for(self.data, "pieces"))
+        pieces = bool(manifest.pieces_for(self.data, "pieces")) or o["auto_pieces"]
         rigged = bool(self.data.get("rig"))
         skip = {
             "ahoge": (not o["ahoge"] or o["rigid_head"]) and "no ahoge wanted, or a rigid head",
@@ -344,7 +369,7 @@ class Project:
             "vrm_check": o["tpose"] == "none" and "no final VRM",
         }
         if self.improving:
-            skip.update(KEPT)
+            skip.update(KEPT_RIG if self.keeping else KEPT)
         return [(name, not skip.get(name), skip.get(name) or "") for name in NAMES]
 
     def status(self):
@@ -463,6 +488,11 @@ class Project:
             # onto the body" was said of a VRoid hip whose weights only changed too fast across the crease
             issues, looks = [], [("review", f"rig check: {f.split(': ')[0]} (the file's own skinning, kept as it came)")
                                  for f in (failed or [])]
+        # the exported file drawn as apps draw it (inside.py); a .vrm taken in keeps what it came with
+        seen = (steps["vrm_check"].get("report") or {}).get("seen") or {}
+        (looks if self.improving else issues).extend(("review", f"as apps draw it: {line}") for line in seen.get("failed", []))
+        if seen.get("left") and self._last_vrm() is not None:
+            looks.append(("review", f"the avatar wasn't drawn to see what shows through it: {seen['left']}"))
         for name in sorted(SOFT):
             if steps.get(name, {}).get("status") == "failed":
                 issues.append(("build", f"built without {name.replace('_', ' ')}"))
@@ -702,12 +732,13 @@ class Project:
                 emit({"step": name, "status": "running", "log": str(folder / f"{index:02d}_{name}.log")})
                 try:
                     try:
+                        self._eyes_tried = set()
                         entry = self._run_step(name, index, folder)
                     except StepFailed as error:
                         while True:
                             if not self._eyes_fall_back(name, error):
-                                raise error
-                            mode = self.state["eyes_fallback"]
+                                raise self._eyes_advice(name, error)
+                            mode = self.options()["eyes"]
                             emit({"step": name, "status": "warning", "reason": EYES_FALLBACK[mode]})
                             try:
                                 entry = self._run_step(name, index, folder)
@@ -756,6 +787,10 @@ class Project:
         if free < DISK_NEEDED:
             known = errors.describe("VM-DISK-FULL")
             raise StepFailed(f"{name}: only {free / 2**20:.0f} MB free on {folder.anchor} [VM-DISK-FULL] {known['fix']}", known)
+        found = self._find_pieces(stem, blend_in) if name == "pieces" and self.options()["auto_pieces"] else []
+        if name == "pieces" and not found and not manifest.pieces_for(self.data, "pieces"):
+            return {"status": "nothing to do", "log": str(stem.with_name(stem.name + "_movement.log")),
+                    "finished": datetime.now().isoformat(timespec="seconds")}
         args, extra = self._arguments(name, stem, blend_in)
         extra = [*extra, *self.frame()]
         prints = _fingerprint_of(stem.with_suffix(".blend"))
@@ -773,6 +808,14 @@ class Project:
         output = log.read_text(encoding="utf-8", errors="replace")
         entry[kind] = str(stem.with_suffix(f".{kind}"))
         made = Path(entry[kind]).exists()
+        if (code != 0 or not made) and found and code not in (STOPPED, CANCELLED):
+            # the roles found by themselves must never cost the avatar: without them, as if the option were off
+            _found_manifest(stem).replace(_found_undone(stem))
+            log.replace(log.with_name(stem.name + "_found.log"))
+            again = self._run_step(name, index, folder)
+            again["warnings"] = [*again.get("warnings", []), "the roles found for pieces by themselves were not given "
+                                 f"({', '.join(p['name'] for p in found)}): the step failed with them (see {stem.name}_found.log)"]
+            return again
         if code != 0 or not made:
             # a step the engine itself stopped (STOPPED) had something to do and didn't get to
             if name in OPTIONAL and code != STOPPED:
@@ -786,7 +829,7 @@ class Project:
                 raise StepFailed(f"{name}: Blender ran out of memory (see {log}){said}", known)
             raise StepFailed(f"{name}: failed with exit code {code} (see {log}){said}\n{_tail(output)}", known)
         pictures = None
-        if name == "export" and not self.improving:
+        if name == "export" and (not self.improving or self.keeping):
             # the export's last act, with the app's own Python: Blender's has no picture codec. Before
             # the file is checked, so what is checked is what ships; a .vrm taken in keeps its pictures
             pictures = slim.pictures(entry["vrm"])
@@ -810,6 +853,9 @@ class Project:
             report = _tagged(output, tag)
             if report is not None:
                 entry["report"] = report
+                # what the step did otherwise than asked (a role it left off the face)
+                if report.get("notes"):
+                    entry["warnings"] = [*entry.get("warnings", []), *report["notes"]]
         if pictures is not None:
             entry["report"] = {**(entry.get("report") or {}), "pictures": pictures}
         if name in ("check", "vrm_check"):
@@ -817,6 +863,14 @@ class Project:
         if name == "vrm_check":
             # the file the check just re-imported: what it holds is judged with the check (verdict)
             entry["report"]["ships"] = shipped(self._last_vrm())
+            # ... and the file as apps draw it, by the app's own Python and a browser: what shows through
+            # a hole cut in its surface (inside.py). Kept in the check's own report too, so that builds
+            # are compared by it; a file that couldn't be drawn says why and the build goes on
+            seen = inside.check(self._last_vrm(), stem.with_name(stem.name + "_seen"))
+            entry["report"]["seen"] = seen
+            _write_json(entry["json"], {**_read_json(entry["json"], {}), "seen": seen})
+            with open(log, "a", encoding="utf-8") as handle:
+                handle.write(f"\nseen: {json.dumps(seen)}\n")
         if name in CHECKS:
             # the Movement page shows the latest of each
             shutil.copy2(entry["json"], self.out / f"{name}.json")
@@ -832,6 +886,10 @@ class Project:
             # the marked eyes say which pieces are the eyes (by size the fox girl's ears were, and her face was hair)
             return ["preflight.py", source, "--json", stem.with_suffix(".json"), "--height", o["height"],
                     *(["--face", face] if face else [])], []
+        if name == "build" and self.keeping:
+            # the height as the manifest has it: `o` reads it back from this step's own report
+            return ["import_rigged.py", source, vrm, "--blend", blend, "--name", self.name, "--author", data.get("author") or "Unknown",
+                    "--height", data["options"]["height"], *([] if o["hair_hits_body"] else ["--hair-head-only"])], NO_EXPORT
         if name == "build" and self.improving:
             return ["import_vrm.py", source, vrm, "--blend", blend, *(["--licence-read"] if o["licence_read"] else [])], NO_EXPORT
         if name == "build":
@@ -854,7 +912,7 @@ class Project:
         if name == "movement":
             reference = manifest.path_of(data, "reference") or source
             return ["check_movement.py", "--reference", reference, "--json", stem.with_suffix(".json"),
-                    "--manifest", self.manifest_path, "--height", o["height"], "--listing", self.out / "pieces.json"], []
+                    "--manifest", self._named(), "--height", o["height"], "--listing", self.out / "pieces.json"], []
         if name == "springs":
             return (["check_springs.py", "--json", stem.with_suffix(".json"), "--height", o["height"]],
                     WHOLE_BODY if self.improving else [])
@@ -893,14 +951,15 @@ class Project:
         elif name == "face_tracking" and o["eye_shown"]:
             args += ["--covered", "right" if o["eye_shown"] == "left" else "left"]
         if name == "pieces":
-            args += ["--manifest", self.manifest_path]
+            # with the pieces the movement check found for itself, when there are any (_find_pieces)
+            args += ["--manifest", _found_manifest(stem) if _found_manifest(stem).exists() else self.manifest_path]
         if name == "tpose":
             # an adopted rig's hands are left as modelled: the spec hands relay the fingers for bones
             # this build fitted, and on Tripo's own (flat, straight already) they fanned the fingers
             # out and bent the palm (model A (T-pose); the raw FBX's hands were clean)
             # Without either flag the step still straightens: it turned Tripo's thumb from 23 to 45
             # degrees, which is not the hand the user approved in Warudo (an earlier build, the raw hands)
-            if self.data.get("rig"):
+            if self.data.get("rig") or self.keeping:
                 args.append("--keep-finger-pose")
             elif o["tpose"] == "spec":
                 args.append("--spec-hands")
@@ -932,18 +991,74 @@ class Project:
                     args += [f"--{key}", fix[key]]
         return args, NO_EXPORT
 
+    def _named(self):
+        """The manifest the movement check names pieces by: the pieces step's own when that step gave
+        roles to pieces it found for itself (`auto_pieces`), so the check knows a mantle it sees
+        stretch was made one; else the user's."""
+        entry = self.state["steps"].get("pieces", {})
+        report = entry.get("report") or {}
+        given = Path(report.get("manifest") or "")
+        return given if entry.get("status") == "done" and report.get("found") and given.is_file() else self.manifest_path
+
+    def _find_pieces(self, stem, blend_in):
+        """With `auto_pieces`: the pieces the arms leave behind or tear on the model as it stands before
+        the pieces step, each with the role the movement check suggests (found_pieces), written with
+        the user's own into `<stem>_manifest.json` for the step to read. [] when the check finds
+        none, can't run, or its roles were undone on a first try: the user's pieces alone then."""
+        if _found_undone(stem).exists():
+            return []
+        probe = stem.with_name(stem.name + "_movement")
+        args, extra = self._arguments("movement", probe, blend_in)
+        # by the user's own pieces alone: what an earlier run found is found again, or isn't
+        args[args.index("--manifest") + 1] = self.manifest_path
+        code = _blender(self.blender, blend_in, args, probe.with_suffix(".log"), [*extra, *self.frame()])
+        if code == CANCELLED:
+            raise Cancelled("pieces: stopped by the user")
+        found = found_pieces(_read_json(probe.with_suffix(".json"), {}), self.data["pieces"]) if code == 0 else []
+        if found:
+            data = json.loads(json.dumps({k: v for k, v in self.data.items() if not k.startswith("_")}))
+            for key in manifest.PATHS:
+                if key != "out_dir" and data.get(key):
+                    data[key] = str(manifest.path_of(self.data, key))
+            data["pieces"] = [*data["pieces"], *found]
+            manifest.save(data, _found_manifest(stem))
+        return found
+
     def _eyes_fall_back(self, name, error):
         """Whether an automatic iris the eye step refused should be tried again as a sliding patch
         (remembered in the state, so later builds of the same model slide straight away)."""
         refused = name == "eyes" and (error.known or {}).get("code") == "VM-EYES-REFUSED"
         now = self.options()["eyes"]
-        if not refused or self.data["options"]["eyes"] is not None or now not in ("iris", "modelled"):
+        if not refused or self.data["options"]["eyes"] is not None or now not in ("iris", "modelled", "slide"):
             return False
+        if now == "slide" and self.state.get("eyes_fallback") != "slide":
+            return False  # painted eyes, which slide from the start: there is nothing else to try
         # the established moving iris first (model A's builds, seen good in Warudo, keep it); then the
-        # model's own iris discs, where it has them (the plain boy, the catgirl); the painted patch last
-        self.state["eyes_fallback"] = "modelled" if now == "iris" else "slide"
+        # model's own iris discs, where it has them (the plain boy, the catgirl); the painted patch last.
+        # A patch remembered from an older build and refused now (the fox girl's, from before her discs
+        # could slide) leaves the two before it to try: the build stayed without eyes for good
+        tried = self.__dict__.setdefault("_eyes_tried", set())
+        tried.add(now)
+        left = [mode for mode in ("iris", "modelled", "slide") if mode not in tried]
+        if not left:
+            return False
+        if left[0] == "iris":
+            self.state.pop("eyes_fallback", None)
+        else:
+            self.state["eyes_fallback"] = left[0]
         self._save_state()
         return True
+
+    def _eyes_advice(self, name, error):
+        """`error`, its advice changed when the eye step refused the mode that advice names."""
+        known = error.known or {}
+        advised = (known.get("options") or {}).get("eyes")
+        if (name != "eyes" or known.get("code") != "VM-EYES-REFUSED"
+                or advised not in {self.options()["eyes"], *getattr(self, "_eyes_tried", ())}):
+            return error
+        inserts = bool((self.survey() or {}).get("parts", {}).get("eye_inserts"))
+        fix, options = EYES_REFUSED_AGAIN[inserts and self.data["options"]["eyes"] is not None]
+        return StepFailed(str(error).replace(known["fix"], fix), {**known, "fix": fix, "options": options})
 
     def _last_vrm(self):
         for name in reversed(NAMES):
@@ -969,6 +1084,38 @@ class Project:
     def _save_state(self):
         self.out.mkdir(parents=True, exist_ok=True)
         _write_json(self.state_path, self.state, backup=True)
+
+
+def found_pieces(movement, named):
+    """Manifest pieces for what the movement check (its report, `movement`) found the arms leave
+    behind or tear and has a role for among AUTO_ROLES: what "Apply this fix" on the Movement page
+    writes, for every such piece at once. A piece the user named (`named`: the manifest's pieces)
+    keeps the user's role, right or not. Each carries `found`, which the pieces step reads: what it
+    gives by itself it measures, and undoes when it tears the rig."""
+    taken = {piece["name"] for piece in named}
+    found = []
+    for row in movement.get("pieces", []):
+        role = row.get("suggested")
+        if role not in AUTO_ROLES or row.get("role"):
+            continue
+        name = f"{role}_{row['label']}"
+        while name in taken:
+            name += "_found"
+        piece = {"name": name, "point": row["point"], "count": row["count"], "role": role, "found": True}
+        if role == "follow_bone":
+            bone = next((f["bone"] for f in row["findings"] if f.get("bone")), "")
+            piece["bone"] = ("Left" if bone.startswith("Left") else "Right") + "UpperArm"
+        taken.add(name)
+        found.append(piece)
+    return found
+
+
+def _found_manifest(stem):
+    return stem.with_name(stem.name + "_manifest.json")
+
+
+def _found_undone(stem):
+    return stem.with_name(stem.name + "_manifest_undone.json")
 
 
 def changes(before, now):

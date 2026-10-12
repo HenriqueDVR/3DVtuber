@@ -151,7 +151,9 @@ def _guarded(name):
     # by Windows' reading too: there "/x" and "C:x" are no absolute paths, and REPO / "/x" is E:\x
     windows = PureWindowsPath(name)
     inside = ".." not in parts and ".." not in windows.parts and not (windows.drive or windows.root or Path(name).is_absolute())
-    return bool(parts) and inside and parts[0] not in KEPT and name not in KEPT_FILES
+    # as Windows reads a name: capitals alike, dots and spaces at its end dropped ("Out", "out." are out)
+    read = lambda part: part.rstrip(". ").casefold()  # noqa: E731
+    return bool(parts) and inside and read(parts[0]) not in KEPT and read(name) not in KEPT_FILES
 
 
 def apply(on_event=None, open_url=trust.open_url):

@@ -587,6 +587,70 @@ PICTURE_FILE_MOST = 40 * 2**20
 MODEL_MOST = 400 * 2**20
 
 
+# The JSON of a glTF file is read whole to see what it names: no larger than this (bytes)
+GLTF_JSON_MOST = 64 * 2**20
+# A folder on another computer (\\name\share, //name/share) or an address (http://, file://, ...)
+ELSEWHERE = re.compile(r"[\\/]{2}[^\\/]|[A-Za-z][A-Za-z0-9+.-]+://")
+# Where an FBX names a texture's file: binary (the name, then S and the text's length) and as text
+FBX_FILE = re.compile(rb'(?:RelativeFilename|FileName|Filename)(?:S(.{4})|:\s*"([^"\r\n]{0,2000})")', re.DOTALL)
+
+
+def _leads_out(kind, handle):
+    """The first file a model names that is not in the report with it, or None.
+
+    Blender opens what a model names when it is imported: a glTF's buffers and pictures by their
+    `uri`, an OBJ's material library, an FBX's textures by the path written in it. A folder on another
+    computer (`\\\\name\\share\\a.png`) is signed in to by Windows with the user's name and password
+    hash, and any path reads a file of the developer's as a picture. A glTF or OBJ may name what lies
+    beside it and nothing else; an FBX carries the paths of the computer it was made on, which open
+    nothing here, so only another computer or an address counts in it.
+    """
+    def away(name, anywhere):
+        name = name.strip()
+        if not name or name.lower().startswith("data:"):
+            return False
+        if ELSEWHERE.match(name):
+            return True
+        return not anywhere and (name[0] in "\\/" or ":" in name or ".." in re.split(r"[\\/]", name))
+
+    if kind in (".glb", ".vrm", ".gltf"):
+        try:
+            if kind == ".gltf":
+                text = handle.read(GLTF_JSON_MOST + 1)
+            else:
+                head = handle.read(20)
+                length = struct.unpack_from("<I", head, 12)[0] if len(head) == 20 and head[:4] == b"glTF" and head[16:20] == b"JSON" else 0
+                text = handle.read(length) if 0 < length <= GLTF_JSON_MOST else b""
+            if len(text) > GLTF_JSON_MOST:
+                return "(its text is too long to read)"
+            doc = json.loads(text) if text.strip() else {}
+            named = [part.get("uri") for key in ("buffers", "images") for part in doc.get(key) or [] if isinstance(part, dict)]
+        except (ValueError, AttributeError, TypeError, struct.error):
+            return None  # not laid out as a glTF: no importer opens it either
+        return next((uri for uri in named if isinstance(uri, str) and away(uri, anywhere=False)), None)
+    if kind == ".obj":
+        for line in handle:
+            if line[:6].lower() == b"mtllib":
+                name = line[6:].decode("utf-8", errors="replace")
+                if away(name, anywhere=False):
+                    return name.strip()
+        return None
+    if kind == ".fbx":
+        kept = b""
+        while chunk := handle.read(1 << 20):
+            data = kept + chunk
+            for match in FBX_FILE.finditer(data):
+                if match.group(1) is not None:
+                    name = data[match.end():match.end() + min(struct.unpack("<I", match.group(1))[0], 2000)]
+                else:
+                    name = match.group(2)
+                name = name.decode("utf-8", errors="replace")
+                if away(name, anywhere=True):
+                    return name.strip()
+            kept = data[-4096:]
+    return None
+
+
 def check(path):
     """Whether a zip is a report as this app writes them: {"ok", "problems", "files", "megabytes", "headline"}.
 
@@ -649,6 +713,11 @@ def check(path):
                 problems.append(f"{name}: not a {kind} file inside")
             if kind in TEXT and b"\0" in head:
                 problems.append(f"{name}: not text inside")
+            if kind in MODELS:
+                with archive.open(entry) as handle:
+                    far = _leads_out(kind, handle)
+                if far:
+                    problems.append(f"{name}: names a file outside the report ({far[:80]!r}), which Blender would open with the model")
         headline = []
         if "report.json" not in names:
             problems.append("no report.json: not a report of this app")

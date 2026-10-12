@@ -170,6 +170,12 @@ canvas.texture { width: 100%; display: block; margin-top: var(--s2); border-radi
 #paint.full #paint-view .cams { right: 348px; }
 .compare { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
 iframe { width: 100%; height: min(680px, calc(100vh - 140px)); border: 1px solid var(--line); border-radius: var(--r); background: #000; display: block; }
+/* The face marker's box: its bottom edge drags (the corner grip), and "Bigger picture" gives it the page's
+   width and the window's height. A tester could not mark a face in the 390 px left beside the 3D view. */
+.sizable { resize: vertical; overflow: hidden; min-height: 320px; max-height: 1600px; border-radius: var(--r); }
+.sizable iframe { height: 100%; }
+.split.wide { grid-template-columns: minmax(0, 1fr); }
+.split.wide .view.small { max-width: 420px; }
 .todo { display: flex; gap: var(--s3); align-items: center; padding: var(--s2) 0; border-top: 1px solid var(--line); }
 .todo:first-child { border-top: 0; }
 .todo span { flex: 1; }

@@ -25,6 +25,16 @@ TURN = 3.0
 # bone should. Model A (T-pose) before the rider and face-weight fixes: 328 of 1970 on Hair8/Hair11, 0.72.
 SWINGING = 0.02
 ON_HEAD = 0.9
+# Border edges a step that cuts nothing may open (vertices at one place counted as one). Good runs
+# of nine characters: 0 through every such step that leaves the mesh where it is; the margin is for
+# places that fall either side of the fingerprint's rounding.
+OPENED = 20
+# The step that moves the mesh: its bake parts the two sides of every sleeve cut, as they are meant
+# to part when the arms rise (6 edges on the A-pose model built on default options, 47 on model A
+# built without her skirt's repair, where the slit of 2026-10-07 across her lower back was 92). A
+# count can't tell those from a slit, so that step counts its own, copy by copy (to_tpose.py,
+# loose.parted_copies).
+BAKES = {"tpose"}
 
 
 def compare(step, before, after, rigged=False):
@@ -33,7 +43,7 @@ def compare(step, before, after, rigged=False):
     build older than the fingerprints): warnings only. `after` None: nothing to judge."""
     if after is None:
         return [], []
-    damage = [] if before is None else [*_keys(step, before, after), *_geometry(step, before, after),
+    damage = [] if before is None else [*_keys(step, before, after), *_geometry(step, before, after), *_slits(step, before, after),
                                         *_fingers(step, before, after, rigged), *_bones(before, after)]
     # said once, at the step that brings it: the counts in a line change at every weld after
     was = {} if before is None else _state(before)
@@ -71,6 +81,18 @@ def _geometry(step, before, after):
         elif (now["vertices"], now["polygons"], now["materials"]) != (was["vertices"], was["polygons"], was["materials"]):
             yield (f"{mesh} has {now['vertices']} vertices and {now['polygons']} polygons, "
                    f"was {was['vertices']} and {was['polygons']}")
+
+
+def _slits(step, before, after):
+    """A step that adds and removes nothing can still open the surface: by moving one copy of a
+    vertex along a texture seam and not its twin."""
+    if step in GEOMETRY | BAKES:
+        return
+    for mesh, was in before.get("meshes", {}).items():
+        now = after.get("meshes", {}).get(mesh) or {}
+        if "open_edges" in was and "open_edges" in now and now["open_edges"] - was["open_edges"] > OPENED:
+            yield (f"{mesh}: {now['open_edges'] - was['open_edges']} edges that were joined at rest are open now "
+                   f"({was['open_edges']} border edges before, {now['open_edges']} after): a slit in the surface")
 
 
 def _fingers(step, before, after, rigged):

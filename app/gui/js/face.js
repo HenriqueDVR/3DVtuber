@@ -193,6 +193,23 @@ function showFacePoints() {
 // apart (model A's nose is 0.66 eye widths under her eyes, a chibi's mouth 0.69), and a search
 // for the drawn stroke took model A's nose shading or her collar. The 3D preview shows it.
 
+// "Bigger picture": the marker over the whole page, as tall as the window; the 3D view goes under it.
+// Kept from one visit to the next. (the marker fits the picture to its box again by itself)
+const WIDE = "oc2vrm-marker-wide";
+function setWide(wide) {
+  $("marker-split").classList.toggle("wide", wide);
+  $("marker-box").style.height = wide ? "calc(100vh - 80px)" : "600px";
+  $("marker-wide").textContent = wide ? "Smaller picture" : "Bigger picture";
+  $("marker-wide").setAttribute("aria-pressed", wide);
+  if (wide) $("marker-box").scrollIntoView({ block: "nearest" });
+}
+$("marker-wide").onclick = () => {
+  const wide = !$("marker-split").classList.contains("wide");
+  setWide(wide);
+  try { localStorage.setItem(WIDE, wide ? "1" : "0"); } catch {}
+};
+try { if (localStorage.getItem(WIDE) === "1") setWide(true); } catch {}
+
 $("patch-make").onclick = () => job("face_patch", {});
 // A first guess from the face detector (app/face_guess.py): the marker takes the points as if
 // they had been clicked, and they save as hand-placed ones do. Never instead of looking: the

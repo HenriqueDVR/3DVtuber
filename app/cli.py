@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import engine, face_guess, paint, report, sheet, update, vendor
+from . import engine, face_guess, inside, paint, report, sheet, update, vendor
 from .engine import REPO, Project, StepFailed, manifest
 
 
@@ -102,6 +102,11 @@ def main(argv=None):
     p = sub.add_parser("sheet", help="contact sheets of the finished .vrm as apps draw it: face, body, details (headless Edge or Chrome)")
     p.add_argument("target", type=Path, help="a character manifest (its last .vrm) or a .vrm file")
     p.add_argument("--out", type=Path, help="folder for the PNGs (default: the character's renders/, or beside the .vrm)")
+    p.add_argument("--browser", help="msedge.exe or chrome.exe to use")
+
+    p = sub.add_parser("inside", help="what shows through a hole cut in the finished .vrm's surface, as apps draw it (the eye white deep in its socket); a build runs it with its vrm_check")
+    p.add_argument("target", type=Path, help="a character manifest (its last .vrm) or a .vrm file")
+    p.add_argument("--out", type=Path, help="folder for the report and pictures (default: the character's renders/, or beside the .vrm)")
     p.add_argument("--browser", help="msedge.exe or chrome.exe to use")
 
     p = sub.add_parser("movement", help="which pieces stay behind or tear when the arms and head move (runs Blender)")
@@ -265,11 +270,13 @@ def cmd_init(args):
         data["rig"] = data["source"] if rig.resolve() == Path(args.model).resolve() else _relative(rig, path)
     manifest.save(data, path)
     # another tool's skeleton in the model: readable (adopt.py) but not measured, so not taken unasked
-    other = None if data.get("rig") else manifest.rig_kind(args.model)
-    improving = manifest.improves(data)
+    other = None if data.get("rig") or manifest.keeps_rig(manifest.load(path)) else manifest.rig_kind(args.model)
+    improving = manifest.taken_in(manifest.load(path))
     return {"manifest": str(path), "source": data["source"], "rig": data.get("rig"), "other_rig": other,
             # whose avatar it is and whether its terms have to be read first (`set licence_read true` says they were)
-            "licence": engine.licence(args.model) if improving else None,
+            "licence": engine.licence(args.model) if manifest.improves(data) else None,
+            # a model that came whole (an MMD model as FBX) is taken in with its own rig, as a .vrm is
+            "kept_rig": manifest.keeps_rig(manifest.load(path)),
             "improving": improving, "next": f"python -m app {'run' if improving else 'prepare'} {path}"}
 
 
@@ -385,7 +392,8 @@ def prepare(manifest_path, on_event=None, blender=None):
     if _project(args()).survey() is None:
         _project(args()).run(only="survey", on_event=emit)
         did.append("survey")
-    if not (_project(args()).out / "pieces.json").exists():
+    listing = _project(args()).out / "pieces.json"
+    if not listing.exists() or listing_stale(_project(args()), engine._read_json(listing, None)):
         emit({"step": "pieces", "status": "running"})
         cmd_pieces(args())
         emit({"step": "pieces", "status": "done"})
@@ -428,16 +436,29 @@ def cmd_joint(args):
     return {"joints": data["joints"]}
 
 
+def listing_stale(project, listing):
+    """Whether the piece listing was made before the eyes were marked: its suggestions then read the
+    face by size alone (the fox girl's face came out as hair, her mouth and an eye as a hat)."""
+    face = manifest.path_of(project.data, "face")
+    points = engine._read_json(face, None) if face else None
+    return bool(listing and points and engine.marks_eyes(points) and not listing.get("eyes_marked")
+                and (project.survey() or {}).get("face_patch"))
+
+
 def cmd_pieces(args):
     project = _project(args)
     out = project.out / "pieces.json"
     out.parent.mkdir(parents=True, exist_ok=True)
+    face = manifest.path_of(project.data, "face")
     code, output = engine.run_script(project.blender, "list_pieces.py",
                                      # points and counts are the reference's, when there is one
                                      [manifest.path_of(project.data, "reference") or manifest.path_of(project.data, "source"),
                                       "--json", out,
                                       "--manifest", project.manifest_path, "--glb", project.out / "pieces.glb",
-                                      "--picture", project.out / engine.FIRST_PICTURE],
+                                      "--picture", project.out / engine.FIRST_PICTURE,
+                                      # the marks are on the face patch, which the reference doesn't have
+                                      *(["--face", face, "--marked-on", manifest.path_of(project.data, "source")]
+                                        if face and Path(face).exists() else [])],
                                      log=project.out / "pieces.log", extra=project.frame())
     if code != 0:
         raise StepFailed(f"list_pieces failed (see {project.out / 'pieces.log'})\n{output[-2000:]}")
@@ -538,6 +559,24 @@ def cmd_sheet(args):
         return {"vrm": str(vrm), **sheet.render(vrm, out, browser=args.browser)}
     except (sheet.NoBrowser, TimeoutError, RuntimeError) as error:
         raise StepFailed(f"sheet: {error}")
+
+
+def cmd_inside(args):
+    """viewer/inside.html's count on an exported file (app/inside.py): the worst camera's area of what shows
+    over 12 mm behind a window cut in a surface, and what of it fails; the pictures are in `out`."""
+    if args.target.suffix.lower() == ".vrm":
+        vrm, out = args.target, args.out or args.target.with_name(args.target.stem + "_inside")
+    else:
+        project = Project(args.target, blender=getattr(args, "blender", None))
+        vrm = project._last_vrm()
+        if vrm is None:
+            raise StepFailed("nothing exported yet")
+        out = args.out or project.out / "renders" / f"inside_{vrm.parent.name}"
+    try:
+        report = inside.measure(vrm, out, browser=args.browser, pictures=True)
+    except (sheet.NoBrowser, TimeoutError, RuntimeError) as error:
+        raise StepFailed(f"inside: {error}")
+    return {"vrm": str(vrm), "out": str(out), "images": report["images"], **inside.judge(report)}
 
 
 def _blend_of(project, step):
@@ -1040,7 +1079,7 @@ def cmd_report(args):
 
 
 COMMANDS = {"report": cmd_report, "init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_set, "joint": cmd_joint,
-            "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "portraits": cmd_portraits, "sheet": cmd_sheet, "movement": cmd_movement, "springs": cmd_springs,
+            "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "portraits": cmd_portraits, "sheet": cmd_sheet, "inside": cmd_inside, "movement": cmd_movement, "springs": cmd_springs,
             "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "paint": cmd_paint, "duplicate": cmd_duplicate, "rename": cmd_rename, "hide": cmd_hide, "delete": cmd_delete, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
             "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup,
             "regress": cmd_regress, "vendor": cmd_vendor, "update": cmd_update, "pack": cmd_pack, "detector": cmd_detector, "warudo": cmd_warudo}

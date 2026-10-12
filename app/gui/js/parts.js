@@ -321,7 +321,9 @@ async function setRole(row, patch, { quiet = false } = {}) {
 
 export function renderPieces() {
   const body = $("piece-rows");
-  $("accept-all").disabled = !S.listing?.pieces.some(hasSuggestion);
+  // suggestions made before the eyes were marked read the face by size: a tester accepted a face as hair
+  $("accept-all").disabled = S.listingStale || !S.listing?.pieces.some(hasSuggestion);
+  if (S.listing && S.listingStale) say("pieces-msg", "These suggestions were made before the face was marked and may take the face for hair. Press List pieces to make them again.", true);
   if (!S.listing) { body.innerHTML = `<tr><td colspan="6" class="msg">Not listed yet: press List pieces (one Blender run, about a minute).</td></tr>`; return; }
   const rows = sorted(S.listing.pieces.filter(visible));
   const hidden = S.listing.pieces.length - rows.length;

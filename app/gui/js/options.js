@@ -33,6 +33,8 @@ const OPTION_UI = [
     [[true, "on (recommended)", "Repaired."], [false, "off", "Left as rigged: they can stretch into long spikes."]]],
   ["repair_shoulder_seams", "Repair shoulder seams", "Closes gaps that open at the shoulders between the body and a sleeve when the arms go up.",
     [[true, "on (recommended)", "Repaired."], [false, "off", "Left as rigged."]]],
+  ["auto_pieces", "Fix clothing the arms leave behind", "During the build, the pose test's own fixes are applied: a hanging sleeve follows its arm, a mantle moves with the shoulders, a skirt the hands rest on stays on the body. The same fixes as “Apply this fix” on the Movement page, without the clicks. Pieces you gave a role on the Parts page keep it.",
+    [[false, "off", "Only the roles you gave are used."], [true, "on (new: being tried)", "Applied by itself; a fix that tears the rig is taken back."]]],
   ["A finished avatar"],
   ["licence_read", "The avatar's licence", "An avatar made by someone else comes with terms. The app changes the file (it straightens joints, converts VRM 0.x to 1.0, adds what you choose), so where it can't read the terms as allowing that, it asks you. The address of the terms is on the Build page when the build stops for them.",
     [[false, "not confirmed", "A file whose terms have to be read is not taken in."], [true, "I have read them and may change it", "The terms allow changing the avatar, or it is your own."]]],

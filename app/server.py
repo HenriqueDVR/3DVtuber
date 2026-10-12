@@ -40,6 +40,7 @@ mimetypes.add_type("model/gltf-binary", ".vrm")
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("text/javascript", ".mjs")
 mimetypes.add_type("application/wasm", ".wasm")  # a browser only compiles wasm served as this
+mimetypes.add_type("text/css", ".css")  # Windows' registry may say otherwise, and answers are sent "nosniff"
 
 # The calls a GET may make: they only read. Everything else starts a run or changes a file and
 # needs the POST with the page's header, which another site open in the browser can't send
@@ -48,6 +49,10 @@ READ_ONLY = {"projects", "setup", "update_check", "disk", "status", "manifest", 
              "face", "movement_result", "springs_result", "events", "paint"}
 # How much of the running step's log the Progress pane shows.
 LOG_TAIL = 1500
+# Said with every answer: a file is what its type says and nothing a browser guesses (a .log or .json
+# under out/ is never run as a page), no other site may show or read it (a private picture as its
+# <img>), and none may put the app in a frame of its own (a press on Delete under another page's button).
+GUARDS = {"X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "same-origin", "X-Frame-Options": "SAMEORIGIN"}
 
 
 class Jobs:
@@ -165,7 +170,8 @@ def api(route, query, body):
         return engine.manifest.load(m)
     if route == "pieces":
         listing = engine._read_json(Project(m).out / "pieces.json", None)
-        return {"listing": listing, "glb": _url(Project(m).out / "pieces.glb")}
+        return {"listing": listing, "glb": _url(Project(m).out / "pieces.glb"),
+                "stale": cli.listing_stale(Project(m), listing)}
     if route == "init":
         # ".." is its own .name: the character landed in the app's folder, off the list
         if not body.get("name") or Path(body["name"]).name != body["name"] or not body["name"].strip(". "):
@@ -492,8 +498,27 @@ class Handler(BaseHTTPRequestHandler):
         # the header, and a DNS-rebound name fails the host check
         return self.headers.get("Host") in (f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}")
 
+    def _from_elsewhere(self):
+        """Whether a page of another site is asking, as the browser itself says (Sec-Fetch-Site; a
+        program that is no browser says nothing). "same-site" is elsewhere too: another program's
+        page on this computer, at another port.
+
+        Any site could send the browser to /viewer/index.html?model=<a file of its own>, and the
+        viewer wrote that file's bone names into the page as HTML: elements of the sender's making
+        in a page with the app's rights, and no script only because three.js takes spaces, dots and
+        slashes out of a node's name. Nothing of the app asks from another site, so all of it is
+        refused, but a link to the first page."""
+        if self.headers.get("Sec-Fetch-Site") in (None, "same-origin", "none"):
+            return False
+        return not (self.path == "/" and self.headers.get("Sec-Fetch-Mode") == "navigate" and self.headers.get("Sec-Fetch-Dest") == "document")
+
+    def end_headers(self):
+        for name, value in GUARDS.items():
+            self.send_header(name, value)
+        super().end_headers()
+
     def do_GET(self):
-        if not self._trusted():
+        if not self._trusted() or self._from_elsewhere():
             return self.send_error(403)
         url = urlparse(self.path)
         if url.path == "/api/model":
@@ -523,7 +548,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
-        if not self._trusted() or self.headers.get("X-VTuber-Maker") != "1":
+        if not self._trusted() or self._from_elsewhere() or self.headers.get("X-VTuber-Maker") != "1":
             return self.send_error(403)
         url = urlparse(self.path)
         length = int(self.headers.get("Content-Length") or 0)

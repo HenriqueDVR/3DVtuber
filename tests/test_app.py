@@ -284,6 +284,13 @@ class Engine(unittest.TestCase):
                         new.writestr(inside, data)
             return path
 
+        def glb(doc):
+            text = json.dumps({"asset": {"version": "2.0"}, **doc}).encode()
+            text += b" " * (-len(text) % 4)
+            return b"glTF" + struct.pack("<II", 2, 20 + len(text)) + struct.pack("<I", len(text)) + b"JSON" + text
+        far = chr(92) * 2 + "elsewhere" + chr(92) + "share" + chr(92)  # a folder on another computer, as Windows writes it
+        fbx = b"Kaydara FBX Binary  \x00\x1a\x00"
+
         cases = {
             "program": ({"runs/setup.exe": b"MZ\x90\0"}, "a .exe file"),
             "script": ({"fix.bat": b"@echo off"}, "a .bat file"),
@@ -298,6 +305,18 @@ class Engine(unittest.TestCase):
             "long_log": ({"runs/big.log": b"a" * (3 * 2**20)}, None),
             "no_summary": ({"report.json": None}, "no report.json"),
             "binary_text": ({"runs/x.log": b"ok\0\0\0"}, "not text inside"),
+            # a model is opened by Blender, which opens what the model names: on Windows a folder on another
+            # computer is signed in to with the user's own name and password hash
+            "far_picture": ({"model/source/model.glb": glb({"images": [{"uri": far + "a.png"}]})}, "names a file outside the report"),
+            "far_buffer": ({"model/source/model.glb": glb({"buffers": [{"uri": "https://elsewhere.example/a.bin", "byteLength": 4}]})},
+                           "names a file outside the report"),
+            "file_above": ({"model/source/scene.gltf": json.dumps({"asset": {"version": "2.0"}, "images": [{"uri": "../../../secret.png"}]}).encode()},
+                           "names a file outside the report"),
+            "far_library": ({"model/source/body.obj": b"# made by hand\nmtllib " + far.encode() + b"body.mtl\nv 0 0 0\n"}, "names a file outside the report"),
+            "far_texture": ({"model/rig/rig.fbx": fbx + bytes(64) + b"\x10RelativeFilename" + b"S" + struct.pack("<I", len(far) + 8)
+                             + far.encode() + b"skin.png" + bytes(32)}, "names a file outside the report"),
+            "far_texture_text": ({"model/rig/rig.fbx": b'; FBX 7.4.0 project file\nTexture: 1, "Texture::skin", "" {\n\tFileName: "//elsewhere/share/skin.png"\n}\n'},
+                                 "names a file outside the report"),
         }
         for name, (files, said) in cases.items():
             with self.subTest(name):
@@ -314,6 +333,13 @@ class Engine(unittest.TestCase):
                     report.unpack(path, self.root / "received" / name)
                 self.assertFalse((self.root / "received" / name).exists())
         self.assertFalse(report.check(self.root / "character.json")["ok"])
+        # what a model may name: its own pictures inside it, and a file beside it; a texture's path on the
+        # computer it was made on is in every FBX and opens nothing here
+        made_on = "C:" + chr(92) + "Users" + chr(92) + "artist" + chr(92) + "skin.png"
+        kept = {"model/source/model.glb": glb({"images": [{"bufferView": 0}, {"uri": "data:image/png;base64,AAAA"}, {"uri": "skin.png"}]}),
+                "model/source/body.obj": b"mtllib body.mtl\nv 0 0 0\n",
+                "model/rig/rig.fbx": fbx + b"\x08FileName" + b"S" + struct.pack("<I", len(made_on)) + made_on.encode()}
+        self.assertEqual(report.check(forged("named_inside", **kept))["problems"], [])
         # a real one is unpacked into a folder of its own, once
         made = report.unpack(real, self.root / "received" / "real")
         self.assertEqual(json.loads((Path(made["folder"]) / "report.json").read_text())["note"], "mine")
@@ -433,6 +459,46 @@ class Engine(unittest.TestCase):
         chosen = self.project({"options": {}, "triangles": 40000}, eyes="iris")
         self.assertFalse(chosen._eyes_fall_back("eyes", refused))
         self.assertFalse(project._eyes_fall_back("mouth", refused))
+
+    def test_a_remembered_patch_that_is_refused_leaves_the_iris_to_try(self):
+        # a tester's fox girl: "slide" kept from a build of before her iris discs could slide, refused on
+        # every build since, and nothing else was tried
+        project = self.project({"options": {}, "triangles": 40000, "parts": {"eye_inserts": True}}, eyes=None)
+        project.state["eyes_fallback"] = "slide"
+        self.assertEqual(project.options()["eyes"], "slide")
+        refused = engine.StepFailed("eyes: face over the eye patch", errors.describe("VM-EYES-REFUSED"))
+        self.assertTrue(project._eyes_fall_back("eyes", refused))
+        self.assertEqual(project.options()["eyes"], "iris")
+        self.assertTrue(project._eyes_fall_back("eyes", refused))
+        self.assertEqual(project.options()["eyes"], "modelled")
+        self.assertFalse(project._eyes_fall_back("eyes", refused))
+        # painted eyes slide from the start: a refusal there has nothing before it to go back to
+        painted = self.project({"options": {}, "triangles": 40000, "parts": {}}, eyes=None)
+        painted.data["face"] = "face.json"
+        self.assertEqual(painted.options()["eyes"], "slide")
+        self.assertFalse(painted._eyes_fall_back("eyes", refused))
+
+    def test_a_refused_patch_is_not_told_to_slide(self):
+        known = errors.describe("VM-EYES-REFUSED")
+        refused = engine.StepFailed(f"eyes: failed [VM-EYES-REFUSED] {known['fix']}", known)
+        modelled = self.project({"options": {}, "triangles": 40000, "parts": {"eye_inserts": True}}, eyes="slide")
+        advice = modelled._eyes_advice("eyes", refused)
+        self.assertEqual(advice.known["options"], {"eyes": "modelled"})
+        self.assertNotIn("set eyes to slide", str(advice))
+        painted = self.project({"options": {}, "triangles": 40000, "parts": {}}, eyes="slide")
+        self.assertIsNone(painted._eyes_advice("eyes", refused).known["options"])
+        # an iris refused is still told to slide
+        iris = self.project({"options": {}, "triangles": 40000}, eyes="iris")
+        self.assertIs(iris._eyes_advice("eyes", refused), refused)
+
+    def test_a_listing_made_before_the_eyes_were_marked_is_stale(self):
+        project = self.project({"options": {}, "triangles": 40000, "face_patch": True})
+        self.assertFalse(cli.listing_stale(project, {"pieces": []}))  # no face marked
+        (self.root / "face.json").write_text(json.dumps({"size": [8, 8], "left_eye": {}, "right_eye": {"inner": [1, 1]}}))
+        project.data["face"] = str(self.root / "face.json")
+        self.assertTrue(cli.listing_stale(project, {"pieces": []}))
+        self.assertFalse(cli.listing_stale(project, {"pieces": [], "eyes_marked": True}))
+        self.assertFalse(cli.listing_stale(project, None))
 
     def test_only_the_export_step_writes_a_vrm(self):
         project = self.project({"options": {}, "triangles": 40000}, tpose="none")
@@ -1144,6 +1210,65 @@ class Engine(unittest.TestCase):
         self.assertEqual(compare("chest", good, self.fingerprint(spring_bones=59))[0], [])
         self.assertIn("51 spring bones, was 55", compare("eyes", good, self.fingerprint(spring_bones=51))[0])
 
+    def test_a_step_that_cuts_nothing_may_not_open_the_surface(self):
+        # one copy of a seam's vertices moved and not its twin: 92 border edges more across model A's lower back
+        compare = engine.contracts.compare
+        whole, slit = self.fingerprint(meshes__Body__open_edges=3132), self.fingerprint(meshes__Body__open_edges=3224)
+        self.assertIn("92 edges that were joined at rest are open now", compare("chest", whole, slit)[0][0])
+        # a few places either side of the count's rounding are none, and a step that cuts may open what it likes
+        self.assertEqual(compare("chest", whole, self.fingerprint(meshes__Body__open_edges=3138))[0], [])
+        self.assertEqual(compare("eyes", whole, slit)[0], [])
+        # the bake parts the two sides of every sleeve cut (47 edges on model A built without her skirt's repair,
+        # which this count failed as a slit): the T-pose step counts its own, copy by copy (loose.parted_copies)
+        self.assertEqual(compare("tpose", whole, self.fingerprint(meshes__Body__open_edges=3179))[0], [])
+        self.assertEqual(compare("tpose", whole, slit)[0], [])
+        # a build from before the count was kept
+        self.assertEqual(compare("chest", self.fingerprint(), slit)[0], [])
+
+    def test_pieces_get_roles_by_themselves_only_when_asked(self):
+        survey = {"options": {}, "triangles": 40000}
+        self.assertFalse(manifest.OPTIONS["auto_pieces"])
+        self.assertNotIn("pieces", self.runs(self.project(survey)))
+        project = self.project(survey, auto_pieces=True)
+        self.assertIn("pieces", self.runs(project))
+        # the step reads the user's manifest until the movement check has found pieces of its own
+        stem = self.root / "07_pieces"
+        self.assertEqual(project._arguments("pieces", stem, self.root / "in.blend")[0][-1], project.manifest_path)
+        engine._found_manifest(stem).write_text("{}")
+        self.assertEqual(project._arguments("pieces", stem, self.root / "in.blend")[0][-1], engine._found_manifest(stem))
+        # ... and the movement check after the build names pieces by the roles that step gave
+        named = lambda: project._arguments("movement", self.root / "16_movement", self.root / "in.blend")[0]  # noqa: E731
+        self.assertEqual(named()[named().index("--manifest") + 1], project.manifest_path)
+        project.state["steps"]["pieces"] = {"status": "done", "report": {"manifest": str(engine._found_manifest(stem)), "found": ["follow_bone_7"]}}
+        self.assertEqual(named()[named().index("--manifest") + 1], engine._found_manifest(stem))
+        project.state["steps"]["pieces"]["report"]["found"] = []
+        self.assertEqual(named()[named().index("--manifest") + 1], project.manifest_path)
+        data = manifest.load(self.path)
+        data["options"]["auto_pieces"] = "yes"
+        with self.assertRaisesRegex(ValueError, "auto_pieces"):
+            manifest.validate(data)
+
+    def test_what_the_movement_check_found_becomes_pieces(self):
+        # model B without the pieces named by hand: a hanging sleeve and the mantle, as "Apply this fix" writes them
+        behind = lambda bone: [{"pose": "arms raised", "kind": "stays behind", "bone": bone, "taken_by": 3, "share": 0.7}]  # noqa: E731
+        movement = {"pieces": [
+            {"label": 9041, "count": 158, "point": [0.162, -0.046, 0.997], "suggested": "follow_bone", "findings": behind("LeftUpperArm")},
+            {"label": 5120, "count": 1039, "point": [-0.24, -0.107, 1.106], "suggested": "shoulder_cloth", "findings": behind(None)},
+            # a role the build step acts on is the user's to give, a piece the user named keeps its role, and
+            # a finding with no role for it (the waist piece a hanging hand rested on) is left alone
+            {"label": 77, "count": 400, "point": [0.0, 0.1, 1.5], "suggested": "hair", "findings": behind("Head")},
+            {"label": 12, "count": 13569, "point": [-0.17, -0.086, 0.804], "suggested": "fitted_skirt", "role": "body",
+             "name": "skirt", "findings": [{"pose": "arms raised", "kind": "torn", "stretch_cm": 41.3}]},
+            {"label": 5, "count": 762, "point": [0.1, -0.1, 0.9], "suggested": "", "findings": behind("RightHand")}]}
+        found = engine.found_pieces(movement, [{"name": "skirt"}, {"name": "shoulder_cloth_5120"}])
+        self.assertEqual([(p["name"], p["role"], p.get("bone"), p["count"], p["found"]) for p in found],
+                         [("follow_bone_9041", "follow_bone", "LeftUpperArm", 158, True),
+                          ("shoulder_cloth_5120_found", "shoulder_cloth", None, 1039, True)])
+        data = manifest.load(self.path)
+        data["pieces"] = found
+        manifest.validate(data)
+        self.assertEqual(engine.found_pieces({}, []), [])
+
     def test_face_pieces_on_hair_springs_are_said_once(self):
         compare = engine.contracts.compare
         swinging = self.fingerprint(face__Body={"vertices": 1970, "head": 0.72, "on_springs": 328})
@@ -1810,6 +1935,51 @@ class NoFingers(unittest.TestCase):
             self.assertTrue(dict((n, r) for n, r, _ in project.plan())["finger_guides"])
 
 
+class ModelWithItsOwnRig(unittest.TestCase):
+    """A character whose source is an MMD model as FBX is taken in with its rig, not rigged again."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.root = Path(self.folder.name)
+        (self.root / "game.fbx").write_bytes(b"Kaydara FBX Binary\0Model::Left elbow\0\1LimbNode")
+        (self.root / "tripo.fbx").write_bytes(b"Kaydara FBX Binary\0Model::J_Bip_C_Hips")
+        self.path = self.root / "character.json"
+        self.real_settings, engine.SETTINGS = engine.SETTINGS, self.root / "settings.json"
+
+    def tearDown(self):
+        engine.SETTINGS = self.real_settings
+        self.folder.cleanup()
+
+    def project(self, source="game.fbx", **options):
+        data = manifest.new(source, "Test")
+        data["out_dir"] = "out"
+        data["options"].update(options)
+        manifest.save(data, self.path)
+        return Project(self.path, blender="blender")
+
+    def test_its_rig_is_kept_and_only_the_pose_and_the_checks_run(self):
+        project = self.project(chest=True)
+        self.assertTrue(project.keeping and project.improving)
+        self.assertFalse(manifest.improves(project.data))
+        plan = {name: (runs, why) for name, runs, why in project.plan()}
+        self.assertEqual({name for name, (runs, _) in plan.items() if runs},
+                         {"build", "tpose", "check", "export", "vrm_check", "springs"})
+        self.assertEqual(plan["hair"], (False, "the model's own hair weights and springs stay"))
+        self.assertEqual(plan["chest"][0], False)
+        build, extra = project._arguments("build", self.root / "out" / "01_build", None)
+        self.assertEqual(build[0], "import_rigged.py")
+        self.assertEqual(extra, engine.NO_EXPORT)
+        pose, _ = project._arguments("tpose", self.root / "out" / "09_tpose", None)
+        self.assertIn("--keep-finger-pose", pose)
+        self.assertNotIn("--spec-hands", pose)
+
+    def test_the_user_can_have_it_built_as_a_bare_surface_and_other_rigs_are_not_kept(self):
+        self.assertFalse(self.project(keep_rig=False).improving)
+        # Tripo's rig is a body's alone: adopted (the manifest's `rig`), with the face and hair made here
+        self.assertFalse(self.project(source="tripo.fbx").keeping)
+        self.assertEqual(manifest.inert(self.project(skinning="voxel", hair_hits_body=False).data), ["skinning"])
+
+
 class FinishedVrm(unittest.TestCase):
     """A character whose source is a finished .vrm is taken in as it is and added to, not built."""
 
@@ -2395,6 +2565,15 @@ class Updates(unittest.TestCase):
         for name in ("app/server.py", "OC2VRM.bat", "docs/agent/app.md"):
             self.assertTrue(update._guarded(name), name)
 
+    def test_the_users_own_things_are_kept_however_a_zip_spells_them(self):
+        # Windows reads "Out", "TOOLS" and "out." as out and tools, and "Update.JSON" as update.json:
+        # a zip that spelled them so wrote over the characters, Blender and the key an update never touches
+        for name in ("Out/OC3/character.json", "TOOLS/blender/blender.exe", "out./x.json", "samples /a.glb", "Update.JSON",
+                     ".OC2VRM_version.json", "Music.MP3", ".GIT/config", "update.json.", "dist/x.zip"):
+            self.assertFalse(update._guarded(name), name)
+        for name in ("output/notes.md", "app/update.json.py", "tools.md"):
+            self.assertTrue(update._guarded(name), name)
+
     def test_a_run_in_a_copy_without_git_says_which_version_built_it(self):
         # a tester's run.json said "commit": null: git was the only one asked
         made_by = engine.provenance("blender", self.app / "out" / "Mine" / "character.json")
@@ -2553,6 +2732,55 @@ class Server(unittest.TestCase):
             probe = Probe(f"/api/{route}")
             probe.do_GET()
             self.assertEqual(probe.said, [route])
+
+    def asked(self, path, **headers):
+        """(status, headers) of a GET to a server started for it, with the headers a browser would add."""
+        import http.client
+        import threading
+        served, port = server._listen(0)
+        threading.Thread(target=served.serve_forever, daemon=True).start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+            connection.request("GET", path, headers=headers)
+            response = connection.getresponse()
+            response.read()
+            return response.status, {name.lower(): value for name, value in response.getheaders()}
+        finally:
+            connection.close()
+            served.shutdown()
+            served.server_close()
+
+    def test_a_page_of_another_site_is_refused(self):
+        # any site could send the browser to /viewer/index.html?model=<its own file>, whose bone names the
+        # viewer wrote into the page as HTML, in a page with the app's rights (every character, every POST)
+        viewer = "/viewer/index.html?model=https://elsewhere.example/a.vrm"
+        for site in ("cross-site", "same-site"):  # same-site: another program's page on this computer
+            for path in (viewer, "/api/projects", "/gui/app.css", "/?character=x"):
+                self.assertEqual(self.asked(path, **{"Sec-Fetch-Site": site, "Sec-Fetch-Mode": "navigate"})[0], 403, (site, path))
+        # the app's own page, the address typed or opened by the app, and a program that is no browser
+        for site in ("same-origin", "none", None):
+            self.assertEqual(self.asked("/viewer/index.html", **({"Sec-Fetch-Site": site} if site else {}))[0], 200, site)
+        # a link to the app on another site's page still opens its first page, and nothing else
+        self.assertEqual(self.asked("/", **{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"})[0], 200)
+        self.assertEqual(self.asked("/", **{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "iframe"})[0], 403)
+
+    def test_answers_say_how_a_browser_may_use_them(self):
+        for path in ("/", "/gui/app.css", "/api/setup", "/viewer/index.html"):
+            status, headers = self.asked(path)
+            self.assertEqual(status, 200, path)
+            self.assertEqual(headers.get("x-content-type-options"), "nosniff", path)          # a .log or .json is never read as a page
+            self.assertEqual(headers.get("cross-origin-resource-policy"), "same-origin", path)  # nor a picture shown on another site
+            self.assertEqual(headers.get("x-frame-options"), "SAMEORIGIN", path)               # nor the app framed by one
+        self.assertEqual(self.asked("/gui/app.css")[1]["content-type"], "text/css")  # whatever Windows' registry says of .css
+
+    def test_the_viewer_writes_no_name_of_a_model_as_html_and_opens_only_this_servers_models(self):
+        page = (REPO / "viewer" / "index.html").read_text(encoding="utf-8")
+        # Edge 155 makes elements of markup inside a <select>'s options: a bone named <b>x or <svg> became
+        # one (out/_task5/viewer_probe.py); no script ran, only because three.js strips " ", ".", ":" and "/"
+        # from a node's name
+        self.assertNotRegex(page, r"innerHTML\s*\+?=[^;]*\$\{name\}")
+        self.assertIn("new Option(name, name)", page)
+        self.assertRegex(page, r"new URL\(model, location\.href\)\.origin === location\.origin")
 
     def test_a_running_step_shows_the_end_of_its_log(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -3268,6 +3496,183 @@ class Vendor(unittest.TestCase):
         text = (REPO / "viewer" / "index.html").read_text(encoding="utf-8") + (REPO / "app" / "gui" / "index.html").read_text(encoding="utf-8")
         for _, address, _ in vendor.PACKAGES:
             self.assertIn(address, text)
+
+
+class Inside(unittest.TestCase):
+    """What shows through a hole cut in the exported file's surface, as apps draw it (app/inside.py)."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.root = Path(self.folder.name)
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def page_said(self, deep, hair=0.0, by="EyeLids"):
+        """A report as viewer/inside.html sends it: three cameras, the middle one seeing `deep` mm2 over the limit."""
+        shot = lambda label, mm2: {"label": label, "from": [0, 0], "pose": "rest", "model": 90000, "window_mm2": 1600.0, "deep_mm2": mm2,  # noqa: E731
+                                   "through_mm2": 0.0, "behind90_mm": 6.0, "by": {by: 10} if mm2 else {}, "hair_inside_mm2": 0.0, "head_inside_mm2": 0.0}
+        return {"cut_out": ["EyeIris", "EyeLids"], "deep_mm": 12, "face": [shot("face -20,0", deep / 3), shot("face 0,0", deep), shot("face 20,0", 0.0)],
+                "hair": [{**shot("rest 80,-10", 0.0), "hair_inside_mm2": hair}]}
+
+    def test_a_deep_white_fails_and_a_shallow_one_does_not(self):
+        from app import inside
+        # the worst camera's counts of the fox girl's deep white and of one eye of it, the catgirl's, and the
+        # most any good build read (the plain boy's white 6 mm down)
+        for deep, fails in ((543.8, True), (277.7, True), (408.3, True), (11.6, False), (0.0, False), (inside.LIMIT_MM2, False)):
+            found = inside.judge(self.page_said(deep))
+            self.assertEqual(bool(found["failed"]), fails, deep)
+            self.assertEqual((found["deep_mm2"], found["shot"]), (deep, "face 0,0") if deep else (0.0, "face -20,0"))
+        line = inside.judge(self.page_said(408.3))["failed"][0]
+        self.assertIn("408 mm2", line)
+        self.assertIn("EyeLids", line)
+        # the hair's inside beside the neck is measured and never judged: every long-haired build reads thousands
+        found = inside.judge(self.page_said(0.0, hair=4911.0))
+        self.assertEqual((found["hair_inside_mm2"], found["hair_shot"], found["failed"]), (4911.0, "rest 80,-10", []))
+
+    def test_no_browser_is_started_for_what_is_no_vrm_and_a_build_is_never_lost_to_it(self):
+        from unittest import mock
+        from app import inside, sheet
+        fake = self.root / "a.vrm"
+        fake.write_bytes(b"glTF-model")
+        with mock.patch.object(sheet, "launch", side_effect=AssertionError("a browser was started")):
+            self.assertEqual(inside.check(fake, self.root / "seen"), {"left": "not a VRM file"})
+            self.assertEqual(inside.check(self.root / "missing.vrm", self.root / "seen"), {"left": "not a VRM file"})
+        real = Engine.write_glb(self, "real.vrm", {"asset": {"version": "2.0"}, "extensions": {"VRMC_vrm": {}}})
+        for error, said in ((sheet.NoBrowser("no Edge or Chrome found"), "no Edge or Chrome found"), (TimeoutError("inside.html wasn't drawn in 300 s"), "couldn't be drawn"),
+                            (RuntimeError("this browser's graphics can't be read back as numbers"), "can't be read back")):
+            with mock.patch.object(sheet, "browse", side_effect=error):
+                self.assertIn(said, inside.check(real, self.root / "seen")["left"])
+
+    def test_the_exported_files_check_ends_with_it_and_the_verdict_takes_it_in(self):
+        from unittest import mock
+        from app import inside
+        data = manifest.new("model.glb", "Test")
+        data["out_dir"] = "out"
+        manifest.save(data, self.root / "character.json")
+        real = engine._blender, engine.free_disk, engine.free_memory, engine.SETTINGS
+
+        def blender(blender, blend_in, args, log, extra):
+            Path(log).write_text("checked\n")
+            Path(args[args.index("--json") + 1]).write_text(json.dumps({"failed": [], "poses": {}, "unweighted": 0}))
+            return 0
+        engine._blender, engine.free_disk, engine.free_memory, engine.SETTINGS = blender, lambda path: 100 << 30, lambda: 16 << 30, self.root / "settings.json"
+        try:
+            project = Project(self.root / "character.json", blender="blender")
+            vrm = Engine.write_glb(self, "14_export.vrm", Engine.avatar(self))
+            project._record("export", {"status": "done", "vrm": str(vrm)})
+            seen = inside.judge(self.page_said(408.3))
+            with mock.patch.object(inside, "check", return_value=seen) as checked:
+                entry = project._run_step("vrm_check", engine.NAMES.index("vrm_check"), self.root)
+            self.assertEqual(Path(checked.call_args.args[0]), vrm)
+            self.assertEqual(entry["report"]["seen"], seen)
+            # in the check's own report, where `compare` and `regress` read it, and in the step's log
+            self.assertEqual(json.loads(Path(entry["json"]).read_text())["seen"]["deep_mm2"], 408.3)
+            self.assertIn("seen: ", Path(entry["log"]).read_text())
+            project._record("vrm_check", entry)
+            verdict = project.verdict([])
+            self.assertFalse(verdict["ready"])
+            self.assertTrue(any(page == "review" and line.startswith("as apps draw it: 408 mm2") for page, line in verdict["issues"]), verdict)
+            # a file that couldn't be drawn is a look, never an issue
+            project.state["steps"]["vrm_check"]["report"]["seen"] = {"left": "no Edge or Chrome found"}
+            verdict = project.verdict([])
+            self.assertFalse(any("as apps draw it" in line for _, line in verdict["issues"]))
+            self.assertTrue(any("wasn't drawn" in line and "no Edge or Chrome" in line for _, line in verdict["looks"]), verdict)
+        finally:
+            engine._blender, engine.free_disk, engine.free_memory, engine.SETTINGS = real
+
+    def test_a_vrm_taken_in_keeps_what_shows_through_it_as_a_look(self):
+        from app import inside
+        Engine.write_glb(self, "avatar.vrm", Engine.avatar(self))
+        data = manifest.new("avatar.vrm", "Test")
+        data["out_dir"] = "out"
+        manifest.save(data, self.root / "character.json")
+        real, engine.SETTINGS = engine.SETTINGS, self.root / "settings.json"
+        try:
+            project = Project(self.root / "character.json", blender="blender")
+            vrm = Engine.write_glb(self, "14_export.vrm", Engine.avatar(self))
+            project.state["steps"]["export"] = {"status": "done", "vrm": str(vrm)}
+            project.state["steps"]["vrm_check"] = {"status": "done", "report": {"ships": engine.shipped(vrm), "seen": inside.judge(self.page_said(408.3))}}
+            verdict = project.verdict([])
+            self.assertFalse(any("as apps draw it" in line for _, line in verdict["issues"]))
+            self.assertTrue(any("as apps draw it: 408 mm2" in line for _, line in verdict["looks"]), verdict)
+        finally:
+            engine.SETTINGS = real
+
+    def test_two_builds_are_compared_by_it(self):
+        check = lambda deep: {"poses": {}, "unweighted": 0, **({"seen": {"deep_mm2": deep}} if deep is not None else {})}  # noqa: E731
+        worse, better = engine.compare_checks.changes(check(0.6), check(408.3))
+        self.assertEqual((worse, better), (["mm2 seen deep through a hole in the surface 0.6 -> 408.3"], []))
+        worse, better = engine.compare_checks.changes(check(543.8), check(0.0))
+        self.assertEqual((worse, better), ([], ["mm2 seen deep through a hole in the surface 543.8 -> 0"]))
+        # the same file drawn again, and a report from before the count was kept
+        self.assertEqual(engine.compare_checks.changes(check(0.6), check(1.8)), ([], []))
+        self.assertEqual(engine.compare_checks.changes(check(None), check(408.3)), ([], []))
+
+    def tiny_vrm(self, name, behind, patch=False):
+        """A VRM 1.0 file of three sheets at head height, facing forward: an eye's frame (material EyeLids, cut
+        out: opaque with a 4 x 3 cm window in its picture), a surface `behind` metres behind the frame, and
+        with `patch` a blended sheet with the same hole 3 cm in front of both."""
+        import zlib
+        chunk = lambda kind, body: struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))  # noqa: E731
+        rows = b"".join(b"\0" + b"".join(b"\xe0\xb0\xa0" + (b"\0" if 4 <= x < 12 and 4 <= y < 12 else b"\xff") for x in range(16)) for y in range(16))
+        png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 16, 16, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+        bones = ["hips", "spine", "neck", "head", "leftUpperArm", "leftLowerArm", "leftHand", "rightUpperArm", "rightLowerArm", "rightHand",
+                 "leftUpperLeg", "leftLowerLeg", "leftFoot", "rightUpperLeg", "rightLowerLeg", "rightFoot"]
+        heights = {"hips": 0.9, "spine": 1.0, "neck": 1.35, "head": 1.43}
+        # (half width, half height, depth, material) of each sheet, centred where the page aims: 7 cm over the head joint
+        sheets = [(0.04, 0.03, 0.002, 1), (0.15, 0.15, -behind, 0)] + ([(0.04, 0.03, 0.03, 2)] if patch else [])
+        binary, views, accessors, primitives = b"", [], [], []
+
+        def add(body, **accessor):
+            nonlocal binary
+            views.append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(body)})
+            accessors.append({"bufferView": len(views) - 1, "componentType": 5126, **accessor})
+            binary += body + b"\0" * (-len(body) % 4)
+            return len(accessors) - 1
+        for w, h, z, material in sheets:
+            corners = [(-w, 1.5 - h, z), (w, 1.5 - h, z), (w, 1.5 + h, z), (-w, 1.5 + h, z)]
+            position = add(struct.pack("<12f", *(c for corner in corners for c in corner)), count=4, type="VEC3",
+                           min=[-w, 1.5 - h, z], max=[w, 1.5 + h, z])
+            uv = add(struct.pack("<8f", 0, 1, 1, 1, 1, 0, 0, 0), count=4, type="VEC2")
+            index = add(struct.pack("<6H", 0, 1, 2, 0, 2, 3), count=6, type="SCALAR")
+            accessors[index]["componentType"] = 5123
+            primitives.append({"attributes": {"POSITION": position, "TEXCOORD_0": uv}, "indices": index, "material": material})
+        views.append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(png)})
+        binary += png
+        picture = {"baseColorTexture": {"index": 0}}
+        gltf = {"asset": {"version": "2.0"}, "extensionsUsed": ["VRMC_vrm"], "scene": 0, "scenes": [{"nodes": [0, len(bones)]}],
+                "nodes": [{"name": bones[0], "translation": [0, heights["hips"], 0], "children": list(range(1, len(bones)))}]
+                + [{"name": bone, "translation": [0, heights.get(bone, 1.0) - heights["hips"], 0]} for bone in bones[1:]] + [{"name": "Body", "mesh": 0}],
+                "meshes": [{"primitives": primitives}],
+                "materials": [{"name": "Skin", "doubleSided": True, "pbrMetallicRoughness": {"baseColorFactor": [0.9, 0.9, 0.9, 1]}},
+                              {"name": "EyeLids", "doubleSided": True, "alphaMode": "MASK", "alphaCutoff": 0.5, "pbrMetallicRoughness": picture},
+                              {"name": "EyePaint", "doubleSided": True, "alphaMode": "BLEND", "pbrMetallicRoughness": picture}],
+                "textures": [{"source": 0, "sampler": 0}], "samplers": [{"magFilter": 9728, "minFilter": 9728}],
+                "images": [{"bufferView": len(views) - 1, "mimeType": "image/png"}],
+                "buffers": [{"byteLength": len(binary)}], "bufferViews": views, "accessors": accessors,
+                "extensions": {"VRMC_vrm": {"specVersion": "1.0", "meta": {"name": "Test", "authors": ["test"], "licenseUrl": "https://vrm.dev/licenses/1.0/"},
+                                            "humanoid": {"humanBones": {bone: {"node": i} for i, bone in enumerate(bones)}}}}}
+        return Engine.write_glb(self, name, gltf, binary)
+
+    def test_a_browser_counts_what_shows_through_a_cut_window_and_not_through_a_blended_patch(self):
+        from app import inside, sheet
+        try:
+            sheet.find_browser()
+        except sheet.NoBrowser as error:
+            self.skipTest(str(error))
+        # the window's 1,200 mm2 with a surface 3 cm behind it, as the fox girl's socket lay
+        deep = inside.check(self.tiny_vrm("deep.vrm", 0.03), self.root / "deep")
+        self.assertNotIn("left", deep, deep)
+        self.assertEqual(deep["cut_out"], ["EyeLids"])
+        self.assertTrue(900 < deep["deep_mm2"] < 1500 and deep["shot"] == "face 0,0", deep)
+        self.assertEqual(len(deep["failed"]), 1)
+        self.assertTrue((self.root / "deep" / "inside_worst.png").stat().st_size > 1000)
+        # the same window with the surface 3 mm behind, under a blended patch standing 3 cm off it (model B's
+        # eye patches stand 13 mm off her face): holes in a blended sheet are no window
+        shallow = inside.check(self.tiny_vrm("shallow.vrm", 0.003, patch=True), self.root / "shallow")
+        self.assertEqual((shallow.get("deep_mm2"), shallow.get("failed")), (0.0, []), shallow)
+        self.assertGreater(shallow["window_mm2"], 300)  # the frame's own window is still read where the patch leaves it clear
 
 
 if __name__ == "__main__":

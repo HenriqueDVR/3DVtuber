@@ -1,6 +1,6 @@
 // What every page shares: the open character's data, the API call, and the words for roles and bones.
 export const $ = (id) => document.getElementById(id);
-export const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+export const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 export const hex = (n) => `#${n.toString(16).padStart(6, "0")}`;
 export const now = () => new Date().toLocaleTimeString();
 
@@ -43,7 +43,10 @@ export function plain(step, reason) {
   const r = String(reason || "");
   if (step === "eyes" && /iris shows over the lids/.test(r))
     return "the blink doesn't cover the moving iris, so eye tracking was left out. Try sliding eye patches (Face), or ask for a fuller blink.";
-  if (step === "eyes" && /face points|patch/i.test(r)) return "eye tracking needs face points on a face patch (Face page).";
+  // not "face over the eye patch": a tester who had marked the face was told to mark it
+  if (step === "eyes" && /face over the eye patch/.test(r))
+    return "the sliding eye patch would go under the face, so eye tracking was left out. Try another way for the eyes to move (Face).";
+  if (step === "eyes" && /face points|needs? a face patch/i.test(r)) return "eye tracking needs face points on a face patch (Face page).";
   return lastLine(r);
 }
 // A piece the pose test listed and found right as it is (a cape the arms move free under): not a problem.

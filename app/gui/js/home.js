@@ -112,7 +112,8 @@ $("create").onclick = async () => {
     if (made.improving) {
       // a finished avatar has nothing to mark or list: getting it ready is building it
       const terms = made.licence || {};
-      toast(terms.spec === "0.x" ? "A finished avatar in VRM 0.x: it is taken in as it is and written out as VRM 1.0. Nothing is rigged again."
+      toast(made.kept_rig ? "This model came rigged (an MMD model): its own skeleton, weights, swinging bones and face shapes are kept. Nothing is rigged again."
+        : terms.spec === "0.x" ? "A finished avatar in VRM 0.x: it is taken in as it is and written out as VRM 1.0. Nothing is rigged again."
         : "A finished avatar: it is taken in as it is, and nothing is rigged again.", "good", { ms: 8000 });
       app.go("build");
       // another's avatar under terms the app can't read: theirs to read and to say, before anything is changed

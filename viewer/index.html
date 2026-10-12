@@ -221,7 +221,8 @@ function buildBoneList() {
     for (let v = 0; v < index.count; v++) for (let k = 0; k < 4; k++) if (weight.getComponent(v, k) > 0) used.add(mesh.skeleton.bones[index.getComponent(v, k)]?.name);
   }
   const select = document.getElementById("weight-bone");
-  select.innerHTML = `<option value="">every bone, one colour each</option>` + [...used].filter(Boolean).map((name) => `<option>${name}</option>`).join("");
+  // as nodes, never as HTML: a bone is named by whoever made the file, and markup in a name became elements
+  select.replaceChildren(new Option("every bone, one colour each", ""), ...[...used].filter(Boolean).map((name) => new Option(name, name)));
   if (!used.has(weights.bone)) weights.bone = "";
   select.value = weights.bone;
 }
@@ -491,7 +492,7 @@ document.getElementById("raise-arm").addEventListener("click", (event) => toggle
 document.getElementById("look-around").addEventListener("click", (event) => toggle(event.currentTarget, "look"));
 
 const poseSelect = document.getElementById("pose"), poseAmount = document.getElementById("pose-amount");
-poseSelect.innerHTML += [...Object.keys(ARM_POSES), ...Object.keys(TURN_POSES)].map((name) => `<option>${name}</option>`).join("");
+poseSelect.append(...[...Object.keys(ARM_POSES), ...Object.keys(TURN_POSES)].map((name) => new Option(name, name)));
 function setPose(name, amount = 1) {
   pose.name = name in ARM_POSES || name in TURN_POSES ? name : "";
   pose.amount = Math.max(-1, Math.min(1, Number(amount)));
@@ -544,7 +545,9 @@ const query = new URLSearchParams(location.search);
 const model = query.get("model");
 if (query.get("pose")) setPose(query.get("pose"), query.get("amount") ?? 1);
 if (query.has("weights")) showWeights(true, query.get("weights"));
-if (model) load(model, model).catch(showError);
+// only a model this server hands out: the page has the app's rights, and an address can be given to it by any site
+if (model && new URL(model, location.href).origin === location.origin) load(model, model).catch(showError);
+else if (model) showError(new Error("only a model of this app is opened by its address: drop the file on the page instead"));
 
 function animate() {
   requestAnimationFrame(animate);
