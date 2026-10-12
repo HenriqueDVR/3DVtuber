@@ -309,6 +309,11 @@ def fill(image, depth, hidden, keep=()):
             total += np.roll(small, shift, axis) * near[..., None]
             count += near
         new = todo & (count > 0)
+        if not new.any():
+            # what is left has no filled neighbour on its own surface and never will: every further
+            # pass would find the same nothing. Without this the loop ran all its passes whenever one
+            # texel couldn't be reached: 40 to 90 s of a remade patch (model A: 92 s, 2026-10-12)
+            break
         small[new] = total[new] / count[new][:, None]
         known |= new
         todo &= ~new

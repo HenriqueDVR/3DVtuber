@@ -5,6 +5,12 @@ a raw view-depth EXR used later for visibility tests, and a normalised depth
 PNG (near = white) for ControlNet. Camera data goes to views.json.
 
     blender -b --python render_views.py -- model.glb|model.fbx out_dir [resolution]
+            [--only head_000,torso_180] [--depth-of head_000]
+
+`--only`: draw these views alone (all 34 without it). `--depth-of`: keep the depth, EXR and PNG, of
+these alone (of every view drawn without it). The app's face patch asks for the nine views and the one
+depth it reads (app/cli.py PATCH_VIEWS): drawn whole for every new character, the other 25 views and
+33 depths were read by nothing and took 9 of the face patch's 18 seconds.
 """
 import json
 import math
@@ -29,6 +35,8 @@ HEAD_AT = float(argv[argv.index("--head-at") + 1]) if "--head-at" in argv else 0
 # --body F: the body's share of the model's height, when horns or a tail stand over the head: the head
 # and face views are sized by the body, or the face is small in a picture of mostly horns.
 BODY = float(argv[argv.index("--body") + 1]) if "--body" in argv else 1.0
+ONLY = set(argv[argv.index("--only") + 1].split(",")) if "--only" in argv else None
+DEPTH_OF = set(argv[argv.index("--depth-of") + 1].split(",")) if "--depth-of" in argv else None
 os.makedirs(OUT, exist_ok=True)
 
 def _upstream_texture(node, depth=4):
@@ -150,16 +158,23 @@ def save_depth_png(exr_path, png_path):
     bpy.data.images.remove(img)
 
 
+unknown = sorted(((ONLY or set()) | (DEPTH_OF or set())) - {view[0] for view in views})
+if unknown:
+    sys.exit(f"no such view: {', '.join(unknown)} (there are {', '.join(view[0] for view in views)})")
+
 records = []
 for name, loc, rot, ortho, tile, yaw in views:
+    if ONLY is not None and name not in ONLY:
+        continue
     cam.location = loc
     cam.rotation_euler = rot
     cam_data.ortho_scale = ortho
     bpy.context.view_layer.update()
     render(os.path.join(OUT, f"color_{name}.png"), color_mat, 16, 0.5, False)
-    zpath = os.path.join(OUT, f"z_{name}.exr")
-    render(zpath, depth_mat, 1, 0.0, True)
-    save_depth_png(zpath, os.path.join(OUT, f"depth_{name}.png"))
+    if DEPTH_OF is None or name in DEPTH_OF:
+        zpath = os.path.join(OUT, f"z_{name}.exr")
+        render(zpath, depth_mat, 1, 0.0, True)
+        save_depth_png(zpath, os.path.join(OUT, f"depth_{name}.png"))
     records.append({
         "name": name, "tile": tile, "yaw": yaw, "ortho_scale": ortho,
         "matrix_world": [list(r) for r in cam.matrix_world],
