@@ -73,7 +73,7 @@ SPOT_RING = 0.03
 # A build is worth looking at by hand when it is over one of these.
 LIMITS = {"unweighted": 0, "stretch_cm": 6.0, "squash": 0.35, "fold_edges": FOLD_EDGES, "arm_follows": 0.5,
           "mouth_on_head": 0.5, "torn": 4, "mouth_turned": 0.25, "beside_iris_mm": 20.0, "hangs_on_head": 50,
-          "ledge_edges": 100}
+          "ledge_edges": 100, "finger_slits": 4}
 # A shape key moves a vertex when it takes it further than this (m), as scripts/_fingerprint.py counts
 KEY_MOVED = 1e-5
 # The key the mouth is placed by, the surface within MOUTH_NEAR (m) of it seen from the front, and
@@ -106,6 +106,18 @@ PLACE = 1e-5
 # 2 places under 2 cm, and nothing was seen (LIMITS "torn").
 TORN = 0.01
 ARM_BONE = ("Shoulder", "Arm", "Hand", "Thumb", "Index", "Middle", "Ring", "Little")
+# Within one hand no cut is meant. Model D's build of 2026-10-05 (the user in Warudo: "hands slit like
+# the hair and cape"; split_torn_seams cut between two fingers, 60 edges) with its fingers curled and
+# spread in turn (FINGER_CURL about the knuckles' line, FINGER_SPREAD about the hand's normal, radians
+# for index, middle, ring and little, both ways): 77 places in her two hands where the copies of a
+# vertex end over FINGER_TORN (m) apart, the worst 9 mm; model A's T-pose build of 10-04, cut by the
+# same rule: 36. Every build since the fix shares the weights there and reads 0, to the last digit
+# (ten read here, 36 exported files by a probe; LIMITS "finger_slits"). Under TORN: a slit a finger
+# wide shows.
+HAND_BONE = ("Hand", "Thumb", "Index", "Middle", "Ring", "Little")
+FINGER_CURL = (0.9, -0.2, 0.9, -0.2)
+FINGER_SPREAD = (0.25, 0.08, -0.1, -0.3)
+FINGER_TORN = 0.002
 # The tracker's shapes that narrow the drawn mouth, and the vowels: shape keys add up, and jaw,
 # pucker and funnel together took the patch past nothing and out the other side, facing backwards
 # (the user, 2026-10-08: "the mouth inverts"; 18 of 111 mixes on model D, the pucker alone on model A).
@@ -263,6 +275,23 @@ def main():
                     turn(f"{side}UpperArm", axis.normalized(), now.angle(want))
         return pose
 
+    def finger_poses():
+        """The fingers of both hands curled, then spread, each against its neighbours and both ways
+        (FINGER_CURL, FINGER_SPREAD); none for a rig without them."""
+        hands = {}
+        for side in ("Left", "Right"):
+            joints = [f"{side}Hand"] + [f"{side}{finger}Proximal" for finger in ("Index", "Middle", "Ring", "Little")]
+            if all(name in arm.data.bones for name in joints):
+                at = [np.array(arm.data.bones[name].head_local) for name in joints]
+                hands[side] = (joints[1:], hand_axes(at[0], at[1], at[2], at[4]))
+
+        def pose(angles, which, way):
+            for joints, axes in hands.values():
+                for name, angle in zip(joints, angles):
+                    turn(name, Vector(axes[which]), way * angle)
+        return [lambda angles=angles, which=which, way=way: pose(angles, which, way)
+                for angles, which in ((FINGER_CURL, 0), (FINGER_SPREAD, 1)) for way in (1.0, -1.0)] if hands else []
+
     def report(label, worst):
         # edges with no length at rest are the stitches across sleeve cuts, made to stretch
         bad = np.nonzero((worst > STRETCH) & (rest_length > 1e-6))[0]
@@ -360,9 +389,19 @@ def main():
     if len(chains) > 1:
         roots = [f"{chain}_0" for chain in chains]
         report(TOGETHER, stretch([{name: r for name in roots} for r in [(s, 0, 0), (-s, 0, 0), (0, 0, s), (0, 0, -s)]]))
+    # not one of the judged poses either: no app holds the fingers so, and the webs between them stretch
+    hand = hand_of([names.get(g, "") for g in range(len(mesh_obj.vertex_groups))] + [""])
+    in_hand = (hand[lead[copy]] > 0) & (hand[lead[copy]] == hand[lead[twin]])
+    fingers = finger_poses()
+    if fingers and in_hand.any():
+        stretch(fingers)
+        slit = in_hand & (stretch.apart > FINGER_TORN)
+        seams["fingers"], seams["fingers_mm"] = int(len(np.unique(twin[slit]))), round(float(stretch.apart[in_hand].max()) * 1000, 1)
     print(f"CHECK seams: {seams['copies']} copies of a vertex at another's place, {seams['kept']} of them the build keeps "
           f"closed; {seams['torn']} places come apart over {TORN * 100:.0f} cm"
-          + (f" ({seams['pose']}, the worst {seams['torn_cm']} cm)" if seams["torn"] else ""))
+          + (f" ({seams['pose']}, the worst {seams['torn_cm']} cm)" if seams["torn"] else "")
+          + (f"; {seams['fingers']} places in the hands part over {FINGER_TORN * 1000:.0f} mm as the fingers curl and spread"
+             f" (the worst {seams['fingers_mm']} mm)" if "fingers" in seams else ""))
 
     hair, on_head = hair_on_the_head(arm, mesh_obj, rest)
     measured["hair"] = hair
@@ -708,6 +747,23 @@ def seams_kept(lead, lead_twin, swings, on_arm):
     return weighted & ((lead == lead_twin) | strand | hem)
 
 
+def hand_of(names):
+    """For each bone name, which hand it is of: 1 the left's hand bone and fingers, 2 the right's, 0
+    neither (the arm above the wrist is not the hand: a cuff is cut from it by design)."""
+    return np.array([next((number for number, side in ((1, "Left"), (2, "Right"))
+                           if name.startswith(side) and any(part in name for part in HAND_BONE)), 0) for name in names])
+
+
+def hand_axes(wrist, index, middle, little):
+    """(across, normal) of a hand in any pose, from its wrist and three knuckles: the line the
+    fingers curl about and the one they spread about."""
+    along, flat = middle - wrist, index - little
+    normal = np.cross(along, flat)
+    normal /= max(float(np.linalg.norm(normal)), 1e-12)
+    across = np.cross(normal, along)
+    return across / max(float(np.linalg.norm(across)), 1e-12), normal
+
+
 def hair_on_the_head(arm, mesh_obj, rest):
     """(hair_findings, how much of each vertex the head bone and all that hangs from it hold) for a
     rigged mesh, its weights read in the rest pose; nothing found for a rig without a head bone."""
@@ -895,6 +951,10 @@ def failures(measured):
         failed.append(f"{seams['torn']} places where the surface is joined at rest come apart with the {seams['pose']} "
                       f"(up to {seams['torn_cm']:.1f} cm): a tear, the copies of a vertex along a texture seam held by "
                       "different bones")
+    if seams.get("fingers", 0) > LIMITS["finger_slits"]:
+        failed.append(f"{seams['fingers']} places in the hands come apart as the fingers curl and spread (up to "
+                      f"{seams['fingers_mm']:.0f} mm): a slit between two fingers, the copies of a vertex along a texture "
+                      "seam held by different fingers")
     hair = measured.get("hair", {})
     if hair.get("hangs_on_head", 0) > LIMITS["hangs_on_head"]:
         failed.append(f"{hair['hangs_on_head']} vertices hang from the head bone to {hair['hangs_cm']:.0f} cm below the "

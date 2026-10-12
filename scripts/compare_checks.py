@@ -21,7 +21,8 @@ STRETCH_NOISE = 0.5  # cm
 SQUASH_NOISE = 0.03  # share of the edge's rest length
 # What the rig check counts beside its poses, where in the report, and the change that is noise.
 # A report from before the check counted one of them says nothing of it.
-FINDINGS = [("places torn at a seam", ("seams", "torn"), 0), ("vertices hanging from the head bone", ("hair", "hangs_on_head"), 20),
+FINDINGS = [("places torn at a seam", ("seams", "torn"), 0), ("places slit between the fingers", ("seams", "fingers"), 0),
+            ("vertices hanging from the head bone", ("hair", "hangs_on_head"), 20),
             ("edges at a ledge in the hair", ("hair", "ledge_edges"), 5),
             ("mm beside the left iris", ("face", "eyes", "Left", "beside_mm"), 2.0),
             ("mm beside the right iris", ("face", "eyes", "Right", "beside_mm"), 2.0),

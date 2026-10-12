@@ -185,6 +185,42 @@ class ASeamThatOpens(unittest.TestCase):
                                                                 "pose": "swing together"})), [])
 
 
+class ASlitBetweenTheFingers(unittest.TestCase):
+    """Model D's hands in Warudo (2026-10-05): the cut between spring chains had been made between two
+    fingers too, and no pose of the check moved a finger."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.check = load()
+
+    def test_a_hand_is_its_hand_bone_and_its_fingers(self):
+        names = ["LeftHand", "LeftIndexProximal", "LeftThumbMetacarpal", "RightLittleDistal", "LeftLowerArm", "RightShoulder",
+                 "Head", "Hair3_0", ""]
+        self.assertEqual(self.check.hand_of(names).tolist(), [1, 1, 1, 2, 0, 0, 0, 0, 0])
+
+    def test_fingers_curl_about_the_knuckles_line_and_spread_about_the_palms_normal(self):
+        # a left hand held out along +x, palm down; then the same hand hanging, fingers down
+        across, normal = self.check.hand_axes(np.array([0.6, 0, 1.3]), np.array([0.68, -0.03, 1.3]), np.array([0.69, 0, 1.3]),
+                                              np.array([0.67, 0.04, 1.3]))
+        np.testing.assert_allclose(np.abs(normal), (0, 0, 1), atol=1e-9)
+        np.testing.assert_allclose(np.abs(across), (0, 1, 0), atol=1e-9)
+        across, normal = self.check.hand_axes(np.array([0.2, 0, 0.8]), np.array([0.2, -0.03, 0.72]), np.array([0.2, 0, 0.71]),
+                                              np.array([0.2, 0.04, 0.73]))
+        np.testing.assert_allclose(np.abs(normal), (1, 0, 0), atol=1e-9)
+        np.testing.assert_allclose(np.abs(across), (0, 1, 0), atol=1e-9)
+
+    def test_places_that_part_in_the_hands_fail(self):
+        measured = dict(CLEAN, seams={"copies": 9000, "kept": 8000, "torn": 0, "torn_cm": 0.0, "fingers": 48, "fingers_mm": 9.2})
+        self.assertRegex(self.check.failures(measured)[0], r"^48 places in the hands come apart as the fingers curl and spread "
+                                                           r"\(up to 9 mm\): a slit between two fingers")
+
+    def test_hands_that_stay_whole_and_reports_from_before_fail_nothing(self):
+        self.assertEqual(self.check.failures(dict(CLEAN, seams={"copies": 9000, "kept": 8000, "torn": 0, "torn_cm": 0.0,
+                                                                "fingers": 0, "fingers_mm": 0.0})), [])
+        self.assertEqual(self.check.failures(dict(CLEAN, seams={"copies": 9000, "kept": 8000, "torn": 0, "torn_cm": 0.0})), [])
+        self.assertEqual(self.check.LIMITS["finger_slits"], 4)
+
+
 class HairOnTheHeadWrongly(unittest.TestCase):
     """Hair the head bone holds alone far below the shoulders (a bit of model A's back hair, standing
     in the air), and hair over the head joint that the neck holds part of (model D's ledge)."""
