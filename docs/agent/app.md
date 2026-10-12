@@ -36,6 +36,7 @@ python -m app delete out/MyOC/character.json --dry         # what deleting it wo
 
 python -m app render out/MyOC/character.json --pose raised   # PNGs of the rig in a pose
 python -m app sheet out/MyOC/character.json              # contact sheets of the finished .vrm
+python -m app inside out/MyOC/character.json             # what shows through a hole cut in its surface, as apps draw it (a build runs it itself)
 python -m app movement out/MyOC/character.json           # pieces left behind or torn by the arms and head
 python -m app springs out/MyOC/character.json            # the finished file's springs: droops, floating pieces, clipping
 python -m app runs out/MyOC/character.json               # every run folder, newest first
@@ -106,8 +107,29 @@ For a model (a finished `.vrm` runs fewer: see "Improving a finished avatar"). I
 Every step's output is checked where it is made. A `.vrm` must have VRM 1.0's required humanoid
 bones on joints the mesh is skinned to, and is read back and compared with the armature. Each
 `.blend` gets a fingerprint (`app/contracts.py`): a step that changes what another step owns
-(a shape key, geometry, finger angles, bones) fails with `VM-STEP-DAMAGE`. A new step, or one that
-starts cutting geometry or reshaping keys, goes into `contracts.GEOMETRY` / `KEYS` / `FINGERS`.
+(a shape key, geometry, finger angles, bones) or opens the surface without cutting it (border
+edges, `open_edges`) fails with `VM-STEP-DAMAGE`. A new step, or one that starts cutting geometry or
+reshaping keys, goes into `contracts.GEOMETRY` / `KEYS` / `FINGERS`. The T-pose step, whose bake
+parts every sleeve cut's two sides, counts its own slits instead: copies of a vertex led by one
+bone that lie apart after the bake (`loose.parted_copies`) stop it.
+
+The rig check (`check`, and `vrm_check` on the exported file) judges, beside stretch and folds in its
+poses: seams that open (copies of a vertex over 1 cm apart in a pose or with every chain swung
+together: a tear in hair or a cape), hair hanging from the head bone alone, what is the head's
+growing when head and neck tilt together (a ledge across the hair), a surface over 20 mm behind
+beside an iris (the eye's white deep in its socket) and the drawn mouth turning inside out in mixes
+of the tracker's shapes. Each has its limit and the build it came from in `scripts/check_avatar.py`
+(`LIMITS`); `python -m app compare` and `regress` say when one of them moved.
+
+The `vrm_check` step ends with one more, by the app's own Python and a browser without a window
+(`app/inside.py`, `viewer/inside.html`): the exported file drawn by three-vrm from 21 cameras round the
+face, and counted where the first surface on a ray is one its picture cuts a hole in (alphaMode MASK: the
+eye's frame). What shows through over 12 mm behind the hole, over 60 mm2 of it in the worst camera, is an
+issue in the verdict ("as apps draw it: ..."): an eye white deep in its socket, which rays can't tell
+from a blended patch standing off the face. `steps[vrm_check].report.seen` has the numbers (`deep_mm2`,
+the camera, and `hair_inside_mm2`: the hair's inside seen beside the neck, measured and not judged), or
+`left` and why when the file couldn't be drawn (no Edge or Chrome): then nothing is held against the
+build. Its pictures are in `<run>/15_vrm_check_seen/`.
 
 ## Piece roles
 
@@ -128,6 +150,16 @@ a piece should move when detection gets it wrong.
 
 A piece is named by a surface point and its vertex count in the source model (normalized: 1.6 m
 tall, facing -Y, +X = character left). `pieces` lists both for every piece; `--label` copies them.
+
+**`auto_pieces`** (option, off by default; Options page "Fix clothing the arms leave behind"): the
+`pieces` step first runs the movement check on the model as it stands (`<run>/07_pieces_movement.json`)
+and gives every piece it flags the role it suggests, if that is `follow_bone`, `shoulder_cloth` or
+`fitted_skirt` (`engine.found_pieces`: what "Apply this fix" on the Movement page writes). Pieces
+named in the manifest keep their role. The roles found are kept beside the step
+(`07_pieces_manifest.json`, pieces marked `found`), not written into the character's manifest; the
+step measures the rig before and after (`loose.worst_stretch`) and a tear, or any failure with the
+found roles, runs it again without them (a warning on the step). Roles the `build` step acts on
+(hair, hat, swing_cloth, appendage) are never given this way.
 
 A part fused into a bigger piece (a twin-tail modelled as one surface with the body) takes a role
 through `region`: the vertex numbers of that part (`piece NAME --label L --role hair --region
@@ -223,6 +255,24 @@ Not done to such a file: new face shapes, eye tracking, hair springs for a file 
 T-pose bake, finger work. The humanoid bones carry the pipeline's names inside Blender and get
 their own names back in the exported file.
 
+## A model that came rigged (MMD as FBX)
+
+A character whose `source` is an FBX with an MMD rig (bones as the Cats plugin names them, or in
+Japanese: `manifest.rig_kind` says "MMD") is **taken in with its own rig** (`manifest.keeps_rig`,
+`pipeline/kept.py`, `scripts/import_rigged.py`): skeleton, weights, face shapes and materials stay,
+its bone chains become springs, its face shapes are bound to the VRM expressions by name, its eye
+bones look. `prepare` answers `kept_rig: true`. Steps that run: `build` (the import), `tpose`,
+`check`, `export`, `vrm_check`, `springs`; `status` gives the reason for each of the others
+(`engine.KEPT_RIG`). Options read: `keep_rig`, `height` (only for a model saved in other units),
+`tpose`, `repair_shoulder_seams`, `hair_hits_body`; any other set option is listed as `inert`.
+
+`keep_rig: false` builds the same file as a bare surface, as before. The build step's report says
+what was found: `naming`, `hair_chains`, `cloth_chains`, `stiff_chains`, `expressions`,
+`eye_bones`, `look_at`, `tracking_shapes` (the ARKit-named face shapes made of its own, for trackers),
+`see_through` (per material: `CUT`, cut out by its picture, drawn blended with depth written; `BLEND`, a soft layer;
+`OPAQUE`, the `_solid` copy that holds the polygons the picture doesn't cut).
+"MODEL NOT TAKEN IN" in its log: a body bone is missing under every table of names.
+
 ## Texture paint
 
 The Paint page paints on the source model: brush, eraser, soften, clone, fill, colours picked from
@@ -297,7 +347,11 @@ the tracking app. Ask the user for a screenshot per pose.
 ## The server
 
 `python -m app.server` serves the page on `127.0.0.1` only. A GET only reads; everything that
-starts a run or writes a file is a POST with the page's own header. A second start shows the app
+starts a run or writes a file is a POST with the page's own header. A request a browser marks as
+coming from another site (`Sec-Fetch-Site`) is refused, but a link to the first page; every answer
+says `nosniff`, same-origin use only and no framing by another site (`server.GUARDS`); the viewer
+opens by address only a model this server hands out. A program that is no browser (an agent's
+`urlopen`, curl) sends no such mark and is answered as before. A second start shows the app
 already running. The page's three.js and three-vrm are the copies in `app/gui/vendor/`, pinned by
 SHA-256 (`app/vendor.py`), so the app needs no internet connection.
 
@@ -343,6 +397,11 @@ launcher isn't written over: its new copy waits as `<name>.new` and the launcher
 app restarts (the server exits with code 75 and `OC2VRM.bat` / `oc2vrm.sh` start it again). A git
 checkout is updated with `git pull --ff-only` instead. Publishing to testers is moving the branch
 named in `ref`: `git push origin main:testers`.
+
+**An update trusts the branch**: nothing is checked beyond the connection to GitHub, so whoever can
+push to the branch named in `ref` runs code on every tester's computer at their next Update. Not
+changed yet; SETUP.md "Security review of what testers run" has what would close it and what the
+shipped key allows.
 
 ## The look
 
