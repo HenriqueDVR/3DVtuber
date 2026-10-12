@@ -10,6 +10,10 @@ from types import SimpleNamespace
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+# One Blender a step and one at a time in these tests, as a build was before 2026-10-12: they stand in
+# for a Blender at `engine._blender` or at Popen, each step alone. The Blender a run keeps for its steps
+# (engine._Worker) and the last steps side by side have tests of their own (class Blenders) that say so.
+os.environ["OC2VRM_ONE_BLENDER"], os.environ["OC2VRM_BLENDERS"] = "0", "1"
 
 from app import cli, engine, errors, paint, server, slim, update, vendor  # noqa: E402
 from app.engine import Project, manifest  # noqa: E402
@@ -248,13 +252,16 @@ class Engine(unittest.TestCase):
         import zipfile
         from unittest import mock
         from app import report
+        # (a check as engine.setup writes one: its words are "text". Handed over here as "what", which no
+        # check has, the test passed while every real report's line read "Setup: None")
         with mock.patch.object(report, "REPO", self.root), mock.patch.object(engine, "setup", lambda: {"version": "5.2.2", "checks": [
-                {"name": "VRM Add-on", "state": "bad", "what": "the VRM Add-on isn't installed", "fix": "..."}]}):
+                {"name": "VRM Add-on", "state": "bad", "text": "the VRM Add-on isn't installed", "fix": "..."}]}):
             (self.root / "out").mkdir(exist_ok=True)
             (self.root / "out" / "app_errors.log").write_text(f"Traceback in {self.root}")
             made = report.make(None, note="won't start", about="install failed")
         self.assertEqual(made["headline"][0].split(" | ")[0], "**No character open**")
         self.assertIn("Setup: the VRM Add-on isn't installed", made["headline"])
+        self.assertTrue(all({"name", "state", "text", "fix"} <= set(check) for check in engine.setup()["checks"]))
         with zipfile.ZipFile(made["report"]) as archive:
             self.assertEqual(sorted(archive.namelist()), ["NOTE.txt", "app_errors.log", "report.json"])
             self.assertNotIn(str(self.root), archive.read("app_errors.log").decode())
@@ -690,6 +697,22 @@ class Engine(unittest.TestCase):
                                             ("movement", "a piece of 12 vertices is left 14.6 cm behind what it sits on"),
                                             ("movement", "the movement check couldn't run")])
 
+    def test_a_build_that_found_no_hair_says_so(self):
+        # the fox girl's first build: "ready", and her hair on no spring
+        said = ("parts", "no hair was found to hang on springs, so none swings: right for short hair, a hat or a "
+                         "hood. If this character's hair should move, paint it on the Parts page and call it hair")
+        project = self.project({"options": {}, "triangles": 40000})
+        self.finished(project, build={"status": "done", "report": {"hair_chains": 0, "cloth_chains": 3}})
+        verdict = project.verdict([])
+        self.assertTrue(verdict["ready"])
+        self.assertIn(said, verdict["looks"])
+        self.finished(project, build={"status": "done", "report": {"hair_chains": 12, "cloth_chains": 3}})
+        self.assertNotIn(said, project.verdict([])["looks"])
+        # a head asked to be rigid has no hair to find; one the survey took for rigid may have been taken wrongly
+        rigid = self.project({"options": {}, "triangles": 40000}, rigid_head=True)
+        self.finished(rigid, build={"status": "done", "report": {"hair_chains": 0}})
+        self.assertNotIn(said, rigid.verdict([])["looks"])
+
     def test_a_tidy_up_undone_for_tearing_the_rig_is_worth_a_look(self):
         project = self.project({"options": {}, "triangles": 40000})
         undone = "the tidy-up tore the rig (arms raised 3.5 -> 77.6 cm): done again without joining touching surfaces"
@@ -815,6 +838,29 @@ class Engine(unittest.TestCase):
         self.assertEqual(pieces[1]["anchor"], "left wing")
         with self.assertRaisesRegex(ValueError, "already named"):
             cli.cmd_piece(args("trim", "left wing"))
+
+    def test_a_piece_given_another_role_leaves_what_the_old_role_was_told(self):
+        # a hanging sleeve's arm bone, kept when the piece was called a tail instead, hung the tail from the arm
+        data = manifest.load(self.path)
+        data["pieces"] = [{"name": "tail", "point": [0, 0, 1], "count": 5, "role": "follow_bone", "bone": "LeftUpperArm"},
+                          {"name": "hat", "point": [0, 0, 1.5], "count": 9, "role": "hat", "tip": True}]
+        manifest.save(data, self.path)
+        unsaid = {"role": None, "point": None, "count": None, "label": None, "bone": None, "anchor": None, "tip": None,
+                  "remove": False, "region": None, "rename": None}
+        piece = lambda name, **said: cli.cmd_piece(SimpleNamespace(manifest=self.path, name=name, **{**unsaid, **said}))["piece"]  # noqa: E731
+        self.assertEqual(piece("tail", role="appendage"), {"name": "tail", "point": [0, 0, 1], "count": 5, "role": "appendage"})
+        self.assertEqual(piece("tail", role="appendage", bone="Hips")["bone"], "Hips")
+        self.assertEqual(piece("tail", role="appendage")["bone"], "Hips")  # the same role again: what it was told stays
+        self.assertEqual(piece("tail", role="follow_bone", bone="RightUpperArm")["bone"], "RightUpperArm")
+        # "tip swings" could be ticked on the Parts page and never unticked
+        self.assertTrue(piece("hat", role="hat")["tip"])
+        self.assertNotIn("tip", piece("hat", role="hat", tip=False))
+        self.assertTrue(piece("hat", role="hat", tip=True)["tip"])
+        self.assertNotIn("tip", piece("hat", role="hair"))
+        # ... and as the page says it: false takes the tip off, unsaid leaves it
+        server.api("piece", {}, {"manifest": str(self.path), "name": "hat", "role": "hat", "tip": True})
+        self.assertTrue(server.api("piece", {}, {"manifest": str(self.path), "name": "hat", "role": "hat"})["piece"]["tip"])
+        self.assertNotIn("tip", server.api("piece", {}, {"manifest": str(self.path), "name": "hat", "role": "hat", "tip": False})["piece"])
 
     def test_warudo_feedback_is_kept_with_its_screenshots(self):
         import base64
@@ -1362,6 +1408,47 @@ class Engine(unittest.TestCase):
         finally:
             sheet.subprocess.Popen, sheet.find_browser = real
 
+    def test_a_browser_that_never_comes_for_its_page_is_started_again(self):
+        # one start of the browser held a build for its whole five minutes: nothing asked for, nothing drawn
+        import subprocess
+        import threading
+        import urllib.request
+        from app import sheet
+        vrm = self.root / "avatar.vrm"
+        vrm.write_bytes(b"glTF-model")
+        started = []
+
+        class Browser(subprocess.Popen):
+            comes = True
+
+            def __init__(self, command, **kwargs):
+                if command[0] != "edge.exe":
+                    return super().__init__(command, **kwargs)  # what sheet.close() runs to end a browser
+                started.append(self)
+                super().__init__([sys.executable, "-c", "import time; time.sleep(120)"], **kwargs)
+                if self.comes and len(started) > 1:  # the first one sits there
+                    threading.Thread(target=self.visit, args=(command[-1],), daemon=True).start()
+
+            def visit(self, url):
+                urllib.request.urlopen(url).read()
+                said = urllib.request.Request(url.split("/viewer/")[0] + "/sheet?name=done", data=b'{"missing": []}', method="POST")
+                urllib.request.urlopen(said)
+        real = sheet.subprocess.Popen, sheet.find_browser, sheet.NEVER_ASKED
+        sheet.subprocess.Popen, sheet.find_browser, sheet.NEVER_ASKED = Browser, lambda given=None: "edge.exe", 0.3
+        try:
+            self.assertEqual(sheet.render(vrm, self.root / "sheets")["report"]["missing"], [])
+            self.assertEqual(len(started), 2)
+            self.assertTrue(all(browser.returncode is not None for browser in started))  # both ended, the first too
+            # one that never comes is given up on when the time is up, and what was seen is said
+            Browser.comes = False
+            del started[:]
+            with self.assertRaisesRegex(TimeoutError, "the browser never asked for the page, started 3 times"):
+                sheet.browse(sheet.PAGE, vrm, self.root / "sheets", timeout=3)
+            self.assertEqual(len(started), sheet.STARTS)
+            self.assertEqual(list((self.root / "sheets").glob(".browser_*")), [])
+        finally:
+            sheet.subprocess.Popen, sheet.find_browser, sheet.NEVER_ASKED = real
+
     def landmarks(self, mouth_height=0.0):
         """What the detector found on model A (T-pose)'s face patch picture, the mouth's height set."""
         at = {11: (697, 835), 12: (791, 804), 13: (901, 853), 15: (810, 932), 17: (1112, 853), 18: (1221, 800),
@@ -1516,6 +1603,33 @@ class Engine(unittest.TestCase):
                 self.assertEqual(errors.classify("survey", log.read_text())["code"], code)
         finally:
             engine.subprocess.Popen, engine.time.sleep, engine.STEP_TIMEOUT = real
+
+    def test_a_step_is_back_as_soon_as_its_blender_ends(self):
+        # asleep 2 s between looks, every step came back up to 2 s after its Blender had ended: some
+        # fifteen seconds a build
+        looks, slept = [], []
+
+        class Quick:
+            returncode = 0
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def poll(self):
+                looks.append(True)
+                return 0 if len(looks) > 3 else None
+
+        def read(log, started):
+            self.fail("the log, the drive and the memory are read every 2 s, not at every look")
+        real = engine.subprocess.Popen, engine.time.sleep, engine._stop_reason
+        engine.subprocess.Popen, engine.time.sleep, engine._stop_reason = Quick, slept.append, read
+        try:
+            self.assertEqual(engine._blender("blender", None, ["preflight.py"], self.root / "quick.log", []), 0)
+        finally:
+            engine.subprocess.Popen, engine.time.sleep, engine._stop_reason = real
+        self.assertEqual(slept, [engine.POLL] * 3)
+        self.assertLessEqual(engine.POLL, 0.25)
+        self.assertAlmostEqual(engine.POLL * engine.WATCH, 2.0)
 
     def test_an_optional_step_the_engine_stopped_is_a_failure_not_nothing_to_do(self):
         project = self.project({"options": {}, "triangles": 40000})
@@ -1715,6 +1829,7 @@ class Engine(unittest.TestCase):
                          [("20260104-100000", True, 2000), ("20260103-100000", True, 2000), ("20260102-100000", True, 3000),
                           ("20260101-100000", False, 2000)])
         self.assertEqual((usage["prunable"], usage["prunable_runs"]), (2000, 1))
+        self.assertEqual(usage["bytes"], sum(p.stat().st_size for p in project.out.rglob("*") if p.is_file()))
         self.assertEqual(project.prune(dry=True)["freed"], 2000)
         self.assertTrue(made["20260101-100000", "01_build.blend"].exists())  # a dry run only counts
         real, engine.LOCK = engine.LOCK, self.root / ".blender.lock"
@@ -1729,6 +1844,27 @@ class Engine(unittest.TestCase):
         self.assertEqual(left, ["01_build.log", "12_check.json"])
         self.assertTrue(all(path.exists() for (run, _), path in made.items() if run != "20260101-100000"))
         self.assertEqual(project.usage()["prunable"], 0)
+
+    def test_a_file_that_goes_while_the_disk_is_measured_counts_for_nothing(self):
+        # a build renames its temporary files and its browser empties a profile inside the run's folder: one
+        # gone between being listed and being measured ended the whole count
+        folder = self.root / "tree"
+        (folder / "run" / "profile").mkdir(parents=True)
+        (folder / "a.blend").write_bytes(b"x" * 300)
+        (folder / "run" / "profile" / "cache").write_bytes(b"x" * 50)
+        self.assertEqual(engine.tree_size(folder), 350)
+        self.assertEqual(engine.tree_size(self.root / "no such folder"), 0)
+        real = os.path.getsize
+
+        def gone(path):
+            if str(path).endswith("cache"):
+                raise FileNotFoundError(path)
+            return real(path)
+        os.path.getsize = gone
+        try:
+            self.assertEqual(engine.tree_size(folder), 300)
+        finally:
+            os.path.getsize = real
 
     def test_the_finished_vrm_is_sent_to_warudo_once_and_never_written_over(self):
         project = self.project()
@@ -2659,6 +2795,53 @@ class ServerAnswers(unittest.TestCase):
         finally:
             server.Project = real
 
+    def test_a_job_that_fails_says_what_failed_in_its_first_line(self):
+        # the page shows an error's first line: of a traceback that is "Traceback (most recent call last):",
+        # which is all a build started with no Blender on the computer said
+        import time
+
+        def ended(work):
+            jobs = server.Jobs()
+            jobs.start("build", work)
+            for _ in range(200):
+                if not jobs.running:
+                    return jobs.poll()
+                time.sleep(0.01)
+            self.fail("the job never ended")
+
+        def no_blender(emit):
+            raise FileNotFoundError("Blender 4.2 or later not found: put it on PATH")
+        said = ended(no_blender)["error"]
+        self.assertEqual(said.splitlines()[0], "FileNotFoundError: Blender 4.2 or later not found: put it on PATH")
+        self.assertIn("Traceback", said)
+        log = server.ERROR_LOG.read_text(encoding="utf-8")
+        self.assertIn("job build", log)
+        self.assertIn("no_blender", log)
+
+        def refused(emit):
+            raise engine.StepFailed("build: failed with exit code 1\nthe log's last lines")
+        self.assertEqual(ended(refused)["error"], "build: failed with exit code 1\nthe log's last lines")
+        self.assertNotIn("refused", server.ERROR_LOG.read_text(encoding="utf-8"))
+        self.assertEqual(ended(lambda emit: {"done": 1})["error"], None)
+
+    def test_a_file_that_is_not_utf8_reads_as_missing_and_one_with_a_byte_order_mark_reads(self):
+        # one character.json saved by an editor in Windows' own code page took the whole Characters page down
+        folder = Path(self.folder.name)
+        odd = folder / "odd.json"
+        odd.write_bytes('{"name": "Jos\xe9", "source": "m.glb", "options": {}}'.encode("cp1252"))
+        self.assertEqual(engine._read_json(odd, "missing"), "missing")
+        self.assertEqual(server._name(odd), "odd")
+        listed = folder / "listed.json"
+        listed.write_text("[1, 2]", encoding="utf-8")
+        self.assertEqual(server._name(listed), "listed")
+        # as Notepad and PowerShell write UTF-8: the character was off the list, and opening it failed
+        marked = folder / "marked.json"
+        manifest.save(manifest.new("model.glb", "Marked"), marked)
+        marked.write_bytes(b"\xef\xbb\xbf" + marked.read_bytes())
+        self.assertEqual(engine._read_json(marked, None)["name"], "Marked")
+        self.assertEqual(server._name(marked), "Marked")
+        self.assertEqual(manifest.load(marked)["name"], "Marked")
+
 
 class Server(unittest.TestCase):
     def test_serves_only_model_and_output_files_inside_the_repository(self):
@@ -2698,6 +2881,19 @@ class Server(unittest.TestCase):
         for name in ("..", ".", " .. "):  # ".." is its own .name: the character landed in the app's folder
             with self.assertRaisesRegex(ValueError, "path"):
                 server.api("init", {}, {"model": "m.glb", "name": name})
+
+    def test_refuses_a_name_no_folder_can_have(self):
+        # Windows' own refusal of the folder came back as the app's crash: "[WinError 123] ... syntax is incorrect"
+        for name, odd in (("Yuki?", r"\?"), ("Miku: winter", ":"), ('the "best" one', '"'), ("a|b*", r"\* \|"), ("two\tparts", "a tab")):
+            with self.assertRaisesRegex(ValueError, f"can't have {odd}.* in it: it is also the name of the character's folder"):
+                server.api("init", {}, {"model": "m.glb", "name": name})
+        # with the settings file put somewhere by hand (the command line), the name is no folder's
+        with tempfile.TemporaryDirectory() as folder:
+            model = Path(folder) / "m.glb"
+            model.write_bytes(b"glTF")
+            made = cli.cmd_init(SimpleNamespace(model=model, name="Yuki?", author="Unknown", manifest=Path(folder) / "c.json",
+                                                face=None, reference=None, rig=None))
+            self.assertEqual(manifest.load(made["manifest"])["name"], "Yuki?")
 
     def test_a_model_that_cant_be_read_is_refused_when_the_character_is_made(self):
         # a tester's good FBX failed the survey as an unsupported type: the path, pasted from
@@ -3673,6 +3869,448 @@ class Inside(unittest.TestCase):
         shallow = inside.check(self.tiny_vrm("shallow.vrm", 0.003, patch=True), self.root / "shallow")
         self.assertEqual((shallow.get("deep_mm2"), shallow.get("failed")), (0.0, []), shallow)
         self.assertGreater(shallow["window_mm2"], 300)  # the frame's own window is still read where the patch leaves it clear
+
+
+class Blenders(unittest.TestCase):
+    """One Blender kept through a run for its steps (engine._Worker), and the build's last steps side by side
+    when the computer has room (Project._side_by_side): what the engine does with both. That the files they
+    leave are the ones a Blender a step leaves was held byte for byte on real builds (SETUP.md "One Blender
+    for a build's steps; the last steps side by side"); scripts/_worker.py itself is tested in Blender
+    (tests/test_worker.py)."""
+
+    def setUp(self):
+        self.made = Engine("test_survey_decides_what_was_left_to_it")
+        self.made.setUp()
+        self.root = self.made.root
+        self.environment = dict(os.environ)
+        self.real = engine.subprocess.Popen, engine.time.sleep, engine.LOAD.idle_cores
+        self.started, self.told = [], []
+
+    def tearDown(self):
+        engine.subprocess.Popen, engine.time.sleep, engine.LOAD.idle_cores = self.real
+        engine.CANCEL.clear()
+        os.environ.clear()
+        os.environ.update(self.environment)
+        self.made.tearDown()
+
+    def kept(self, answer=lambda order: 0):
+        """A stand-in for the kept Blender: takes each step told on its input and answers it with
+        `answer(order)`: the step's exit code, None to die under it, or ... to say nothing at all."""
+        test = self
+
+        class Kept:
+            returncode = None
+
+            def __init__(self, command, **kwargs):
+                test.started.append([str(c) for c in command])
+                self.stdin = self
+
+            def write(self, raw):
+                order = json.loads(raw)
+                test.told.append(order)
+                code = answer(order)
+                if code is None:
+                    self.returncode = 3
+                elif code is not ...:
+                    with open(order["log"], "a") as log:
+                        log.write("did it\n")
+                    Path(order["done"]).write_text(json.dumps({"code": code}))
+
+            def flush(self):
+                pass
+
+            def close(self):
+                self.returncode = 0
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+        return Kept
+
+    def test_a_steps_blender_arguments_become_what_the_kept_blender_runs(self):
+        extra = [*engine.NO_EXPORT, "--python-expr", "x = 1", "-P", str(engine.FINGERPRINT), "--python-exit-code", "1"]
+        self.assertEqual(engine._orders(extra, "fix_mouth.py"),
+                         [["expr", engine.NO_EXPORT[1]], ["expr", "x = 1"], ["file", str(engine.FINGERPRINT)],
+                          ["file", str(engine.SCRIPTS / "fix_mouth.py")]])
+        # an argument that is neither: that step keeps a Blender of its own
+        self.assertIsNone(engine._orders(["--debug-all"], "fix_mouth.py"))
+        self.assertTrue(engine.WORKER.exists())
+
+    def test_the_user_can_have_a_blender_a_step_and_one_at_a_time(self):
+        for name in ("OC2VRM_ONE_BLENDER", "OC2VRM_BLENDERS"):
+            os.environ.pop(name, None)
+        self.assertTrue(engine.one_blender())
+        self.assertIsNone(engine.blenders_at_once())  # as many as there is room for
+        engine._write_json(engine.SETTINGS, {"one_blender": False, "blenders": 2})
+        self.assertFalse(engine.one_blender())
+        self.assertEqual(engine.blenders_at_once(), 2)
+        os.environ["OC2VRM_ONE_BLENDER"], os.environ["OC2VRM_BLENDERS"] = "1", "0"
+        self.assertTrue(engine.one_blender())
+        self.assertEqual(engine.blenders_at_once(), 1)  # never under one
+        # a copy of the app that lacks the kept Blender's script keeps none, whatever is said
+        real, engine.WORKER = engine.WORKER, self.root / "no" / "_worker.py"
+        try:
+            self.assertFalse(engine.one_blender())
+        finally:
+            engine.WORKER = real
+
+    def test_steps_that_start_from_a_blend_are_told_to_the_one_blender(self):
+        engine.subprocess.Popen = self.kept(lambda order: 0 if "good.blend" in order["argv"] else 4)
+        worker = engine._Worker("blender", self.root / "run")
+        blend, log = self.root / "in.blend", self.root / "run" / "02_hair.log"
+        self.assertEqual(engine._blender("blender", blend, ["fix_hair_weights.py", "good.blend"], log, engine.NO_EXPORT, worker=worker), 0)
+        self.assertEqual(self.started, [["blender", "-b", "--factory-startup", "-P", str(engine.STARTUP), "-P", str(engine.WORKER)]])
+        order = self.told[0]
+        self.assertEqual((order["blend"], order["log"]), (str(blend), str(log)))
+        self.assertEqual(order["run"], [["expr", engine.NO_EXPORT[1]], ["file", str(engine.SCRIPTS / "fix_hair_weights.py")]])
+        # the command line a Blender of the step's own would have had: the scripts read their arguments off it
+        self.assertEqual(order["argv"], [str(c) for c in engine._command("blender", blend, ["fix_hair_weights.py", "good.blend"], engine.NO_EXPORT)])
+        said = log.read_text()
+        self.assertTrue(said.startswith("blender -b --factory-startup") and said.endswith("did it\n"), said)
+        self.assertFalse(Path(order["done"]).exists())
+        # the same Blender for the next step, whose own exit code comes back
+        self.assertEqual(engine._blender("blender", blend, ["add_ahoge_spring.py", "none.blend"], self.root / "run" / "03_ahoge.log", [], worker=worker), 4)
+        self.assertEqual(len(self.started), 1)
+        # what it can't be told is not started at all: the caller gives that step a Blender of its own
+        self.assertIsNone(worker.run(blend, ["fix_mouth.py"], self.root / "run" / "12_mouth.log", ["--debug-all"]))
+        self.assertFalse((self.root / "run" / "12_mouth.log").exists())
+        worker.close()
+        self.assertIsNone(worker.process)
+
+    def test_a_kept_blender_that_dies_fails_its_step_and_the_next_step_starts_another(self):
+        answers = iter([None, 0])
+        engine.subprocess.Popen = self.kept(lambda order: next(answers))
+        worker = engine._Worker("blender", self.root / "run")
+        blend, log = self.root / "in.blend", self.root / "run" / "05_loose.log"
+        self.assertEqual(worker.run(blend, ["fix_loose_pieces.py"], log, []), 3)
+        self.assertIn("Blender ended under the step with exit code 3", log.read_text())
+        self.assertEqual(worker.run(blend, ["fix_loose_pieces.py"], log, []), 0)
+        self.assertEqual(len(self.started), 2)
+
+    def test_the_kept_blender_is_stopped_as_any_blender_is(self):
+        engine.subprocess.Popen = self.kept(lambda order: ...)  # it never answers
+        blend = self.root / "in.blend"
+        worker = engine._Worker("blender", self.root / "run")
+        engine.time.sleep = lambda seconds: engine.CANCEL.set()
+        log = self.root / "run" / "09_tpose.log"
+        self.assertEqual(worker.run(blend, ["to_tpose.py"], log, []), engine.CANCELLED)
+        self.assertIn("CANCELLED by the user", log.read_text())
+        self.assertIsNone(worker.process)  # ended: nothing of the run outlives it
+        engine.CANCEL.clear()
+        # ... and when the memory runs out under it, with the words the page knows
+        engine.time.sleep = lambda seconds: None
+        engine.free_memory = lambda: 1 << 20
+        log = self.root / "run" / "11_eyes.log"
+        self.assertEqual(worker.run(blend, ["add_eye_tracking.py"], log, []), engine.STOPPED)
+        self.assertEqual(errors.classify("eyes", log.read_text())["code"], "VM-OOM")
+        self.assertEqual(len(self.started), 2)
+
+    def test_a_run_keeps_one_blender_for_its_steps_and_never_past_its_end(self):
+        os.environ["OC2VRM_ONE_BLENDER"] = "1"
+        project = self.made.project({"options": {}, "triangles": 40000})
+        built = self.root / "01_build.blend"
+        built.write_bytes(b"BLENDER-v402")
+        project._record("build", {"status": "done", "blend": str(built)})
+
+        def answer(order):
+            Path(order["argv"][order["argv"].index("--") + 1]).write_bytes(b"BLENDER-v402")  # the step's own .blend
+            return 0
+        engine.subprocess.Popen = self.kept(answer)
+        folder = self.root / "run"
+        with project._kept_blender(folder):
+            worker = project._worker
+            entry = project._run_step("hair", engine.NAMES.index("hair"), folder)
+            self.assertEqual((entry["status"], Path(entry["blend"]).name), ("done", "02_hair.blend"))
+            self.assertNotIn("peak_mb", entry)  # one Blender for them all can't say what one step took
+            self.assertEqual(len(self.told), 1)
+            # the engine's switches for the step travel with it, the numbers beside its .blend among them
+            self.assertEqual([kind for kind, _ in self.told[0]["run"]], ["expr", "expr", "file", "file"])
+            self.assertEqual(self.told[0]["run"][2:], [["file", str(engine.FINGERPRINT)], ["file", str(engine.SCRIPTS / "fix_hair_weights.py")]])
+            self.assertIsNotNone(worker.process)
+        self.assertIsNone(project._worker)
+        self.assertIsNone(worker.process)
+        # switched off: no Blender is kept, and a step is run as it always was
+        os.environ["OC2VRM_ONE_BLENDER"] = "0"
+        with project._kept_blender(folder):
+            self.assertIsNone(project._worker)
+
+    def test_another_blender_starts_only_when_the_computer_has_room(self):
+        os.environ.pop("OC2VRM_BLENDERS", None)
+        project = self.made.project({"options": {}, "triangles": 40000})
+        gb = 1 << 30
+        engine.LOAD.idle_cores = lambda wait=0.0: 8.0
+        engine.free_memory = lambda: 12 * gb
+        self.assertTrue(project._room("check", {}, 0, calm=True))  # one always may
+        self.assertEqual(project._need("check"), engine.BLENDER_NEEDS)
+        self.assertTrue(project._room("check", {"export": 3 * gb}, 10 * gb))
+        self.assertFalse(project._room("check", {"export": 3 * gb}, 10 * gb, calm=True))  # one has had to give way in this run
+        self.assertFalse(project._room("check", {"export": 3 * gb, "springs": 3 * gb, "movement": 3 * gb}, 10 * gb))  # more than there was
+        engine.free_memory = lambda: 4 * gb
+        self.assertFalse(project._room("check", {"export": 3 * gb}, 10 * gb))  # it would leave under MEMORY_LOW
+        # what the step took in this character's last build is gone by, with a margin
+        project.state["steps"]["check"] = {"status": "stale", "peak_mb": 1024}
+        self.assertEqual(project._need("check"), 1280 << 20)
+        self.assertTrue(project._room("check", {"export": gb}, 10 * gb))
+        engine.free_memory = lambda: None
+        self.assertFalse(project._room("check", {"export": gb}, 10 * gb))  # a computer that doesn't say gets one at a time
+        engine.free_memory = lambda: 12 * gb
+        engine.LOAD.idle_cores = lambda wait=0.0: 1.2
+        self.assertFalse(project._room("check", {"export": gb}, 10 * gb))  # the processor is busy with something else
+        engine.LOAD.idle_cores = lambda wait=0.0: None
+        self.assertTrue(project._room("check", {"export": gb}, 10 * gb))
+        self.assertFalse(project._room("check", dict.fromkeys("abcd", gb), 100 * gb))  # never more than MOST_BLENDERS
+        os.environ["OC2VRM_BLENDERS"] = "2"
+        self.assertTrue(project._room("check", {"export": gb}, 10 * gb))
+        self.assertFalse(project._room("check", {"export": gb, "springs": gb}, 10 * gb))
+        os.environ["OC2VRM_BLENDERS"] = "1"
+        self.assertFalse(project._room("check", {"export": gb}, 10 * gb))
+
+    def test_setup_says_how_many_blenders_there_is_room_for_and_takes_the_users_number(self):
+        os.environ.pop("OC2VRM_BLENDERS", None)
+        gb = 1 << 30
+        engine.LOAD.idle_cores = lambda wait=0.0: 10.0
+        engine.free_memory = lambda: 32 * gb
+        self.assertEqual(engine.blenders_now(), (4, ""))
+        engine.free_memory = lambda: 9 * gb  # two at 3 GB each leave the 2 GB kept back, three don't
+        self.assertEqual(engine.blenders_now(), (2, "9 GB of memory to be had"))
+        engine.free_memory = lambda: 3 * gb
+        self.assertEqual(engine.blenders_now()[0], 1)
+        engine.free_memory = lambda: None
+        self.assertEqual(engine.blenders_now()[0], 1)
+        engine.free_memory = lambda: 32 * gb
+        engine.LOAD.idle_cores = lambda wait=0.0: 4.4
+        self.assertEqual(engine.blenders_now(), (2, f"4 of {os.cpu_count()} processor cores idle"))
+        engine.LOAD.idle_cores = lambda wait=0.0: 10.0
+        real, engine.setup = engine.setup, lambda given=None: {"set": True}
+        try:
+            self.assertEqual(engine.use_blenders("2"), {"set": True})
+            self.assertEqual((engine.blenders_at_once(), engine.blenders_now()[0]), (2, 2))
+            engine.use_blenders(1)
+            self.assertEqual(engine.blenders_now(), (1, "set to one at a time"))
+            engine.use_blenders("auto")
+            self.assertIsNone(engine.blenders_at_once())
+            with self.assertRaisesRegex(ValueError, "isn't a number of Blenders"):
+                engine.use_blenders("many")
+        finally:
+            engine.setup = real
+        speed = next(check for check in engine.setup()["checks"] if check["name"] == "Speed")
+        self.assertRegex(speed["text"], r"^room for \d Blenders? at once as the computer stands")
+        self.assertEqual(speed["state"], "ok")
+
+    def side_by_side(self, project, takes, room=lambda name, running, budget, calm=False: True, free=None):
+        """Run the last steps side by side with stand-ins for their Blenders. `takes[step]`: how long it
+        runs (s), or what it raises. Returns (outcome, events, log): `log` holds (what, step, seconds since
+        the start) for every start and end, in the order they happened."""
+        import threading
+        import time
+        log, events, lock, began = [], [], threading.Lock(), time.time()
+
+        def note(what, name):
+            with lock:
+                log.append((what, name, round(time.time() - began, 2)))
+
+        def step(name, index, folder, kept=True, abandon=None, exported=None):
+            note("start", name)
+            self.assertFalse(kept)  # each beside the others in a Blender of its own
+            if name == "vrm_check":
+                self.exported = exported
+            took = takes.get(name, 0.05)
+            if isinstance(took, list):  # one for each time it is run
+                took = took.pop(0)
+            until = time.time() + (took if isinstance(took, (int, float)) else 0.05)
+            while time.time() < until:
+                if abandon.is_set():
+                    note("aside", name)
+                    raise engine.SetAside(name)
+                time.sleep(0.01)
+            note("end", name)
+            if isinstance(took, BaseException):
+                raise took
+            return {"status": "done", **({"vrm": str(self.root / "14_export.vrm")} if name == "export" else {})}
+        project._run_step = step
+        if room is not None:
+            project._room = room  # (else the engine's own: what the computer has, as the test has set it)
+        project.portraits = lambda blend=None, on_event=None, locked=False: note("start", "portraits") or on_event({"step": "portraits", "status": "done"})
+        if free is not None:
+            engine.free_memory = free
+        group = [*engine.TAIL, "portraits"]
+        outcome = project._side_by_side(group, self.root / "run", events.append, newest=self.root / "12_mouth.blend")
+        return outcome, events, log
+
+    def most_at_once(self, log):
+        going = most = 0
+        for what, name, _ in log:
+            going += {"start": 1, "end": -1, "aside": -1}[what] if name != "portraits" else 0
+            most = max(most, going)
+        return most
+
+    def test_the_last_steps_run_side_by_side_and_the_files_check_waits_for_the_export(self):
+        project = self.made.project({"options": {}, "triangles": 40000})
+        outcome, events, log = self.side_by_side(project, {"export": 0.3, "check": 0.4, "springs": 0.4, "movement": 0.4, "vrm_check": 0.2})
+        self.assertEqual({name: result["status"] for name, result in outcome.items() if name != "portraits"}, dict.fromkeys(engine.TAIL, "done"))
+        self.assertIn("portraits", outcome)  # tried here: the chain doesn't draw them again
+        # all that can start, at once, the export first; its check when it is over, and handed its file
+        self.assertEqual([name for what, name, _ in log[:5]], ["export", "check", "springs", "movement", "portraits"])
+        at = {(what, name): when for what, name, when in log}
+        self.assertGreaterEqual(at["start", "vrm_check"], at["end", "export"])
+        self.assertEqual(self.exported, self.root / "14_export.vrm")
+        self.assertEqual(self.most_at_once(log), 4)
+        self.assertLess(log[-1][2], 1.2)  # 0.3 + 0.2 on the longest line, not 1.7 one after another
+        # each said as it starts, with the log the page shows the end of
+        running = [(e["step"], Path(e["log"]).name) for e in events if e["status"] == "running"]
+        self.assertEqual(running[:2] + [running[-1]], [("export", "14_export.log"), ("check", "13_check.log"), ("vrm_check", "15_vrm_check.log")])
+        self.assertEqual([e for e in events if e["step"] == "portraits"], [{"step": "portraits", "status": "done"}])
+        # ... and as it is over, ahead of its turn, for the page's bar: how it ended is the chain's to say
+        ahead = [e["step"] for e in events if e["status"] == "ahead"]
+        self.assertEqual((sorted(ahead), ahead[0], ahead[-1]), (sorted(engine.TAIL), "export", "vrm_check"))
+        self.assertFalse(any(e["status"] in ("done", "failed") for e in events if e["step"] in engine.TAIL))
+
+    def test_with_room_for_one_they_run_one_after_another(self):
+        project = self.made.project({"options": {}, "triangles": 40000})
+        outcome, _events, log = self.side_by_side(project, {}, room=lambda name, running, budget, calm=False: not running)
+        self.assertEqual(len(outcome), 6)
+        self.assertEqual([name for what, name, _ in log if what == "start"], ["export", "vrm_check", "check", "springs", "movement", "portraits"])
+        self.assertEqual(self.most_at_once(log), 1)
+
+    def test_what_ends_the_chain_ends_the_steps_after_it_and_no_others(self):
+        project = self.made.project({"options": {}, "triangles": 40000})
+        broken = RuntimeError("the export's own code tripped")
+        outcome, _events, log = self.side_by_side(project, {"export": broken, "check": 0.3, "springs": 2.0, "movement": 2.0})
+        self.assertIs(outcome["export"], broken)
+        self.assertEqual(outcome["check"]["status"], "done")  # it comes before the export: it would have run
+        self.assertEqual(set(outcome) - {"portraits"}, {"export", "check"})  # nothing after it is handed on
+        self.assertNotIn(("start", "vrm_check"), [(what, name) for what, name, _ in log])
+        self.assertEqual({name for what, name, _ in log if what == "aside"}, {"springs", "movement"})
+        self.assertLess(log[-1][2], 1.5)  # ended, not waited for
+
+    def test_a_step_that_fails_beside_others_is_run_again_alone_before_it_is_believed(self):
+        # a graphics card or a drive that gave one Blender what it wanted may not give four
+        os.environ.pop("OC2VRM_BLENDERS", None)
+        engine.LOAD.idle_cores = lambda wait=0.0: 8.0  # (room for four: 16 GB to be had, each taken to need 3)
+        project = self.made.project({"options": {}, "triangles": 40000})
+        once = engine.StepFailed("check: failed with exit code 1")
+        outcome, events, log = self.side_by_side(project, {"check": [once, 0.05], "export": 0.3, "springs": 0.3, "movement": 0.3}, room=None)
+        self.assertEqual({name: result["status"] for name, result in outcome.items() if name != "portraits"}, dict.fromkeys(engine.TAIL, "done"))
+        starts = [(name, when) for what, name, when in log if what == "start"]
+        self.assertEqual([name for name, _ in starts].count("check"), 2)
+        warned = [e["reason"] for e in events if e["status"] == "warning"]
+        self.assertEqual(warned, ["check failed with other Blenders going beside it: it is run again by itself, and the rest of this build one at a time"])
+        # the second time nothing else is going, and nothing starts beside another after
+        going, calm = set(), False
+        for what, name, _ in log:
+            if name == "portraits":
+                continue
+            calm = calm or (what, name) == ("end", "check")
+            if what == "start" and calm:
+                self.assertEqual(going, set(), (name, log))
+            going = going | {name} if what == "start" else going - {name}
+        # one that fails alone as well is what it is: handed on, and with it what ends the chain there
+        twice = engine.StepFailed("export: failed with exit code 1")
+        outcome, _events, log = self.side_by_side(project, {"export": [twice, twice]}, room=None)
+        self.assertIs(outcome["export"], twice)
+        self.assertNotIn("vrm_check", outcome)
+        self.assertNotIn(("start", "vrm_check"), [(what, name) for what, name, _ in log])
+        # a check that only reports ends nothing: the others are handed on, and its failure with them
+        told = engine.StepFailed("springs: failed with exit code 1")
+        outcome, _events, _log = self.side_by_side(project, {"springs": [told, told]}, room=None)
+        self.assertIs(outcome["springs"], told)
+        self.assertEqual({name for name, result in outcome.items() if isinstance(result, dict)}, {"check", "export", "vrm_check", "movement"})
+
+    def test_when_the_memory_runs_short_the_last_started_gives_way_and_runs_again_alone(self):
+        import time
+        os.environ.pop("OC2VRM_BLENDERS", None)
+        engine.LOAD.idle_cores = lambda wait=0.0: 8.0
+        project = self.made.project({"options": {}, "triangles": 40000})
+        began = time.time()
+        # room for four at the start (16 GB to be had, 3 GB taken as each one's need); short from 0.15 s on
+        outcome, events, log = self.side_by_side(project, {"export": 0.5, "check": 0.5, "springs": 0.5, "movement": 0.5, "vrm_check": 0.1},
+                                                 room=None, free=lambda: (16 << 30) if time.time() - began < 0.15 else (500 << 20))
+        self.assertEqual({name: result["status"] for name, result in outcome.items() if name != "portraits"}, dict.fromkeys(engine.TAIL, "done"))
+        aside = [name for what, name, _ in log if what == "aside"]
+        self.assertEqual(aside, ["movement"])  # the one started last, once: after that nothing new starts beside another
+        warned = [e for e in events if e["status"] == "warning"]
+        self.assertEqual(len(warned), 1)
+        self.assertIn("the memory ran short with 4 Blenders going at once: movement is run again by itself", warned[0]["reason"])
+        starts = [name for what, name, _ in log if what == "start"]
+        self.assertEqual(starts.count("movement"), 2)
+        # from the moment it gave way, every start finds no other still going
+        going, calm = set(), False
+        for what, name, _ in log:
+            if name == "portraits":
+                continue
+            if what == "aside":
+                calm = True
+            if what == "start" and calm:
+                self.assertEqual(going, set(), (name, log))
+            going = going | {name} if what == "start" else going - {name}
+
+    def test_the_chain_takes_what_was_run_ahead_in_its_own_order(self):
+        import time
+        os.environ.pop("OC2VRM_BLENDERS", None)
+        project = self.made.project({"options": {}, "triangles": 40000}, tpose="plain")
+        project.data["face"] = None
+        mouth = self.root / "09_tpose.blend"
+        mouth.write_bytes(b"BLENDER-v402")
+        project._record("build", {"status": "done", "blend": str(mouth)})
+        engine.LOAD.idle_cores = lambda wait=0.0: 8.0
+        events, order = [], []
+
+        def step(name, index, folder, kept=True, abandon=None, exported=None):
+            order.append((name, kept))
+            time.sleep({"check": 0.3}.get(name, 0.05))
+            if name == "movement":
+                raise engine.StepFailed("movement: failed with exit code 1")
+            return {"status": "done", "seconds": 1, **({"vrm": str(self.root / "14_export.vrm")} if name == "export" else {})}
+        project._run_step = step
+        project.portraits = lambda blend=None, on_event=None, locked=False: order.append(("portraits", None))
+        real = engine._Lock, engine.provenance
+        engine._Lock = lambda: __import__("contextlib").nullcontext()
+        engine.provenance = lambda blender, manifest_path: {"blender_version": "5.2.2", "warnings": []}
+        try:
+            project.run(start="check", on_event=events.append)
+        finally:
+            engine._Lock, engine.provenance = real
+        self.assertEqual({name for name, kept in order}, {"check", "export", "vrm_check", "movement", "springs", "portraits"})
+        self.assertTrue(all(kept is False for name, kept in order if name != "portraits"))
+        self.assertEqual([name for name, _ in order].count("portraits"), 1)
+        # the state as one after another leaves it: each done in the build's order, the check that failed said so
+        steps = project.state["steps"]
+        self.assertEqual([steps[name]["status"] for name in engine.TAIL], ["done", "done", "done", "failed", "done"])
+        ended = [(e["step"], e["status"]) for e in events if e["status"] in ("done", "failed") and e["step"] in engine.TAIL]
+        self.assertEqual(ended, [("check", "done"), ("export", "done"), ("vrm_check", "done"), ("movement", "failed"), ("springs", "done")])
+        # the check took longest and comes first in the build: the export's entry was not marked stale by it
+        self.assertEqual(steps["export"]["status"], "done")
+        # each said as it started: once, but for the check that failed in company and was run again by itself
+        said = [e["step"] for e in events if e["status"] == "running" and e["step"] in engine.TAIL]
+        self.assertEqual({name: said.count(name) for name in engine.TAIL}, {"check": 1, "export": 1, "vrm_check": 1, "movement": 2, "springs": 1})
+        self.assertEqual([name for name, _ in order].count("movement"), 2)
+
+    def test_a_blender_set_aside_says_so_and_is_no_failure(self):
+        import threading
+        test = self.made
+        engine.subprocess.Popen, engine.time.sleep = test.hanging(), lambda seconds: None
+        aside = threading.Event()
+        aside.set()
+        log = self.root / "aside.log"
+        self.assertEqual(engine._blender("blender", None, ["check_springs.py"], log, [], abandon=aside), engine.ASIDE)
+        self.assertTrue(test.killed)
+        self.assertIn("SET ASIDE by the engine", log.read_text())
+        self.assertIsNone(errors.classify("springs", log.read_text()))
+
+    def test_what_a_steps_blender_took_is_kept_for_the_next_build(self):
+        import subprocess
+        self.assertIsNone(engine._peak_memory(SimpleNamespace(_handle=None)))  # a stand-in has no handle to ask of
+        if os.name != "nt":
+            self.skipTest("asked of Windows")
+        took = subprocess.Popen([sys.executable, "-c", "x = bytearray(200 << 20)"])
+        took.wait()
+        self.assertTrue(200 << 20 < engine._peak_memory(took) < 600 << 20)
+        self.assertTrue(0 <= engine.LOAD.idle_cores(wait=0.2) <= os.cpu_count())
 
 
 if __name__ == "__main__":

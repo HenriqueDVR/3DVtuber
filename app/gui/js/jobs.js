@@ -29,11 +29,11 @@ const SAYS = { list_pieces: "pieces-msg", render: "render-msg", sheet: "sheet-ms
 function plan(route, body) {
   const started = Date.now();
   const label = route !== "run" ? null : body.only ? stepName(body.only) : body.from ? `build from ${stepName(body.from)}` : "build";
-  if (route !== "run" || !S.status) return { route, label, started, steps: [], done: 0, current: null };
+  if (route !== "run" || !S.status) return { route, label, started, steps: [], done: 0, current: null, going: new Set(), over: new Set() };
   const names = S.status.steps.map((s) => s.step);
   const first = names.indexOf(body.only || body.from || names[0]), last = body.only ? first : names.length - 1;
   const steps = S.status.steps.slice(first, last + 1).filter((s) => s.runs).map((s) => ({ step: s.step, seconds: s.seconds || null }));
-  return { route, label, started, steps, done: 0, current: null, stepStarted: started };
+  return { route, label, started, steps, done: 0, current: null, stepStarted: started, going: new Set(), over: new Set() };
 }
 
 async function poll(since) {
@@ -43,13 +43,19 @@ async function poll(since) {
   let state;
   try { state = await (await fetch(`/api/events?since=${since}`)).json(); }
   catch { setTimeout(() => poll(since), 3000); return; }
-  if (state.running && !run) run = { route: state.running, started: Date.now(), steps: [], done: 0, current: null };
+  if (state.running && !run) run = { route: state.running, started: Date.now(), steps: [], done: 0, current: null, going: new Set(), over: new Set() };
   for (const e of state.events) {
-    $("events").textContent += `${e.step} ${e.status}${e.seconds ? ` (${e.seconds} s)` : ""}${e.reason ? ": " + e.reason : ""}\n`;
+    // "ahead": one of the build's last steps, run beside the others, is over; how it ended is said in its turn
+    if (e.status !== "ahead") $("events").textContent += `${e.step} ${e.status}${e.seconds ? ` (${e.seconds} s)` : ""}${e.reason ? ": " + e.reason : ""}\n`;
     // short of memory or disk, an untested Blender: said where it is seen, not only in the log
     if (e.status === "warning") { toast(e.reason, "info", { ms: 12000 }); continue; }
-    if (run && e.status === "running") { run.current = e.step; run.stepStarted = Date.now(); }
-    else if (run) run.done += 1;
+    if (!run) continue;
+    if (e.status === "running") { run.current = e.step; run.going.add(e.step); run.stepStarted = Date.now(); continue; }
+    run.going.delete(e.step);
+    // only the steps the bar counts: one that is switched off says "skipped" and is not among them, and
+    // each put the bar a step ahead of the build and took a step's time off what was left. And each once:
+    // a step run ahead of its turn says it is over, then how it ended
+    if (run.steps.some((s) => s.step === e.step) && !run.over.has(e.step)) { run.over.add(e.step); run.done += 1; }
   }
   $("busy").textContent = state.running ? `working: ${state.running}` : "idle";
   // the running step's own words: Blender says what it is at long before the step ends
@@ -96,7 +102,9 @@ function paintBar() {
   const elapsed = Math.floor((Date.now() - run.started) / 1000);
   $("run-label").textContent = cap(run.label || run.route);
   const total = run.steps.length;
-  $("run-step").textContent = run.current ? `${stepName(run.current)}${total ? ` · step ${Math.min(run.done + 1, total)} of ${total}` : ""}` : "";
+  // (the build's last steps run side by side when the computer has room: all that are going are named)
+  const going = run.going.size > 1 ? [...run.going].map(stepName).join(", ") : run.current ? stepName(run.current) : "";
+  $("run-step").textContent = going ? `${going}${total ? ` · step ${Math.min(run.done + 1, total)} of ${total}` : ""}` : "";
   const bar = $("run-bar");
   bar.classList.toggle("indeterminate", !total);
   if (total) bar.firstElementChild.style.width = `${Math.round(100 * run.done / total)}%`;

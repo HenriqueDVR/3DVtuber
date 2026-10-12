@@ -63,11 +63,14 @@ fi
 
 # The app asks to be started again (exit code 75) after it has updated itself. A new launcher is
 # waiting as oc2vrm.sh.new then: a script can't be written over while it runs, so it is taken here.
+# By its own name, here: this is the app's folder now, and "$0" as it was typed from another one
+# (apps/OC2VRM/oc2vrm.sh) no longer leads to it, so the new launcher was never taken.
+self="./$(basename "$0")"
 export OC2VRM_LAUNCHER=1
 while :; do
   "$PY" -m app.server "$@"
   code=$?
   [ "$code" -eq 75 ] || exit "$code"
   export OC2VRM_RESTARTED=1
-  if [ -f "$0.new" ]; then mv "$0.new" "$0" && chmod +x "$0"; exec sh "$0" "$@"; fi
+  if [ -f "$self.new" ]; then mv "$self.new" "$self" && chmod +x "$self"; exec sh "$self" "$@"; fi
 done

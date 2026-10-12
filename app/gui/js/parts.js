@@ -309,7 +309,8 @@ async function setRole(row, patch, { quiet = false } = {}) {
   if (patch.role === "") { if (named) await call("piece", { name: named.name, remove: true }); }
   else await call("piece", { name, label: row.label, ...patch });
   const restore = async () => {
-    if (before) await call("piece", { name: before.name, label: row.label, role: before.role, bone: before.bone, anchor: before.anchor, tip: before.tip });
+    // (the tip said either way: left unsaid, a tip ticked since stayed on after the undo)
+    if (before) await call("piece", { name: before.name, label: row.label, role: before.role, bone: before.bone, anchor: before.anchor, tip: !!before.tip });
     else if (patch.role !== "") await call("piece", { name, remove: true });
   };
   if (!quiet) {

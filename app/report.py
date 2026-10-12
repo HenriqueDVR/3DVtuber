@@ -137,7 +137,8 @@ def make_app(note="", about=""):
                "app": {"version": engine.app_version(), "number": update.number(), "python": platform.python_version(),
                        "blender": setup.get("version")},
                "computer": computer(REPO / "out"), "character": None, "steps": [],
-               "setup": [{k: c.get(k) for k in ("name", "state", "what")} for c in setup.get("checks", [])]}
+               # (a check's own words are its "text", engine.setup: asked for as "what", every line here read "Setup: None")
+               "setup": [{"name": c.get("name"), "state": c.get("state"), "what": c.get("text")} for c in setup.get("checks", [])]}
     summary["headline"] = headline(summary, None)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("report.json", clean(json.dumps(summary, indent=2, default=str)))

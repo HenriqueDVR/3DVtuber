@@ -75,7 +75,15 @@ class Jobs:
             except Cancelled:
                 self.cancelled = True
             except Exception as error:  # reported to the page, not lost in a thread
-                self.error = str(error) if isinstance(error, (StepFailed, ValueError)) else traceback.format_exc()
+                if isinstance(error, (StepFailed, ValueError)):
+                    self.error = str(error) or type(error).__name__
+                else:
+                    # what went wrong first, then where: the page says an error's first line, and a traceback's
+                    # is "Traceback (most recent call last):" whatever failed. A build started with no Blender
+                    # found (a FileNotFoundError whose own words say what to do) read as that and nothing more.
+                    # Kept in the error log too, as a request's is: the next job clears this one
+                    self.error = f"{type(error).__name__}: {error}\n{traceback.format_exc()}"
+                    _log_error(f"job {label}", traceback.format_exc())
             finally:
                 self.running = None
         threading.Thread(target=go, daemon=True).start()
@@ -198,7 +206,8 @@ def api(route, query, body):
     if route == "piece":
         return cli.cmd_piece(_args(manifest=Path(m), name=body["name"], role=body.get("role"), point=None, count=None,
                                    label=body.get("label"), bone=body.get("bone") or None,
-                                   anchor=body.get("anchor") or None, tip=bool(body.get("tip")),
+                                   # (a tip not spoken of stays as it is; false takes it off)
+                                   anchor=body.get("anchor") or None, tip=None if body.get("tip") is None else bool(body["tip"]),
                                    remove=bool(body.get("remove")), region=body.get("region"), rename=body.get("rename")))
     if route == "list_pieces":
         return JOBS.start("listing pieces", lambda emit: cli.cmd_pieces(_args(manifest=Path(m))))
@@ -325,7 +334,7 @@ def _disk():
         except (OSError, ValueError, KeyError, StepFailed):
             continue
     out = REPO / "out"
-    total = sum(p.stat().st_size for p in out.rglob("*") if p.is_file()) if out.is_dir() else 0
+    total = engine.tree_size(out)
     inside = sum(c["bytes"] for c in characters if out.resolve() in Path(c["out"]).resolve().parents)
     return {"drive": out.resolve().anchor, "free": engine.free_disk(out), "characters": characters,
             "prunable": sum(c["prunable"] for c in characters), "other": max(0, total - inside)}
@@ -462,10 +471,8 @@ def _browse(kind):
 
 
 def _name(path):
-    try:
-        return json.loads(Path(path).read_text(encoding="utf-8")).get("name") or Path(path).stem
-    except (OSError, json.JSONDecodeError):
-        return Path(path).stem
+    found = engine._read_json(path, None)
+    return (found.get("name") if isinstance(found, dict) else None) or Path(path).stem
 
 
 def _served(path):
@@ -554,7 +561,7 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
-        except json.JSONDecodeError:
+        except ValueError:  # (bytes that are no text are no JSONDecodeError)
             return self._json({"error": "bad JSON"}, 400)
         self._api(url.path[5:], parse_qs(url.query), body)
 

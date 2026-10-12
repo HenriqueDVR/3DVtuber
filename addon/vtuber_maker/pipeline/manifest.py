@@ -189,10 +189,14 @@ def rig_kind(path):
     # asked on every look at a character's status: read once for a file as it is now
     stat = path.stat()
     key = (str(path), stat.st_mtime_ns, stat.st_size)
-    if key not in _RIG_KINDS:
+    # (read once and kept in hand: the app answers requests side by side, and another character's look
+    # may clear the one entry between its being kept and its being read back. None is an answer too)
+    kind = _RIG_KINDS.get(key, False)
+    if kind is False:
+        kind = _read_rig_kind(path)
         _RIG_KINDS.clear()
-        _RIG_KINDS[key] = _read_rig_kind(path)
-    return _RIG_KINDS[key]
+        _RIG_KINDS[key] = kind
+    return kind
 
 
 _RIG_KINDS = {}
@@ -250,7 +254,8 @@ def _scene_extras(path):
 def load(path):
     """Read and check a manifest; paths stay as written, resolve them with `path_of`."""
     path = Path(path)
-    data = migrate(json.loads(path.read_text(encoding="utf-8")))
+    # (utf-8-sig: one edited in Notepad or written by PowerShell may start with a byte-order mark)
+    data = migrate(json.loads(path.read_text(encoding="utf-8-sig")))
     data["options"] = {**copy.deepcopy(OPTIONS), **data.get("options", {})}
     data.setdefault("joints", {})
     data.setdefault("pieces", [])

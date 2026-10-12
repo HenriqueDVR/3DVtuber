@@ -20,7 +20,7 @@ const LABEL = { get_blender: "Get Blender…", install_blender: "Get it for me",
 // The needed things first, in the order they are got; a check that isn't in the report is fine.
 const NEEDED = [["Pictures", "Python's picture library (Pillow)", "Pillow is installed"],
   ["Blender", "Blender 4.2 or later", ""], ["VRM Add-on", "The VRM Add-on in that Blender", ""]];
-const EXTRAS = ["Fully local", "Own window", "Auto face marking", "File dialogs", "Space"];
+const EXTRAS = ["Fully local", "Own window", "Auto face marking", "File dialogs", "Space", "Speed"];
 
 function row(check, title, i) {
   const [mark, kind] = MARK[check.state];

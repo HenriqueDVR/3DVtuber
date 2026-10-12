@@ -139,7 +139,9 @@ def run(blender, blend_in, script, script_args, label):
         command.append(str(blend_in))
     command += ["-P", str(SCRIPTS / script), "--"] + [str(a) for a in script_args]
     print(f"--- {label}")
-    result = subprocess.run(command, capture_output=True, text=True)
+    # Blender's Python writes UTF-8 whatever the system's code page: read as that, a path with a letter
+    # the code page lacks no longer costs the step its whole output
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         print(result.stdout[-4000:])
         print(result.stderr[-4000:], file=sys.stderr)

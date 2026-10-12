@@ -78,9 +78,10 @@ def current():
 def _commit():
     if is_checkout():
         try:
-            commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, timeout=20).stdout.strip()
+            commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, errors="replace",
+                                    timeout=20).stdout.strip()
             changed = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=REPO,
-                                     capture_output=True, text=True, timeout=20).stdout.strip()
+                                     capture_output=True, text=True, errors="replace", timeout=20).stdout.strip()
             return {"commit": commit or None, "short": commit[:7], "changed": bool(changed)}
         except (OSError, subprocess.SubprocessError):
             pass
@@ -171,7 +172,7 @@ def apply(on_event=None, open_url=trust.open_url):
     if is_checkout():
         # a developer's copy: git knows what to do with local changes, a zip laid over them doesn't
         emit({"step": "git pull", "status": "running"})
-        done = subprocess.run(["git", "pull", "--ff-only"], cwd=REPO, capture_output=True, text=True, timeout=300)
+        done = subprocess.run(["git", "pull", "--ff-only"], cwd=REPO, capture_output=True, text=True, errors="replace", timeout=300)
         if done.returncode != 0:
             raise UpdateFailed("git pull didn't go through: " + (done.stderr or done.stdout).strip()[-400:])
         emit({"step": "git pull", "status": "done"})

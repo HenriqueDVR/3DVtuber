@@ -95,12 +95,15 @@ async function renderDetail() {
   $("detail-report")?.addEventListener("click", () => app.report(`${stepName(s.step)} failed: ${plain(s.step, s.reason || fail?.reason || "")}`));
   if (!$("runbar").hidden) box.querySelectorAll("[data-job]").forEach((b) => b.disabled = true);
   if (!log) return;
+  // (another step may have been picked while this one's log was on its way: its box is not this log's)
+  const shown = () => selectedStep === s.step && $("detail-log");
   try {
     const { url } = await call("url", { path: log });
     const text = url ? await (await fetch(url)).text() : "";
+    if (!shown()) return;
     $("detail-log").textContent = text ? text.split(/\r?\n/).slice(-60).join("\n") : "the log is gone";
     $("detail-log").scrollTop = 1e9;
-  } catch (e) { $("detail-log").textContent = e.message; }
+  } catch (e) { if (shown()) $("detail-log").textContent = e.message; }
 }
 
 // the rig check's worst stretch and squash, close up: at rest, then in the pose that did it

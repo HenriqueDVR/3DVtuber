@@ -14,6 +14,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -29,6 +30,9 @@ BROWSERS = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", r"C
             "/Applications/Chromium.app/Contents/MacOS/Chromium")
 # Loading 110 MB of .vrm and drawing 44 shots took about 15 s with a graphics card
 TIMEOUT = 300
+# A browser asks for its page within a second or two of starting. One that hasn't after this long (s)
+# is ended and started again, up to this many starts in all.
+NEVER_ASKED, STARTS = 25, 3
 
 mimetypes.add_type("model/gltf-binary", ".vrm")
 mimetypes.add_type("text/javascript", ".js")
@@ -113,7 +117,7 @@ def browse(page, vrm, out_dir, browser=None, timeout=TIMEOUT, query="", prefix="
     browser = find_browser(browser)
     out_dir.mkdir(parents=True, exist_ok=True)
     got = {"images": [], "report": None, "error": None}
-    finished = threading.Event()
+    finished, asked = threading.Event(), threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -124,6 +128,7 @@ def browse(page, vrm, out_dir, browser=None, timeout=TIMEOUT, query="", prefix="
             if path == "/model.vrm":
                 return self._send(vrm)
             if path == f"/viewer/{page.name}":
+                asked.set()
                 # three.js by its CDN address, or the app's own copy when it keeps one (offline)
                 return self._send(page, vendor.local(page.read_text(encoding="utf-8")).encode("utf-8"))
             target = (GUI / path[5:]).resolve() if path.startswith("/gui/") else None
@@ -163,9 +168,21 @@ def browse(page, vrm, out_dir, browser=None, timeout=TIMEOUT, query="", prefix="
     profile = tempfile.mkdtemp(prefix=".browser_", dir=out_dir)
     url = f"http://127.0.0.1:{server.server_port}/viewer/{page.name}?model=/model.vrm&post=1{query}"
     process = launch(browser, profile, url, "--window-size=1280,900")
+    started = launched = time.time()
+    starts = 1
     try:
-        if not finished.wait(timeout):
-            raise TimeoutError(f"{page.name} wasn't drawn in {timeout} s ({browser})")
+        while not finished.wait(0.5):
+            if time.time() - started > timeout:
+                raise TimeoutError(f"{page.name} wasn't drawn in {timeout} s ({browser}): "
+                                   + ("the page was sent and nothing came back" if asked.is_set()
+                                      else f"the browser never asked for the page, started {starts} times"))
+            if not asked.is_set() and time.time() - launched > NEVER_ASKED and starts < STARTS:
+                # a browser that hasn't come for its page by now isn't going to: one such start held a build
+                # for the whole five minutes (2026-10-12), nothing drawn. Ended and started once more.
+                close(process)
+                shutil.rmtree(profile, ignore_errors=True)
+                profile = tempfile.mkdtemp(prefix=".browser_", dir=out_dir)
+                process, launched, starts = launch(browser, profile, url, "--window-size=1280,900"), time.time(), starts + 1
         if got["error"]:
             raise RuntimeError(got["error"])
     finally:

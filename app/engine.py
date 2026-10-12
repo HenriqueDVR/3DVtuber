@@ -31,6 +31,7 @@ import urllib.request
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from . import contracts, errors, face_guess, inside, paint, slim, trust, update, vendor
 
@@ -41,8 +42,14 @@ LOCK = REPO / "out" / ".blender.lock"
 # Run before a step's file loads, on factory settings: see scripts/_startup.py.
 STARTUP = SCRIPTS / "_startup.py"
 FINGERPRINT = SCRIPTS / "_fingerprint.py"
+# Run after it in the Blender a run keeps for its steps: see `_Worker`.
+WORKER = SCRIPTS / "_worker.py"
 # Longest a single step may run (s); the slowest real steps take about 3 minutes.
 STEP_TIMEOUT = 30 * 60
+# How often a running Blender is looked at (s), and every how many looks its log, the drive and the memory
+# are read (`_stop_reason`: every 2 s, as before). Asleep 2 s between looks, a step came back up to 2 s after
+# its Blender had ended: a second a step on average, some fifteen a build, for nothing.
+POLL, WATCH = 0.1, 20
 OUT_OF_MEMORY = "Malloc returns null"
 # Free space a step needs where it writes (bytes): a .blend or the .vrm, about 100 MB each on
 # the models so far. On a full drive Blender's saves fail in ways that read as code bugs: four
@@ -123,6 +130,32 @@ CANCEL = threading.Event()
 CANCELLED = -2
 # What _blender returns for a run the engine stopped itself: too long, out of memory, disk full.
 STOPPED = -1
+# ... and for one ended to make room for the Blenders running beside it: run again when there is room.
+ASIDE = -3
+
+
+class SetAside(Exception):
+    """A step's Blender was ended to make room (`Project._side_by_side`). Nothing of the step failed."""
+
+
+# The build's last steps read what the steps before them left and none reads another's, but for the
+# exported file's check, which reads the export: with room for it they run side by side
+# (`Project._side_by_side`), each in a Blender of its own.
+TAIL = ("check", "export", "vrm_check", "movement", "springs")
+# The order they start in when not all may run at once: the export first (the longest line hangs from
+# it: its check, then the browser's look at the file), then the longer ones; the portraits last.
+LEAD = ("export", "vrm_check", "check", "springs", "movement", "portraits")
+# Never more Blenders at once than this, whatever the computer (the last steps are four lines of work).
+MOST_BLENDERS = 4
+# What a Blender is taken to need (bytes) when this character's last build doesn't say what the step
+# took: the heaviest step measured took 2.9 GB (the export of a 417-bone model), most take 1; and how
+# much over what the last build took, for a model that has changed since.
+BLENDER_NEEDS = 3 << 30
+NEED_MARGIN = 1.25
+# Another Blender starts only with this many processor cores idle (a step keeps one to two busy), and
+# one running beside others gives way when the memory still to be had falls under MEMORY_TIGHT (bytes).
+CORES_SPARE = 2.0
+MEMORY_TIGHT = 1 << 30
 
 
 # (name, label, what it writes): "blend" = a .blend, "vrm" = a .vrm only, "json" = a report only.
@@ -263,6 +296,7 @@ class Project:
         self.state_path = self.out / "state.json"
         self.state = _load_state(self.state_path)
         self._blender = blender
+        self._worker = None  # the Blender a run keeps for its steps, while one runs (`_kept_blender`)
 
     @property
     def blender(self):
@@ -529,6 +563,14 @@ class Project:
             # the build keeps the eyes as modelled (--keep-eyes): the blink comes with the face steps
             looks.insert(0, ("face", "no face points: face and eye tracking were skipped, so the avatar can't blink "
                                      "and its eyes don't move; only the vowel mouth shapes ship. Mark them on the Face page"))
+        # The fox girl's first build found none of her pale hair, hung no chain on it and said "ready"
+        # (2026-10-10). Nothing in the mesh parts a bob that should swing from short hair or a hat that
+        # shouldn't (the plain boy, model B: built the same, and rightly), so it is said, not judged;
+        # and not to someone who asked for a rigid head themselves.
+        built = steps.get("build", {}).get("report") or {}
+        if built.get("hair_chains") == 0 and not self.improving and self.data["options"].get("rigid_head") is not True:
+            looks.append(("parts", "no hair was found to hang on springs, so none swings: right for short hair, a hat or a "
+                                   "hood. If this character's hair should move, paint it on the Parts page and call it hair"))
         changed = self.since_approved()
         for line in (changed or {}).get("worse", []):
             looks.append(("build", f"worse than the approved build: {line}"))
@@ -590,10 +632,10 @@ class Project:
         kept, runs = self._kept_runs(), []
         for folder in sorted((p for p in (self.out / "runs").glob("*") if p.is_dir()), reverse=True):
             files = [p for p in folder.iterdir() if p.is_file()]
-            runs.append({"run": folder.name, "bytes": sum(p.stat().st_size for p in files),
-                         "models": sum(p.stat().st_size for p in files if p.suffix.lower() in MODELS),
+            runs.append({"run": folder.name, "bytes": sum(_size(p) for p in files),
+                         "models": sum(_size(p) for p in files if p.suffix.lower() in MODELS),
                          "kept": folder.resolve() in kept})
-        total = sum(p.stat().st_size for p in self.out.rglob("*") if p.is_file()) if self.out.is_dir() else 0
+        total = tree_size(self.out)
         return {"name": self.name, "out": str(self.out), "bytes": total, "runs": runs,
                 "prunable": sum(r["models"] for r in runs if not r["kept"]),
                 "prunable_runs": sum(1 for r in runs if not r["kept"] and r["models"])}
@@ -680,7 +722,7 @@ class Project:
         started = time.time()
         try:
             args, log = ["render_portraits.py", folder, "--size", 1400], folder / "portraits.log"
-            code = _blender(self.blender, blend, args, log, []) if locked else run_script(self.blender, args[0], args[1:], blend_in=blend, log=log)[0]
+            code = _blender(self.blender, blend, args, log, [], **({"worker": self._worker} if self._worker else {})) if locked else run_script(self.blender, args[0], args[1:], blend_in=blend, log=log)[0]
         except Exception as error:  # noqa: BLE001: whatever stops a picture must not stop a build
             code = str(error)
         if code != 0:
@@ -700,7 +742,7 @@ class Project:
         first = NAMES.index(only or start) if (only or start) else 0
         last = NAMES.index(only or stop) if (only or stop) else len(NAMES) - 1
         folder = self.out / "runs" / datetime.now().strftime("%Y%m%d-%H%M%S")
-        with _Lock():
+        with _Lock(), self._kept_blender(folder):
             # inside the lock: refused because another build ran, it left an empty run on the Runs page
             folder.mkdir(parents=True, exist_ok=True)
             # what built this run, so "it was good last week" can be traced to a Blender, add-on and commit
@@ -712,6 +754,7 @@ class Project:
                 raise StepFailed(f"Blender {version} [VM-BLENDER-OLD] {known['fix']}", known)
             for warning in [*made_by["warnings"], *resource_warnings(self.out)]:
                 emit({"step": NAMES[first], "status": "warning", "reason": warning})
+            ahead = None  # the last steps' results, when they were run side by side (`_ahead`)
             for index in range(first, last + 1):
                 name = NAMES[index]
                 if CANCEL.is_set():
@@ -728,12 +771,16 @@ class Project:
                     # said in the run itself: `skinning: voxel` on a .vrm built the same file with no word of it
                     emit({"step": name, "status": "warning", "reason": "a finished .vrm is taken in as it is: these options "
                           f"change nothing in it: {', '.join(manifest.inert(self.data))}"})
+                if name in TAIL and ahead is None:
+                    ahead = self._ahead(index, last, folder, emit)
                 # with its log's name: the app shows the log's end while the step runs
-                emit({"step": name, "status": "running", "log": str(folder / f"{index:02d}_{name}.log")})
+                if name not in (ahead or ()):
+                    emit({"step": name, "status": "running", "log": str(folder / f"{index:02d}_{name}.log")})
                 try:
                     try:
                         self._eyes_tried = set()
-                        entry = self._run_step(name, index, folder)
+                        # (one run ahead is taken as it came out: its file, or what it raised)
+                        entry = _taken(ahead.pop(name)) if name in (ahead or ()) else self._run_step(name, index, folder)
                     except StepFailed as error:
                         while True:
                             if not self._eyes_fall_back(name, error):
@@ -770,11 +817,180 @@ class Project:
                     self.portraits(on_event=emit, locked=True)
             # ... and every build that changed the rig ends by drawing them again from the finished one
             newest = self.latest()
-            if newest is not None and not CANCEL.is_set() and str(newest) != self._portraits_from():
+            if newest is not None and not CANCEL.is_set() and str(newest) != self._portraits_from() and "portraits" not in (ahead or ()):
                 self.portraits(newest, on_event=emit, locked=True)
         return self.status()
 
-    def _run_step(self, name, index, folder):
+    @contextlib.contextmanager
+    def _kept_blender(self, folder):
+        """The run's one Blender (`_Worker`), there for as long as the run and never past it: the lock
+        is let go with no Blender of the run left alive."""
+        self._worker = _Worker(self.blender, folder) if one_blender() else None
+        try:
+            yield
+        finally:
+            worker, self._worker = self._worker, None
+            if worker is not None:
+                worker.close()
+
+    def _need(self, name):
+        """Bytes a step's Blender is taken to need: what it took in this character's last build and a
+        margin, else BLENDER_NEEDS."""
+        took = self.state["steps"].get(name, {}).get("peak_mb")
+        return int(took * NEED_MARGIN) << 20 if took else BLENDER_NEEDS
+
+    def _room(self, name, running, budget, calm=False):
+        """Whether `name`'s Blender may start now beside the ones running ({step: what it needs}).
+
+        One always may. Another only while: the user hasn't said otherwise (`blenders_at_once`); nothing
+        has had to give way yet in this run (`calm`); what the memory still to be had leaves after it is
+        over MEMORY_LOW, and all of them together stay inside `budget` (what there was when the first
+        started); and CORES_SPARE processor cores stand idle. All read as they are now: a computer busy
+        with something else gets one Blender at a time, a big one gets four.
+        """
+        if not running:
+            return True
+        if calm or len(running) >= min(blenders_at_once() or MOST_BLENDERS, MOST_BLENDERS):
+            return False
+        need, free = self._need(name), free_memory()
+        # (a computer that doesn't say what memory it has left gets one at a time)
+        if free is None or free - need < MEMORY_LOW or sum(running.values()) + need > budget:
+            return False
+        idle = LOAD.idle_cores()
+        return idle is None or idle >= CORES_SPARE
+
+    def _ahead(self, index, last, folder, emit):
+        """The build's last steps from `index` on, run side by side (`_side_by_side`) when more than one
+        is to run and the computer has room for two Blenders now: {step: its entry, or what it raised}.
+        {} when it hasn't: the chain then runs them itself, one after another."""
+        plan = self.plan()
+        group = [name for name in NAMES[index:last + 1] if name in TAIL and plan[NAMES.index(name)][1]]
+        newest = self.latest()
+        if newest is not None and str(newest) != self._portraits_from():
+            group.append("portraits")
+        first = [name for name in LEAD if name in group and name != "vrm_check"][:2]
+        free = free_memory()
+        LOAD.idle_cores(wait=0.3)
+        if len(first) < 2 or not self._room(first[1], {first[0]: self._need(first[0])}, float("inf") if free is None else free - MEMORY_LOW):
+            return {}
+        # each gets a Blender of its own: the kept one would hold its memory for nothing meanwhile
+        if self._worker is not None:
+            self._worker.close()
+            self._worker = None
+        return self._side_by_side(group, folder, emit, newest)
+
+    def _side_by_side(self, group, folder, emit, newest=None):
+        """Run `group` (steps of TAIL in build order, and "portraits") as many at once as there is room
+        for; returns {step: its entry, or what it raised} for the chain to take in its own order, as
+        if it had just run each (`run`). The portraits are drawn and said here.
+
+        What keeps the result the chain's own: the exported file's check waits for the export and is
+        handed its file; a step that fails as would end the chain (not a check that only reports)
+        ends the ones after it in the build's order, as they would never have run, and lets the ones
+        before it finish. What keeps the computer standing: a Blender starts only when `_room` says so,
+        asked again each time one ends; when the memory runs short all the same (MEMORY_TIGHT), the
+        Blender started last is ended and its step run again once it can run alone, and from then on
+        the run has one Blender at a time. So it has after a step fails that had company: the step is
+        run once more by itself before its failure is believed (a graphics card or a drive that gave
+        one Blender what it wanted may not give four).
+        """
+        waiting, running, free = [name for name in LEAD if name in group], {}, free_memory()
+        budget = float("inf") if free is None else free - MEMORY_LOW
+
+        def work(name, lane):
+            try:
+                if name == "portraits":
+                    lane.result = self.portraits(newest, on_event=lane.events.append, locked=True)
+                else:
+                    lane.result = self._run_step(name, NAMES.index(name), folder, kept=False, abandon=lane.abandon, exported=lane.exported)
+            except BaseException as error:  # noqa: BLE001 -- kept, for the chain to raise in its own order
+                lane.result = error
+
+        try:
+            return self._lanes(group, folder, emit, work, waiting, running, budget)
+        finally:
+            # whatever ended this early, no Blender of the run outlives it
+            for lane in running.values():
+                lane.abandon.set()
+            for lane in running.values():
+                lane.thread.join(timeout=60)
+
+    def _lanes(self, group, folder, emit, work, waiting, running, budget):
+        """`_side_by_side`'s round, until nothing waits or runs: what is over is taken in, what the
+        memory can't bear is set aside, what there is room for is started."""
+        outcome, again, calm, exported, started = {}, set(), False, None, 0
+        while waiting or running:
+            for name, lane in list(running.items()):
+                if lane.thread.is_alive():
+                    continue
+                del running[name]
+                for event in lane.events:
+                    emit(event)
+                if name == "portraits":
+                    outcome[name] = lane.result  # drawn or not, they were tried: the chain doesn't try again
+                    continue
+                if lane.dropped:
+                    continue
+                if isinstance(lane.result, SetAside):
+                    waiting.insert(0, name)  # again, when it can run alone
+                    continue
+                if isinstance(lane.result, StepFailed) and lane.company and name not in again:
+                    again.add(name)
+                    waiting.insert(0, name)
+                    calm = True
+                    emit({"step": name, "status": "warning", "reason": f"{name.replace('_', ' ')} failed with other Blenders going "
+                          "beside it: it is run again by itself, and the rest of this build one at a time"})
+                    continue
+                outcome[name] = lane.result
+                # over, ahead of its turn: for the page's bar. How it ended is said when the chain takes it
+                emit({"step": name, "status": "ahead"})
+                if name == "export" and isinstance(lane.result, dict) and lane.result.get("vrm"):
+                    exported = Path(lane.result["vrm"])
+                if isinstance(lane.result, BaseException) and not (isinstance(lane.result, StepFailed) and name in SOFT | CHECKS):
+                    # the chain ends at this step: what comes after it would not have run
+                    after = group[group.index(name) + 1:]
+                    waiting = [other for other in waiting if other not in after]
+                    for other in after:
+                        if other in running and other != "portraits":
+                            running[other].dropped = True
+                            running[other].abandon.set()
+            free = free_memory()
+            crowd = [name for name in running if name != "portraits" and not running[name].dropped]
+            if len(running) > 1 and crowd and not calm and free is not None and free < MEMORY_TIGHT:
+                last = max(crowd, key=lambda name: running[name].started)
+                running[last].abandon.set()
+                calm = True
+                emit({"step": last, "status": "warning", "reason": f"the memory ran short with {len(running)} Blenders going at once: "
+                      f"{last.replace('_', ' ')} is run again by itself, and the rest of this build one at a time"})
+            for name in list(waiting):
+                if name == "vrm_check" and "export" in group:
+                    if "export" in waiting or "export" in running:
+                        continue
+                    if exported is None:
+                        waiting.remove(name)  # no export to check: the chain says why when it comes to it
+                        continue
+                if not self._room(name, {other: lane.need for other, lane in running.items()}, budget, calm):
+                    break
+                waiting.remove(name)
+                started += 1
+                lane = SimpleNamespace(abandon=threading.Event(), started=started, need=self._need(name), result=None,
+                                       events=[], dropped=False, exported=exported, company=bool(running))
+                lane.thread = threading.Thread(target=work, args=(name, lane), daemon=True)
+                running[name] = lane
+                if len(running) > 1:
+                    for other in running.values():
+                        other.company = True
+                if name != "portraits":
+                    emit({"step": name, "status": "running", "log": str(folder / f"{NAMES.index(name):02d}_{name}.log")})
+                lane.thread.start()
+            time.sleep(0.1)
+        return outcome
+
+    def _run_step(self, name, index, folder, kept=True, abandon=None, exported=None):
+        """One step, to its entry in the state. `kept`: told to the run's one Blender when there is one.
+        The other two are for a step run beside others (`_side_by_side`): `abandon`, an Event that ends
+        its Blender to make room (SetAside), and `exported`, the .vrm the export beside it has just
+        written, which the state doesn't name yet."""
         stem = folder / f"{index:02d}_{name}"
         kind = dict((n, k) for n, _, k in STEPS)[name]
         fresh = name in ("survey", "build", "vrm_check")
@@ -791,7 +1007,7 @@ class Project:
         if name == "pieces" and not found and not manifest.pieces_for(self.data, "pieces"):
             return {"status": "nothing to do", "log": str(stem.with_name(stem.name + "_movement.log")),
                     "finished": datetime.now().isoformat(timespec="seconds")}
-        args, extra = self._arguments(name, stem, blend_in)
+        args, extra = self._arguments(name, stem, blend_in, exported)
         extra = [*extra, *self.frame()]
         prints = _fingerprint_of(stem.with_suffix(".blend"))
         if kind == "blend":
@@ -800,11 +1016,21 @@ class Project:
                      "-P", str(FINGERPRINT)]
         log = stem.with_suffix(".log")
         started = time.time()
-        code = _blender(self.blender, blend_in, args, log, extra)
+        # (what a stand-in for `_blender` isn't given, it needn't take: the tests' take five things)
+        more = {key: value for key, value in (("worker", self._worker if kept else None), ("abandon", abandon)) if value is not None}
+        code = _blender(self.blender, blend_in, args, log, extra, **more)
         if code == CANCELLED:
             raise Cancelled(f"{name}: stopped by the user")
+        if code == ASIDE:
+            raise SetAside(name)
         entry = {"status": "done", "log": str(log), "input": str(blend_in) if blend_in else None,
                  "finished": datetime.now().isoformat(timespec="seconds"), "seconds": round(time.time() - started)}
+        # what its Blender took, for the next build to go by (`_need`); a step the kept Blender ran
+        # can't say for itself, and keeps what it took the last time it had a Blender of its own
+        took = getattr(_USED, "memory", None)
+        took = round(took / 2**20) if took else self.state["steps"].get(name, {}).get("peak_mb")
+        if took:
+            entry["peak_mb"] = took
         output = log.read_text(encoding="utf-8", errors="replace")
         entry[kind] = str(stem.with_suffix(f".{kind}"))
         made = Path(entry[kind]).exists()
@@ -862,11 +1088,11 @@ class Project:
             entry["report"] = {k: v for k, v in _read_json(entry["json"], {}).items() if k in ("failed", "worst", "unweighted", "spots")}
         if name == "vrm_check":
             # the file the check just re-imported: what it holds is judged with the check (verdict)
-            entry["report"]["ships"] = shipped(self._last_vrm())
+            entry["report"]["ships"] = shipped(exported or self._last_vrm())
             # ... and the file as apps draw it, by the app's own Python and a browser: what shows through
             # a hole cut in its surface (inside.py). Kept in the check's own report too, so that builds
             # are compared by it; a file that couldn't be drawn says why and the build goes on
-            seen = inside.check(self._last_vrm(), stem.with_name(stem.name + "_seen"))
+            seen = inside.check(exported or self._last_vrm(), stem.with_name(stem.name + "_seen"))
             entry["report"]["seen"] = seen
             _write_json(entry["json"], {**_read_json(entry["json"], {}), "seen": seen})
             with open(log, "a", encoding="utf-8") as handle:
@@ -876,8 +1102,9 @@ class Project:
             shutil.copy2(entry["json"], self.out / f"{name}.json")
         return entry
 
-    def _arguments(self, name, stem, blend_in):
-        """(script and its arguments, Blender arguments before -P)."""
+    def _arguments(self, name, stem, blend_in, exported=None):
+        """(script and its arguments, Blender arguments before -P). `exported`: the .vrm the exported
+        file's check reads, when the state doesn't name it yet (`_side_by_side`)."""
         o, data = self.options(), self.data
         blend, vrm = stem.with_suffix(".blend"), stem.with_suffix(".vrm")
         source = self.model() if name in ("survey", "build") else manifest.path_of(data, "source")
@@ -931,7 +1158,7 @@ class Project:
                     WHOLE_BODY if self.improving else [])
         if name == "vrm_check":
             # what really ships: the exported file, re-imported (the add-on once swapped the pose on export)
-            exported = self._last_vrm()
+            exported = exported or self._last_vrm()
             if exported is None:
                 raise StepFailed("vrm_check: no exported .vrm yet")
             if self.improving:
@@ -1011,7 +1238,8 @@ class Project:
         args, extra = self._arguments("movement", probe, blend_in)
         # by the user's own pieces alone: what an earlier run found is found again, or isn't
         args[args.index("--manifest") + 1] = self.manifest_path
-        code = _blender(self.blender, blend_in, args, probe.with_suffix(".log"), [*extra, *self.frame()])
+        code = _blender(self.blender, blend_in, args, probe.with_suffix(".log"), [*extra, *self.frame()],
+                        **({"worker": self._worker} if self._worker else {}))
         if code == CANCELLED:
             raise Cancelled("pieces: stopped by the user")
         found = found_pieces(_read_json(probe.with_suffix(".json"), {}), self.data["pieces"]) if code == 0 else []
@@ -1084,6 +1312,13 @@ class Project:
     def _save_state(self):
         self.out.mkdir(parents=True, exist_ok=True)
         _write_json(self.state_path, self.state, backup=True)
+
+
+def _taken(result):
+    """A step's result as the chain takes it when the step was run ahead: its entry, or what it raised."""
+    if isinstance(result, BaseException):
+        raise result
+    return result
 
 
 def found_pieces(movement, named):
@@ -1286,7 +1521,7 @@ def delete_character(manifest_path, dry=False):
             if read:
                 raise ValueError(f"{theirs.get('name') or other.stem} is built from files in {folder} ({', '.join(read)}): "
                                  "delete that character first, or take this one off the list instead")
-    freed = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file()) if folder else 0
+    freed = tree_size(folder) if folder else 0
     freed += path.stat().st_size if folder is None or not inside(path, folder) else 0
     model = manifest.path_of(data, "reference") or manifest.path_of(data, "source")
     done = {"name": name, "folder": str(folder) if folder else None, "manifest": str(path), "freed": freed, "dry": dry,
@@ -1326,9 +1561,134 @@ def _command(blender, blend_in, args, extra):
     return command + [*extra, "--python-exit-code", "1", "-P", str(SCRIPTS / script), "--", *(str(a) for a in script_args)]
 
 
-def _blender(blender, blend_in, args, log, extra):
+def _orders(extra, script):
+    """A step's Blender arguments (`extra`, then its script) as what scripts/_worker.py runs, in their
+    order; None when one of them is neither a script nor a line of Python: that step keeps a Blender
+    of its own."""
+    run, tokens = [], [str(token) for token in extra]
+    while tokens:
+        token = tokens.pop(0)
+        if token == "--python-expr" and tokens:
+            run.append(["expr", tokens.pop(0)])
+        elif token == "-P" and tokens:
+            run.append(["file", tokens.pop(0)])
+        elif token == "--python-exit-code" and tokens:
+            tokens.pop(0)  # an error ends the step with 1 there too
+        else:
+            return None
+    return [*run, ["file", str(SCRIPTS / script)]]
+
+
+class _Worker:
+    """One Blender kept through a run for the steps that start from a .blend (scripts/_worker.py).
+
+    A Blender takes 1.6 s to start and switch the VRM Add-on on, and most of a build's steps are two or
+    three seconds of work: started anew for each, a quarter of a build was Blenders starting. Each step
+    is told to this one instead, which opens the step's .blend and runs its scripts as its own Blender
+    would have, into the step's own log; the files it leaves are the same byte for byte (SETUP.md "One
+    Blender for a build's steps"). Watched as any Blender is: stopped with the run, when it hangs, and
+    when the memory or the drive runs out; one that dies under a step fails that step, and the next
+    step starts another.
+    """
+
+    def __init__(self, blender, folder):
+        self.blender, self.folder, self.process = str(blender), Path(folder), None
+
+    def _start(self):
+        self.folder.mkdir(parents=True, exist_ok=True)
+        with open(self.folder / "worker.log", "a", encoding="utf-8", errors="replace") as handle:
+            self.process = subprocess.Popen([self.blender, "-b", "--factory-startup", "-P", str(STARTUP), "-P", str(WORKER)],
+                                            stdin=subprocess.PIPE, stdout=handle, stderr=subprocess.STDOUT, cwd=REPO)
+
+    def run(self, blend_in, args, log, extra):
+        """As `_blender`: the step's exit code, STOPPED or CANCELLED; None when the step can't be handed
+        over (then nothing was started and nothing written)."""
+        run = _orders(extra, args[0])
+        if run is None:
+            return None
+        try:
+            if self.process is None or self.process.poll() is not None:
+                self._start()
+        except OSError:
+            self.process = None
+            return None
+        command, log = _command(self.blender, blend_in, args, extra), Path(log)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(" ".join(f'"{c}"' if " " in c else c for c in map(str, command)) + "\n", encoding="utf-8")
+        done = log.with_name(log.name + ".done")
+        done.unlink(missing_ok=True)
+        order = {"blend": str(blend_in), "argv": [str(c) for c in command], "run": run, "log": str(log), "done": str(done)}
+        started, looks = time.time(), 0
+        try:
+            self.process.stdin.write((json.dumps(order) + "\n").encode("utf-8"))
+            self.process.stdin.flush()
+        except OSError:
+            pass  # it is gone: found dead just below
+        while not done.exists():
+            if self.process.poll() is not None:
+                # a crash takes this Blender as it would have taken the step's own
+                code, self.process = self.process.returncode, None
+                with open(log, "a", encoding="utf-8") as tail:
+                    tail.write(f"\nBlender ended under the step with exit code {code}\n")
+                return code or 1
+            time.sleep(POLL)
+            looks += 1
+            if CANCEL.is_set():
+                self.close(kill=True)
+                with open(log, "a", encoding="utf-8") as tail:
+                    tail.write(f"\nCANCELLED by the user after {round(time.time() - started)} s\n")
+                return CANCELLED
+            if looks % WATCH:
+                continue
+            why = _stop_reason(log, started)
+            if why is not None:
+                self.close(kill=True)
+                with open(log, "a", encoding="utf-8") as tail:
+                    tail.write(f"\nSTOPPED by the engine after {round(time.time() - started)} s{why}\n")
+                return STOPPED
+        code = (_read_json(done, None) or {}).get("code", 1)
+        done.unlink(missing_ok=True)
+        return code
+
+    def close(self, kill=False):
+        """Ends the Blender: its input closed, it leaves by itself; one that doesn't is made to."""
+        process, self.process = self.process, None
+        if process is None:
+            return
+        try:
+            if kill:
+                process.kill()
+            else:
+                process.stdin.close()
+            process.wait(timeout=20)
+        except (OSError, subprocess.TimeoutExpired):
+            process.kill()
+            process.wait()
+
+
+def one_blender():
+    """Whether a run keeps one Blender for its steps (`_Worker`): yes, unless out/settings.json says
+    "one_blender": false or $OC2VRM_ONE_BLENDER is 0. The way back, should a step ever behave otherwise
+    in company than alone."""
+    if not WORKER.is_file():
+        return False  # (a copy of the app without its script: every step would fail for want of it)
+    said = os.environ.get("OC2VRM_ONE_BLENDER")
+    if said is not None:
+        return said.strip().lower() not in ("0", "no", "false", "off")
+    return _read_json(SETTINGS, {}).get("one_blender") is not False
+
+
+def _blender(blender, blend_in, args, log, extra, worker=None, abandon=None):
     """One Blender run, output to `log`; returns the exit code. Stops a run that hangs, fills the
-    drive or uses the last of the memory (STOPPED), and one the user stops (CANCELLED)."""
+    drive or uses the last of the memory (STOPPED), and one the user stops (CANCELLED). With a
+    `worker` (the run's one Blender) a step that starts from a .blend is told to it instead. With
+    `abandon` (an Event), set to end this Blender for the sake of others (ASIDE). The most memory
+    its own Blender had committed is left in `_USED.memory` for the caller, where it can be told."""
+    _USED.memory = None
+    if worker is not None and blend_in is not None:
+        code = worker.run(blend_in, args, log, extra)
+        if code is not None:
+            return code
     command = _command(blender, blend_in, args, extra)
     log = Path(log)
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -1336,15 +1696,24 @@ def _blender(blender, blend_in, args, log, extra):
         handle.write(" ".join(f'"{c}"' if " " in c else c for c in map(str, command)) + "\n")
         handle.flush()
         process = subprocess.Popen(command, stdout=handle, stderr=subprocess.STDOUT, cwd=REPO)
-        started = time.time()
+        started, looks = time.time(), 0
         while process.poll() is None:
-            time.sleep(2)
+            time.sleep(POLL)
+            looks += 1
             if CANCEL.is_set():
                 process.kill()
                 process.wait()
                 with open(log, "a", encoding="utf-8") as tail:
                     tail.write(f"\nCANCELLED by the user after {round(time.time() - started)} s\n")
                 return CANCELLED
+            if abandon is not None and abandon.is_set():
+                process.kill()
+                process.wait()
+                with open(log, "a", encoding="utf-8") as tail:
+                    tail.write(f"\nSET ASIDE by the engine after {round(time.time() - started)} s: to run again when there is room\n")
+                return ASIDE
+            if looks % WATCH:
+                continue
             why = _stop_reason(log, started)
             if why is not None:
                 process.kill()
@@ -1352,7 +1721,128 @@ def _blender(blender, blend_in, args, log, extra):
                 with open(log, "a", encoding="utf-8") as tail:
                     tail.write(f"\nSTOPPED by the engine after {round(time.time() - started)} s{why}\n")
                 return STOPPED
+        _USED.memory = _peak_memory(process)
     return process.returncode
+
+
+# What the last Blender this thread ran took (`_blender`): its peak of committed memory, in bytes.
+_USED = threading.local()
+
+
+def _peak_memory(process):
+    """The most memory a process had committed at once (bytes), asked of Windows while its handle is
+    held; None elsewhere, and for a stand-in process. What the next build goes by when it weighs
+    whether another Blender fits beside the ones running (`Project._need`)."""
+    if os.name != "nt" or not isinstance(getattr(process, "_handle", None), int):
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):
+        _fields_ = [("size", wintypes.DWORD), ("faults", wintypes.DWORD),
+                    *((name, ctypes.c_size_t) for name in ("peak_set", "set", "peak_paged", "paged", "peak_unpaged", "unpaged",
+                                                           "commit", "peak_commit"))]
+    counters = Counters(size=ctypes.sizeof(Counters))
+    try:
+        told = ctypes.windll.psapi.GetProcessMemoryInfo(wintypes.HANDLE(int(process._handle)), ctypes.byref(counters), counters.size)
+    except (OSError, AttributeError, ValueError):
+        return None
+    return int(counters.peak_commit) if told else None
+
+
+class _Load:
+    """How many processor cores stand idle, from two looks at the system's own count of its time."""
+
+    def __init__(self):
+        self.last = self.at = self.idle = None
+
+    @staticmethod
+    def _times():
+        """(idle, all) processor time so far, in one unit; None where the system doesn't say."""
+        if os.name == "nt":
+            import ctypes
+            idle, kernel, user = ctypes.c_ulonglong(), ctypes.c_ulonglong(), ctypes.c_ulonglong()
+            if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+                return None
+            return idle.value, kernel.value + user.value  # (the kernel's time holds the idle time)
+        try:
+            fields = [int(value) for value in Path("/proc/stat").read_text(encoding="ascii").splitlines()[0].split()[1:]]
+            return fields[3] + fields[4], sum(fields[:8])
+        except (OSError, ValueError, IndexError):
+            return None
+
+    def idle_cores(self, wait=0.0):
+        """Cores idle since the last look, or over `wait` seconds from now when there was none; None
+        where it can't be told. Looked at no oftener than twice a second: shorter than that is noise."""
+        cores, now = os.cpu_count() or 1, self._times()
+        if now is None:
+            try:
+                return max(cores - os.getloadavg()[0], 0.0)
+            except (OSError, AttributeError):
+                return None
+        if wait:  # a look of its own, from now: the last one may be an hour old
+            self.last, self.at = now, time.time()
+            time.sleep(wait)
+            now = self._times() or now
+        elif self.last is None or time.time() - self.at < 0.5:
+            if self.last is None:
+                self.last, self.at = now, time.time()
+            return self.idle
+        if now[1] > self.last[1]:
+            self.idle = cores * (now[0] - self.last[0]) / (now[1] - self.last[1])
+        self.last, self.at = now, time.time()
+        return self.idle
+
+
+LOAD = _Load()
+
+
+def blenders_at_once():
+    """The most Blenders a run may have going at once, as the user set it (out/settings.json
+    "blenders", or $OC2VRM_BLENDERS): a number, 1 for never more than one. None, the default: as many
+    as the computer has room for when they are wanted (`Project._room`)."""
+    said = os.environ.get("OC2VRM_BLENDERS") or _read_json(SETTINGS, {}).get("blenders")
+    try:
+        return max(int(said), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def blenders_now():
+    """(how many Blenders a build could have going at once as the computer stands, what holds it to
+    that): for Setup to say. Each is taken to need BLENDER_NEEDS here; a build asks again as it goes,
+    and by what its own steps took the last time (`Project._room`)."""
+    limit = blenders_at_once()
+    if limit == 1:
+        return 1, "set to one at a time"
+    most, free = min(limit or MOST_BLENDERS, MOST_BLENDERS), free_memory()
+    if free is None:
+        return 1, "this system doesn't say how much memory is left"
+    idle = LOAD.idle_cores()
+    if idle is None:
+        idle = LOAD.idle_cores(wait=0.1)
+    by_memory = int((free - MEMORY_LOW) // BLENDER_NEEDS)
+    by_cores = most if idle is None else int(idle // CORES_SPARE)
+    count = max(1, min(most, by_memory, by_cores))
+    why = ("" if count == most else f"{free / 2**30:.0f} GB of memory to be had" if by_memory <= by_cores
+           else f"{idle:.0f} of {os.cpu_count()} processor cores idle")
+    return count, why
+
+
+def use_blenders(count):
+    """Never more than this many Blenders at once from now on (1: one at a time); "auto" or nothing:
+    as many as there is room for. Returns setup()."""
+    settings = _read_json(SETTINGS, {})
+    if count in (None, "", "auto"):
+        settings.pop("blenders", None)
+    else:
+        try:
+            settings["blenders"] = max(int(count), 1)
+        except (TypeError, ValueError):
+            raise ValueError(f"{count!r} isn't a number of Blenders: give 1, 2, 3, 4 or auto") from None
+    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(SETTINGS, settings)
+    return setup()
 
 
 def _stop_reason(log, started):
@@ -1366,6 +1856,28 @@ def _stop_reason(log, started):
     if memory is not None and memory < MEMORY_FLOOR:
         return ": out of memory"
     return None
+
+
+def _size(path):
+    """A file's size in bytes; 0 for one that went since it was listed."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def tree_size(folder):
+    """Bytes of every file under a folder, as it stands; 0 for one that isn't there.
+
+    Counted while a build runs, what goes meanwhile counts for nothing: Blender saves under another
+    name and renames, and the browser that draws the exported file fills and empties a profile of
+    thousands of files inside the run's folder. Listed first and measured after, one such file ended
+    the whole count: the character missing from the disk table, or the table not drawn at all.
+    """
+    total = 0
+    for base, _, names in os.walk(folder):
+        total += sum(_size(os.path.join(base, name)) for name in names)
+    return total
 
 
 def free_disk(path):
@@ -1856,7 +2368,9 @@ def blender_version(blender):
     blender = str(blender)
     if blender not in _BLENDER_VERSIONS:
         try:
-            out = subprocess.run([blender, "--version"], capture_output=True, text=True, timeout=60).stdout
+            # (errors="replace", as `install`: a byte Windows' code page has no letter for, in a warning's
+            # path, and nothing came back at all: a Blender that runs read as one that doesn't start)
+            out = subprocess.run([blender, "--version"], capture_output=True, text=True, errors="replace", timeout=60).stdout
             found = re.search(r"Blender (\d+\.\d+\.\d+)", out)
             _BLENDER_VERSIONS[blender] = found.group(1) if found else None
         except Exception:  # noqa: BLE001 -- a record and a Setup line, never a reason to stop
@@ -1998,6 +2512,9 @@ def setup(given=None):
             "optional: the button below installs it (about 250 MB to download, 1.5 GB on disk), or python -m app detector --install")
     for note in resource_warnings(REPO / "out"):
         add("Space", "warn", note)
+    room, held = blenders_now()
+    add("Speed", "ok", f"room for {room} Blender{'s' if room > 1 else ''} at once as the computer stands" + (f" ({held})" if held else "")
+        + ": the last steps of a build run side by side when there is room for more than one")
     kept = vendor.status()
     if not kept["views"]:
         add("Fully local", "warn", "not yet: the 3D views load three.js from the internet each time, and stay empty without a connection",
@@ -2348,9 +2865,12 @@ def _tail(text, size=2000):
 
 
 def _read_json(path, default):
+    # utf-8-sig: a file written by Notepad or PowerShell starts with a mark that json refuses. ValueError:
+    # one saved in another encoding doesn't read as text at all, which is no JSONDecodeError, and a single
+    # such character.json took the whole Characters page down with it
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    except (TypeError, OSError, json.JSONDecodeError):
+        return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (TypeError, OSError, ValueError):
         return default
 
 

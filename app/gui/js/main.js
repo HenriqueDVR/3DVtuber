@@ -1,6 +1,6 @@
 // The app: opening a character and drawing every page from it.
 import { $, S, app, call, esc, refreshStatus } from "./core.js";
-import { toast } from "./ui.js";
+import { forgetUndo, toast } from "./ui.js";
 import "./look.js";
 import { go, renderNav } from "./nav.js";
 import { resume } from "./jobs.js";
@@ -49,6 +49,7 @@ app.loadProjects = loadProjects;
 $("project").onchange = () => openProject($("project").value || null);
 
 async function openProject(path) {
+  if ((path || null) !== S.manifestPath) forgetUndo();  // (read again after a job, it is still the same character)
   S.manifestPath = path || null; S.listing = null; S.facePlaced = 0;
   $("project").value = S.manifestPath || "";
   try { path ? localStorage.setItem(LAST, path) : localStorage.removeItem(LAST); } catch {}

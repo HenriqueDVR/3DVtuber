@@ -86,6 +86,10 @@ export function pushUndo(label, run) {
   if (undos.length > 50) undos.shift();
   redos.length = 0;  // a new change: what was undone before it is gone
 }
+// Another character is opened: what was changed in the one before is not undone in this one. Each
+// undo writes to whichever character is open, and an option changed on one, undone after the next was
+// opened, was set on that one instead.
+export function forgetUndo() { undos.length = 0; redos.length = 0; }
 export async function undo() {
   const last = undos.pop();
   if (!last) return toast("Nothing to undo", "info");

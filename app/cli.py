@@ -28,6 +28,7 @@ def main(argv=None):
     p = sub.add_parser("setup", help="what the app needs and what it found: Blender, the VRM Add-on, disk, memory")
     p.add_argument("--use", metavar="BLENDER", help="run builds with this blender.exe from now on, wherever it is (\"\" to go back to the app picking one)")
     p.add_argument("--forget", metavar="BLENDER", help="take a blender.exe added with --use off the list")
+    p.add_argument("--blenders", metavar="N", help="never more than N Blenders at once (1: one at a time); auto: as many as the computer has room for")
 
     p = sub.add_parser("detector", help="the face detector behind \"Place them for me\": where it is, or --install it")
     p.add_argument("--install", action="store_true", help="into tools/face_detector: about 250 MB to download, 1.5 GB on disk")
@@ -84,7 +85,7 @@ def main(argv=None):
     p.add_argument("--label", type=int, help="take point and count from this label of the last `pieces` listing")
     p.add_argument("--bone", help="for follow_bone, e.g. LeftUpperArm; for appendage, what it grows from (default: nearest)")
     p.add_argument("--anchor", help="for detail: the piece it rides")
-    p.add_argument("--tip", action="store_true", help="for hat: swing its pointed tip")
+    p.add_argument("--tip", action="store_true", default=None, help="for hat: swing its pointed tip")
     p.add_argument("--remove", action="store_true")
     p.add_argument("--region", type=Path, help="a JSON list of source vertex numbers: only this part of the piece")
     p.add_argument("--rename", metavar="NEW", help="give the named piece a new name (details anchored to it follow)")
@@ -203,6 +204,8 @@ def main(argv=None):
 def cmd_setup(args):
     if args.forget:
         return engine.forget_blender(args.forget)
+    if getattr(args, "blenders", None) is not None:
+        return engine.use_blenders(args.blenders)
     return engine.use_blender(args.use) if args.use is not None else engine.setup(args.blender)
 
 
@@ -241,9 +244,16 @@ def cmd_vendor(args):
 
 
 MODEL_TYPES = (".fbx", ".glb", ".gltf", ".obj", ".vrm")
+# What Windows lets no file or folder be named with.
+UNNAMEABLE = '<>:"/\\|?*'
 
 
 def cmd_init(args):
+    # the name is the character's folder: said here, where Windows' own refusal of one ("Yuki?",
+    # "Miku: winter") came back as the app's crash, "[WinError 123] ... syntax is incorrect"
+    odd = sorted(set(args.name) & set(UNNAMEABLE)) + (["a tab or a line break"] if any(ord(c) < 32 for c in args.name) else [])
+    if args.manifest is None and odd:
+        raise ValueError(f"the name can't have {' '.join(odd)} in it: it is also the name of the character's folder")
     path = (args.manifest or REPO / "out" / args.name / "character.json").resolve()
     if path.exists():
         raise ValueError(f"{path} exists: edit it with set/joint/piece, or pick another --manifest")
@@ -465,6 +475,11 @@ def cmd_pieces(args):
     return json.loads(out.read_text(encoding="utf-8"))
 
 
+# What a piece is told beside its role, each read by one role or two (follow_bone and appendage: bone;
+# detail: anchor; hat: tip).
+ROLE_DETAILS = ("bone", "anchor", "tip")
+
+
 def cmd_piece(args):
     data = manifest.load(args.manifest)
     rename = getattr(args, "rename", None)
@@ -488,6 +503,11 @@ def cmd_piece(args):
         return {"pieces": data["pieces"]}
     old = next((p for p in data["pieces"] if p["name"] == args.name), {})
     piece = dict(old, name=args.name)
+    if args.role is not None and old.get("role") not in (None, args.role):
+        # what the role it had was given stays with that role: a hanging sleeve's arm bone, kept, made the
+        # tail it was then called grow from the arm, with the Parts page showing "grows from: nearest"
+        for key in ROLE_DETAILS:
+            piece.pop(key, None)
     if args.label is not None:
         listing = engine._read_json(Project(args.manifest).out / "pieces.json", None)
         if listing is None:
@@ -499,8 +519,12 @@ def cmd_piece(args):
     for key in ("role", "point", "count", "bone", "anchor"):
         if getattr(args, key) is not None:
             piece[key] = getattr(args, key)
+    # None: not said, the tip stays as it was. False takes it off: the Parts page's "tip swings" could be
+    # ticked and never unticked
     if args.tip:
         piece["tip"] = True
+    elif args.tip is False:
+        piece.pop("tip", None)
     region = getattr(args, "region", None)
     if region is not None:
         piece["region"] = sorted({int(i) for i in (region if isinstance(region, list) else json.loads(Path(region).read_text()))})
@@ -874,7 +898,7 @@ def save_face(manifest_path, points, blender=None):
 def cmd_compare(args):
     import subprocess
     result = subprocess.run([sys.executable, str(REPO / "scripts" / "compare_checks.py"), str(args.before),
-                             str(args.after)], capture_output=True, text=True)
+                             str(args.after)], capture_output=True, text=True, errors="replace")
     return {"worse": result.returncode == 1, "report": result.stdout, **compare_rows(args.before, args.after)}
 
 
