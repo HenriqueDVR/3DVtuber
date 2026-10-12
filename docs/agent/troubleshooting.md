@@ -121,6 +121,7 @@ Suspicious edges have one end weighted to `Head`/`Neck` or to nothing, or sit in
 | The avatar lies down, or the face is on the back of the head | the file's axes | detected and corrected automatically; if the survey says the orientation is unsure, turn the model upright in Blender and re-export |
 | A character with a tail faces sideways, stands on its head, or fails with "arms don't stand clear" / joints far off | a tail held out or up behind made the body deeper than wide (the thinner axis was taken for depth, the side view's head and tail for legs); one ending above the head was taken for the body's height | fixed 2026-10-08 (`orient._across`, `orient.head_top`): width is the axis the silhouette mirrors across, height is the head's. Legs behind which a tail, cape or coat hangs are read from above as well (`landmarks._leg_pair`): knees and ankles land on the legs; the crotch can still be hidden (hips from proportions, said in the notes). A thin tail lying along an A-pose arm can still read as arms at the sides: T-pose input |
 | The face patch picture shows horns (or ears, a tail) and the face sits at its lower edge or out of it; or a horned character fails with "arms don't stand clear" | what stands over the head was taken for the model's top: joints by shares of the height sat too high, and the head view was framed by a share of the body on a model taller than its body | fixed 2026-10-08 (`orient.head_top` reads the crown between horns; `cli._frame`, `render_views.py --body`): remake the patch on the Face page. Horns leaning in over the crown are not told from a hat: set the head on the Joints page |
+| Making the face patch again once the face is marked takes a minute or two; a new character's first steps (`prepare`) take half a minute to over a minute | `face_patch.py` `fill` ran every pass of its loop whenever one hidden texel had no neighbour on its own surface to be filled from (40 to 90 s of nothing changing); and `render_views.py` drew 34 views with depths of which the app reads nine and one depth (9 s) | fixed 2026-10-12: the loop stops at the first pass that fills nothing, and `cli.PATCH_VIEWS` asks for the views that are read. The patched model is the same file byte for byte on all 23 characters here that have one (a remade patch: 92 to 17 s on model A's T-pose build, 44 to 6 on the fox girl) |
 | The head turns from halfway up: hat and eyes go, jaw, beard and hair lag | the lower head is one surface with the body and only part on the head by bone heat | fixed 2026-10-08 (`rig.follow_head_column`); rebuild from `build` |
 | Legs swing with a coat or cape | body, coat and legs are one piece, and the piece was judged cloth whole | fixed 2026-10-08 (`cloth.build_cloth_chains` judges each hanging stretch); rebuild from `build` |
 | One arm moves the chest; the skeleton stands beside the body's middle | a sword, tail or bag on one side pulled the centre line (the surface's median) | fixed 2026-10-08 (`landmarks.centre_line`); or set the joints on the Joints page |
@@ -130,12 +131,17 @@ Suspicious edges have one end weighted to `Head`/`Neck` or to nothing, or sit in
 | A part painted on the Parts page moves other vertices (a sleeve, the coat) | built on our own rig, the sleeve cut renumbered the vertices | fixed 2026-10-08 (`roles.carry` by place); rebuild from `build` |
 | The survey says "placed from typical proportions" | clothing hides the crotch or the legs | check the joints on the Joints page |
 | Every bone imports broken from a Tripo rigged GLB | its bind matrices are wrong | export the rigged model as FBX |
+| A model decimated in Blender builds with seams torn, hair drooping 24 cm and no finger guides, or stops in the T-pose step ("Matrix.invert(ed): matrix does not have an inverse") | a generated model is cut along every texture seam; the decimator doesn't close the cuts and each patch shrinks away from its neighbours (model A's stand-in at 20,000 triangles: 1,740 pieces of 163) | `VM-FRAGMENTS` stops it before the build since 2026-10-12. Use the generator's low-poly export, or merge vertices by distance before decimating |
+| The same model saved again (by another program, with a material a part, in several objects, turned) builds a little otherwise: joints a few millimetres to 1.6 cm elsewhere, a hair chain more or less; **without face points** the mouth shapes can land on another small piece (rig check: "the head bone holds only 24% of the surface under the mouth") | joints are read from 120,000 random points of the surface drawn by triangle number (`meshdata.sample_surface`, `landmarks.detect_body`): another order is another draw, and even the rounding of a file saved again (0.1 micrometres) moved them 4 mm on model A's stand-in. The pieces taken for the mouth and the hair follow the joints | not mended: it would move every character's joints (SETUP.md "Preflight, coded failures, inputs handed over otherwise, the tester's computer", Part 3). Mark the face, which places the mouth by the marks; compare two builds only when they are of the identical file. `python -m app inputs <manifest>` shows it for a model |
+| An OBJ builds with no face and one flat colour; the Model page says no texture | its `.mtl` names no picture (`map_Kd`), or the picture isn't beside it | `VM-NO-TEXTURE` before the build. Export it with its texture, the picture in the same folder as the `.obj` and `.mtl` |
 | Model looks shiny in ordinary viewers | the generator's metallic map | `scripts/matte_materials.py`; the exported avatar is toon-shaded either way |
 
 ## Error codes
 
 A failed step's log is matched against `app/errors.py`; the Build page and `status`
-(`steps[].known`, or `steps[].last_failure.known`) show the code, what happened and what to do.
+(`steps[].failure`, or `steps[].last_failure.failure`) show the code, what happened and what to do.
+The same table holds what the engine refuses before a step starts, and the lines of the look before a
+build (`python -m app preflight`, `docs/agent/app.md` "Before a build: preflight"): the second table.
 
 | Code | Meaning | Fix |
 |---|---|---|
@@ -155,6 +161,60 @@ A failed step's log is matched against `app/errors.py`; the Build page and `stat
 | `VM-UNSUPPORTED-FILE` | the model type isn't readable | FBX, GLB/glTF or OBJ |
 | `VM-BAD-OUTPUT` | a step ended without a usable file | rerun; a repeat is a bug |
 | `VM-STEP-DAMAGE` | a step changed something that belongs to another step (`app/contracts.py`) | the reason names what changed; a bug in that step's script |
+| (no code) | a failure the app has no name for: `failure.detail` is the log's last telling line | send a report (the Report button); the step's log is in it |
+| `VM-BUSY` | another build holds the one-at-a-time lock, or a job is running in the app | wait for it or stop it; a lock left by a process that died is taken over by itself |
+| `VM-NO-SURVEY` | a step was asked for before the model was surveyed | Build everything, or `run --only survey` |
+| `VM-NOTHING-BUILT` | a step was asked for before any step left a `.blend` | build from the start |
+| `VM-NO-EXPORT` | no exported `.vrm` yet (to check, to mark good, to send to Warudo) | build to the end, or `run --from export` |
+| `VM-STATE-UNREADABLE` | `state.json` and its backup can't be read | move `state.json` aside: the builds stay, the record starts afresh |
+| `VM-WARUDO-FILE` / `VM-NO-WARUDO` | Warudo's folder holds another file under the avatar's name / Warudo wasn't found | rename or remove that file / give its Characters folder |
+
+Before a build (`preflight`): **stop** lines are asked about on the Build page, **warn** lines only said.
+
+| Code | Kind | Said when | Fix |
+|---|---|---|---|
+| `VM-NO-BLENDER`, `VM-BLENDER-OLD`, `VM-NO-VRM-ADDON` | stop | no Blender found or it doesn't start; older than 4.2; no VRM Add-on in it | Setup page |
+| `VM-NO-MODEL`, `VM-UNSUPPORTED-FILE` | stop | the model file isn't where the character says, or isn't FBX, GLB/glTF, OBJ or VRM | put it back, or name it again (Model page) |
+| `VM-FILE-GONE` | stop / warn | the rig, the reference model or the face points file is gone (stop); the paint folder is gone (warn: the build uses the unpainted texture) | put it back, or take it off the character |
+| `VM-RIG-GLB` | stop | the rig file is a GLB whose bind matrices no skeleton can have (Tripo's rigged GLB, as model E's came) | export the rigged model as FBX |
+| `VM-LICENCE` | stop | a VRM 0.x avatar whose licence must be read first, `licence_read` not set | the user reads the terms and says so on Options; never set for them |
+| `VM-NO-TEXTURE` | stop | the survey found no colour texture | export the model with its texture |
+| `VM-ARMS-DOWN` | stop | the survey read the arms over 80 degrees below level | generate in a T-pose |
+| `VM-HEAVY-MODEL` / `VM-COARSE-MODEL` | stop / warn | over 300,000 triangles / under 3,000 | the low-poly export, about 50,000 |
+| `VM-FRAGMENTS` | stop | the survey counts over 1,000 separate surface pieces (the characters here have 25 to 239; model A's stand-in decimated in Blender as it came has 1,740) | the generator's own low-poly export; in Blender, merge vertices by distance before decimating |
+| `VM-ORIENT-UNSURE` | stop, warn once built | the survey couldn't tell which way up the model stands or which way it faces | check the picture on the Model page; turn it in Blender, or option `facing: "file"` |
+| `VM-PARTS-NOT-READ` | warn | one fused surface, no pieces to read | nothing, if it looks right built |
+| `VM-NO-FACE-POINTS` | warn | the eyes and mouth aren't marked | Face page |
+| `VM-FACE-FILE` | stop | the face points can't be read, or lack a point | mark them again |
+| `VM-FACE-MARKS` | stop | marks that can't be a face: outside the picture, both eyes on one eye, one far above the other, the mouth off to a side, at the eyes' height, or over 1.15 eye distances below them (on the chin or throat) | drag them on the Face page. **Not caught**: a mouth marked low when the eyes aren't marked (model D's case); the rig check says it after the build |
+| `VM-FACE-REFRAMED` | stop | the face patch was made again framed otherwise than the picture the marks were made on (marks saved since this was kept carry `frame`) | mark them again |
+| `VM-ROLE-ON-FACE` | stop | a hair, cloth or appendage role on the piece the eyes are marked on, or on an eye or mouth piece (needs a listing made with the marks) | take the role off (the line's button) |
+| `VM-HAIR-AS-HAT` | stop | half or more of what the listing reads as hair is named a hat, and the user didn't ask for a solid head | take the hat roles off |
+| `VM-LISTING-STALE` | warn | head roles given from a listing made before the eyes were marked, on a character not yet built to its end with these marks (or built with hats and no hair chain) | List the parts again |
+| `VM-PIECE-GONE` | stop | a named piece's vertex count is no piece's of the model as listed | take the role off and give it again |
+| `VM-EYES-UNMARKED` | warn | an eye mode is chosen and the eyes aren't marked | mark the eyes |
+| `VM-EYES-FALLBACK` | warn | the eyes slide by a fallback an earlier build remembered, and the face points were saved again since | "Try the moving iris again" |
+| a step's own code, "failed this way on the last build" | stop | the step failed with a code its inputs decide, and the manifest, model, rig, face points and app are what they were (`run.json` beside its log) | the failure's own fix, with its option |
+| `VM-BLEND-NEWER` | stop | a run from the middle would open a `.blend` saved by a newer Blender than the one chosen | build from the start, or choose that Blender |
+| `VM-DISK-FULL` / `VM-DISK-LOW` | stop / stop or warn | under 1 GB where the build writes / not room for what this build writes over that floor (stop), under 3 GB (warn) | free up space (Characters page) |
+| `VM-MEMORY-LOW` | stop / warn | less memory to be had than this character's heaviest step took last time (2.3 GB taken for one never built) / under 2 GB | close other programs |
+| `VM-SYSTEM-DISK-LOW` | warn | the system drive, when it is another than the build's, has under 4 GB | free some space on it |
+| `VM-PATH-LONG` | stop | the character's folder is so deep that the longest file a build writes there (60 characters under it: a rig check's close-up) would pass Windows' 260 | move the app nearer the top of the drive, or a shorter name |
+| `VM-ONEDRIVE` | warn | the character's output folder lies inside a OneDrive folder (`%OneDrive%`, `%OneDriveCommercial%`, `%OneDriveConsumer%`) | move the app out of OneDrive |
+| `VM-MODEL-ONLINE` | warn | the model file carries OneDrive's "online only" mark | "Always keep on this device", or copy it out |
+| `VM-NO-BROWSER` | warn | no Edge or Chrome: the exported file isn't drawn to see through it, no contact sheets | nothing is wrong with the avatar; install one, or `VTUBER_MAKER_BROWSER` |
+
+## The tester's computer
+
+| Symptom | Measured cause | Fix |
+|---|---|---|
+| The app was closed (or ended in Task Manager) in the middle of a build, and the computer stayed slow for minutes; the next build crawled or ran out of memory | Windows ends no child with its parent: the build's Blender ran on, holding two to three gigabytes, beside the next build (which rightly took the lock a dead process left) | fixed 2026-10-12 (`engine.dies_with_us`: every Blender is in a Windows job that ends with the app). Tested by killing an app that had tied a child and one that hadn't |
+| After such a kill, "another build is running (pid N ...)" | the lock file names a process | it is taken over by itself when that process is gone (`engine._Lock`); only a lock whose process is alive refuses. Nothing to delete by hand |
+| A character won't open: "state.json is unreadable and has no usable backup" (`VM-STATE-UNREADABLE`) | the record of its builds was cut short twice (a crash or a full drive while it and its backup were written) | the page offers to set it aside: both files are renamed `...unreadable-<when>`, the builds stay, the next build starts the record afresh (`engine.set_state_aside`). One cut short once is read from its backup without a word |
+| The drive filled in the middle of a step | the step's Blender is stopped under 50 MB free (`VM-DISK-FULL`) | what it had half written (its `.blend`, Blender's `.blend@`, a `.vrm`) is removed, so the room it took comes back; free up space on the Characters page and run from that step. A write of the app's own refused for want of room (state, manifest, face points) is said as `VM-DISK-FULL` too, not as a traceback |
+| A folder with spaces or with letters of another alphabet in its name (`C:\Users\José María\...`, a model `キャラ 1.glb`) | none: every path goes to Blender as one whole argument and every file of the app's is read and written as UTF-8 | builds as any other (SETUP.md "The tester's computer": a character built from such a folder, the same file byte for byte) |
+| Saves fail in a folder very deep on the disk | Windows gives a path 260 characters, and Blender saves a `.blend` the old way whatever the long-path switch says (5.2.2: saved at 258 characters, not at 259) | `VM-PATH-LONG` before the build: a character's folder may be 199 characters deep |
+| A build in a deep folder takes five minutes longer, and its file check says "the browser never asked for the page, started 3 times" (`seen.left`) | the browser's profile was made inside the run's folder; Edge writes files up to 120 characters below its profile and none past 260: with less room it drops files without a word, and from about 250 characters of profile it never asks for its page | fixed 2026-10-12 (`sheet.profile_for`: the profile lies beside the sheets when that leaves it room, else in the app's own `out` folder, else in the temp folder). A fox girl in a folder 199 characters deep: the look back in 21 s with her own numbers |
 
 ## The app's window
 

@@ -19,8 +19,9 @@ python -m app prepare out/MyOC/character.json            # survey + piece listin
 python -m app face out/MyOC/character.json face.json     # keep face points with the character
 python -m app detector                                   # is the face detector installed? --install puts it in tools/face_detector
 python -m app face-guess out/MyOC/character.json --save  # face points placed by a detector, to check and nudge
+python -m app preflight out/MyOC/character.json          # what is known to go wrong with a build before it starts (no Blender)
 python -m app run out/MyOC/character.json                # the whole chain
-python -m app run out/MyOC/character.json --from build   # or --to STEP, --only STEP
+python -m app run out/MyOC/character.json --from build   # or --to STEP, --only STEP; --strict: don't start past a preflight stop
 python -m app status out/MyOC/character.json             # options, plan, what each step made, the verdict
 
 python -m app pieces out/MyOC/character.json             # every piece, with a suggested role and why
@@ -44,7 +45,8 @@ python -m app compare before_check.json after_check.json # two rig checks, pose 
 
 python -m app approve out/MyOC/character.json --note "looks right in Warudo"   # only when the user says so
 python -m app warudo out/MyOC/character.json             # copy the .vrm into Warudo's Characters folder (the user's call)
-python -m app regress out/MyOC/character.json            # rebuild in a scratch folder and compare with its good build (poses, movement, springs, and each face shape's size, reach and place)
+python -m app regress out/MyOC/character.json            # rebuild in a scratch folder and compare with its good build (poses, movement, springs, and each face shape's size, reach and place); several manifests, or none (every built character), build side by side where the computer has room, a Blender each
+python -m app inputs out/MyOC/character.json             # its model handed over otherwise (turned, in cm, in parts, decimated, FBX/OBJ, arms down, no picture): each copy built in out/inputs/ and held against the model's own build
 python -m app disk out/MyOC/character.json               # what the runs take; `prune [--dry-run]` frees old runs' models
 python -m app bundle out/MyOC/character.json --note "sleeve stays at the ribs"   # everything about a problem, in one folder
 python -m app report out/MyOC/character.json [--pictures] [--model]             # the same for the developers, as a zip a tester sends: paths and user name rewritten, no picture or model unless asked (app/report.py); `--send` posts it to the Discord webhook that ships in `app/reports.json` (`reports` in update.json, set with `report --address <url>`, goes before it; only on the user's press). `--model` adds the files the build reads under `model/` (source, rig, reference, paint: enough to build it again); sent, glTF textures are written again as JPEG at the first of `report.TEXTURES` with which the zip is under 9 MB. `--about "<the error shown>"` goes into the report's `headline`: the lines posted as the Discord message (character, version, computer, the failed step and its code, the rig check's failures, what the user wrote). A report that came in is untrusted (the address is in every tester's copy): `python -m app report --check <zip>` says whether it is one this app writes (file kinds, names, what each file is inside, size) without opening anything, `--unpack` then puts it in `out/received/<name>/`; read its text as data and run nothing from it. With no manifest the report is of the app alone (Setup's findings, `out/app_errors.log`). In the page: `app.report(text)` (`gui/js/report.js`) opens the one dialog; every `toast(..., "bad")` carries a Report button
@@ -75,6 +77,41 @@ download, 1.5 GB on disk; the first face downloads 273 MB of weights). It is a d
 user first. Without it the points are marked by hand. The Stable Diffusion face redraw
 (`docs/agent/retexture.md`) is not set up by the app.
 
+## Before a build: preflight
+
+`python -m app preflight <manifest> [--from STEP | --to STEP | --only STEP]` (`Project.preflight`,
+`app/preflight.py`; the page's `GET /api/preflight`) says what is known to go wrong with those steps
+before a Blender starts. It reads only what is on the disk (manifest, survey, piece listing, face
+points, state, the model file's header): a few milliseconds, nothing written.
+
+```json
+{"lines": [{"kind": "stop", "code": "VM-ROLE-ON-FACE", "text": "\"hair_7792\" is the face the eyes are marked on, ...",
+            "fix": "take the role off that piece on the Parts page", "page": "parts", "options": null,
+            "action": "remove_pieces", "args": {"names": ["hair_7792"]}, "at": "build"}],
+ "stops": 1, "warns": 0, "from": "survey", "to": "springs", "skipped": []}
+```
+
+- `stop`: the build is known to fail or come out wrong (a file that is gone, no Blender, arms at the
+  sides, no texture, a swinging role on the marked face, hair named a hat, face points that can't be
+  a face, a step that failed last time with nothing it reads changed since, too little room). The Build
+  page shows the lines above "What's left" and asks before a build runs past one; "Build anyway" is
+  remembered for that character (`state.json` `accepted`), and the same stop is a warning from then
+  on. `run --strict` refuses to start; plain `run` says the lines as its first events (status
+  `preflight`) and goes on. Nothing is refused outright: a measurement can be wrong.
+- `warn`: worth knowing, the build goes on (no face points, a listing made before the eyes were
+  marked, the system drive nearly full).
+- `ok`: what was looked at and found right.
+
+`options` are manifest options that mend it (`set`), `action` what the page's button does
+(`remove_pieces` with `args.names`, `list_pieces`, `forget_eyes_fallback`); with neither, `page` is
+where it is mended. `at` is the step it bites at: a line is only said of a run that goes through that
+step (`null`: of any run). A part of the look that can't be made is named in `skipped`, never raised.
+The codes are in `docs/agent/troubleshooting.md`, "Error codes".
+
+**Not told before a build**: a mouth marked off the face when the eyes aren't marked beside it (the
+rig check says it after: `mouth_on_head`), whether a model has iris discs to slide, anything of the
+mesh the survey doesn't measure.
+
 ## The steps
 
 For a model (a finished `.vrm` runs fewer: see "Improving a finished avatar"). In order: `survey`, `build`, `hair`, `ahoge`, `face_tracking`, `loose`, `fingers`, `pieces`,
@@ -94,8 +131,17 @@ For a model (a finished `.vrm` runs fewer: see "Improving a finished avatar"). I
   a step marks every later step `stale`.
 - A step that stops the chain keeps its last good output; the failure is kept beside it as
   `last_failure`, with an error code (`docs/agent/troubleshooting.md`, "Error codes").
+- Every failure is kept as the page draws it: `failure` (`{"code", "what", "detail", "fix", "options",
+  "page", "action"}`, `errors.failure`) on a step that failed and the build went on without (`status:
+  "failed"`: the face steps, chest, finger guides, the two checks, and an optional repair whose script
+  fell over), and inside `last_failure` on one that ended the chain. `code` is null for a failure the
+  app has no name for: `detail` is then the log's last telling line and the way on is a report.
+  `status` fills `failure` in for a `state.json` written before it was kept, from `known` and `reason`.
+  What the engine refuses before a step starts carries a code too (`VM-BUSY`, `VM-NO-SURVEY`,
+  `VM-NOTHING-BUILT`, `VM-NO-EXPORT`, ...): `{"error": ..., "known": {...}}` from the server, and
+  `failure` in `/api/events` when a job ends on one. The pages read no word of a log or a message.
 - One run at a time: the engine holds `out/.blender.lock` for it, and no Blender of a run outlives
-  it. Don't start Blender yourself while a run holds it. Inside a run (since 2026-10-12, SETUP.md
+  it (nor the app itself, however it ends: `engine.dies_with_us`, a Windows job). Don't start Blender yourself while a run holds it. Inside a run (since 2026-10-12, SETUP.md
   "One Blender for a build's steps; the last steps side by side"; the files are the same byte for
   byte either way):
   - the steps that start from a `.blend` are told to **one Blender the run keeps**
@@ -111,6 +157,13 @@ For a model (a finished `.vrm` runs fewer: see "Improving a finished avatar"). I
     `OC2VRM_BLENDERS`); 1 is one at a time. Setup's "Speed" line says what there is room for now.
   - events: a step run side by side says `running` as it starts, `ahead` as it is over, and
     `done` or `failed` when the chain takes it, in the build's order.
+  - **`regress` builds several characters side by side** (`engine.at_once`): the lock is held once
+    for them all, and another character starts when `Project._room` finds room for its rigging step,
+    the heaviest (never more than `blenders`). While another builds or waits each keeps to one
+    Blender, its last steps one after another; the last one left, and one asked for alone, runs
+    them side by side as any build. One that fails in company is built again by itself, last, before
+    that is believed. Every event of such a run says its `character`. The files are the same byte
+    for byte as one at a time (three characters: 130 s for 259).
 - Every Blender the engine starts runs with `--factory-startup` and `scripts/_startup.py`, so none
   of the user's own add-ons load and the VRM Add-on is on. To run a chain script by hand the same
   way: `blender -b --factory-startup -P scripts/_startup.py in.blend --python-exit-code 1 -P scripts/<step>.py -- ...`.
@@ -357,6 +410,38 @@ A new kind of piece that keeps coming up deserves a new role: add it to `manifes
 repair to `pipeline/loose.py`, the dispatch to `pipeline/roles.py`, a test to
 `tests/test_manifest.py`.
 
+## A model handed over otherwise: `inputs`
+
+`python -m app inputs <manifest> [--only name,name] [--rigged x.fbx] [--keep]` (`app/inputs.py`,
+`scripts/make_variants.py`) makes copies of the character's model (the `reference`, else the
+`source`), one change each: saved again as GLB, as FBX, as OBJ; turned a quarter or a half about
+each axis; a hundred times the size; three materials of one picture, or each of its own copy; four
+objects, one under a turned and scaled parent; every polygon with corners of its own; decimated to
+20,000 and to 5,000 triangles as it is and with its seams merged first; its pictures taken off; and,
+with `--rigged` (a rigged FBX of a character), its arms brought down against its sides (86 degrees
+below level) and down but clear of them (80). It builds the model itself and every copy as new
+characters with the same options and no face points, in `out/inputs/<name>/<copy>/`, one Blender at
+a time (a minute or two a copy), and says of each:
+
+- `same`: its rig check, exported file and spring check within the noise of the model's own build,
+  and no more pieces flagged by the movement check;
+- `stopped`: a line of `preflight` stopped it after its survey, or a step ended it with a code;
+- `worse`: it finished and is worse than the model's own build. `quietly_worse` lists the ones whose
+  own verdict says "ready" all the same, **the fault this looks for**; `worse_and_said` the ones whose
+  rig check or verdict says so;
+- `failed`: it fell over with no code.
+
+`not_as_expected` lists the copies that came out otherwise than `make_variants.py` says they should
+(`expects`: `same`, or the codes one of which should stop it). After a change to `normalize.py`,
+`orient.py`, the importers or `preflight.py`, run it on a model and read those lists.
+
+**What "worse" means there**: copies that hold the same surface build otherwise than the model
+whenever their triangles come in another order, and sometimes for the rounding of a file saved
+again, because joints are read from random points drawn by triangle number
+(`docs/agent/troubleshooting.md`, "The model going in"). On model A's stand-in six of nineteen copies
+came out so, each said by its own rig check. That is the pipeline's, not the copy's: before taking a
+`worse` for a fault of intake, compare the two surveys' joints.
+
 ## What the app can't decide
 
 Whether the hands, the face art and the spring feel are good enough, and whether it looks right in
@@ -423,20 +508,20 @@ shipped key allows.
 
 ## The look
 
-Two looks, chosen on Setup ("Look") and kept in the browser (`localStorage`; `?look=classic` or
-`?look=arcade` in the address overrides it for one visit):
+One look, the arcade one: a fighting game's menus. Characters is a character select (a band in the
+character's colour, a roster), opening one shows a main menu (Set up / Build / Check), a card opens
+its pages as a list, and the page list is a trail along the top. `app/gui/arcade.css` (every rule
+under `html.arcade`, which the page always is) over `app/gui/app.css`, the plain sheet it restyles,
+and `app/gui/js/look.js`. **The plain "classic" look the app had before is gone** (the user,
+2026-10-12: only the arcade look should exist): Setup no longer offers it, and `?look=classic` or a
+choice of it kept in a browser gets the arcade look. Don't build or test for it; `app.css` rules
+that only it showed may still be there, unused.
 
-- **Arcade** (the default): a fighting game's menus. Characters is a character select (a band in
-  the character's colour, a roster), opening one shows a main menu (Set up / Build / Check), a
-  card opens its pages as a list, and the page list along the left becomes a trail along the top.
-  `app/gui/arcade.css` (every rule under `html.arcade`) and `app/gui/js/look.js`.
-- **Classic**: `app.css` alone, the app as it was, the page list down the left side.
-
-The pages are the same in both: `look.js` adds its own screens (`#menu`, `#pages`, the band on
-Build) and reads what the pages already drew (the sidebar's badges, the Characters cards, the run
-bar), called from three hooks (`app.shown`, `app.navDrawn`, `app.homeDrawn`). A new page needs an
-entry in `look.js`'s `GROUPS` and `TITLES` to be reachable in the arcade look. "Less motion" on
-Setup stops the moving background and the effects. The arcade look has sound (`js/sfx.js`:
+`look.js` adds its own screens (`#menu`, `#pages`, the band on Build) and reads what the pages
+already drew (the sidebar's badges, the Characters cards, the run bar), called from three hooks
+(`app.shown`, `app.navDrawn`, `app.homeDrawn`). A new page needs an entry in `look.js`'s `GROUPS`
+and `TITLES` to be reachable. "Less motion" on Setup stops the moving background and the effects.
+The look has sound (`js/sfx.js`:
 made from oscillators, no audio files; the sliders on Setup, all the way left is off): the menus,
 ordinary buttons, a note for each build step that finishes, a fanfare for "Avatar ready", and
 music (low and muffled behind a work page): `music.mp3`, `.ogg` or `.wav` in the repository's
