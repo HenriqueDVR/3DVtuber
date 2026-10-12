@@ -26,7 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import cli, engine, paint, report, update, vendor
+from . import cli, engine, errors, paint, report, update, vendor
 from .engine import REPO, Cancelled, Project, StepFailed
 
 GUI = Path(__file__).resolve().parent / "gui"
@@ -46,7 +46,7 @@ mimetypes.add_type("text/css", ".css")  # Windows' registry may say otherwise, a
 # needs the POST with the page's header, which another site open in the browser can't send
 # (an <img src=".../api/prune?manifest=..."> could otherwise delete a character's old runs).
 READ_ONLY = {"projects", "setup", "update_check", "disk", "status", "manifest", "pieces", "renders", "sheets", "runs", "feedback_list",
-             "face", "movement_result", "springs_result", "events", "paint"}
+             "face", "movement_result", "springs_result", "events", "paint", "preflight"}
 # How much of the running step's log the Progress pane shows.
 LOG_TAIL = 1500
 # Said with every answer: a file is what its type says and nothing a browser guesses (a .log or .json
@@ -61,12 +61,14 @@ class Jobs:
     def __init__(self):
         self.lock = threading.Lock()
         self.events, self.running, self.result, self.error, self.cancelled = [], None, None, None, False
+        self.failure = None
 
     def start(self, label, work):
         with self.lock:
             if self.running:
-                raise StepFailed(f"busy: {self.running} is still running")
+                raise busy(self.running)
             self.events, self.running, self.result, self.error, self.cancelled = [], label, None, None, False
+            self.failure = None
             engine.CANCEL.clear()
 
         def go():
@@ -75,6 +77,16 @@ class Jobs:
             except Cancelled:
                 self.cancelled = True
             except Exception as error:  # reported to the page, not lost in a thread
+                # a step that ended the run, or a refusal with a code: handed over drawn (errors.failure), so the
+                # page says what happened and what to do without reading the message's words. Anything else
+                # is said in its own words: the message of a ValueError is a sentence already
+                known, step = getattr(error, "known", None), getattr(error, "step", None)
+                if engine.no_space(error):
+                    # the app's own write refused by a full drive (the state, a manifest, a picture): the same
+                    # thing as a step stopped for it, and said the same
+                    known = errors.describe("VM-DISK-FULL")
+                if known or step:
+                    self.failure = {**errors.failure(step, known, str(error)), "step": step}
                 if isinstance(error, (StepFailed, ValueError)):
                     self.error = str(error) or type(error).__name__
                 else:
@@ -97,7 +109,8 @@ class Jobs:
 
     def poll(self, since=0):
         return {"running": self.running, "events": self.events[since:], "next": len(self.events),
-                "result": self.result, "error": self.error, "cancelled": self.cancelled, "tail": self.tail()}
+                "result": self.result, "error": self.error, "failure": self.failure, "cancelled": self.cancelled,
+                "tail": self.tail()}
 
     def tail(self):
         """The end of the running step's log: a three-minute step otherwise shows nothing until it ends."""
@@ -108,6 +121,11 @@ class Jobs:
             return engine._log_tail(log, LOG_TAIL)
         except OSError:
             return None  # Blender hasn't opened it yet
+
+
+def busy(running):
+    """The refusal of a call that can't be made while a job runs, with its code."""
+    return engine.refused("VM-BUSY", f"busy: {running} is still running", str(running))
 
 
 JOBS = Jobs()
@@ -152,7 +170,7 @@ def api(route, query, body):
         return JOBS.start("updating the app", work)
     if route == "restart":
         if JOBS.running:
-            raise StepFailed(f"busy: {JOBS.running} is still running")
+            raise busy(JOBS.running)
         # only a launcher starts the app again (OC2VRM.bat, oc2vrm.sh): without one the user does
         if not os.environ.get("OC2VRM_LAUNCHER"):
             return {"restarting": False}
@@ -160,13 +178,13 @@ def api(route, query, body):
         return {"restarting": True}
     if route in ("use_blender", "forget_blender"):
         if JOBS.running:
-            raise StepFailed(f"busy: {JOBS.running} is still running")
+            raise busy(JOBS.running)
         return engine.use_blender(body.get("path") or "") if route == "use_blender" else engine.forget_blender(body["path"])
     if route == "disk":
         return _disk()
     if route == "prune":
         if JOBS.running:
-            raise StepFailed(f"busy: {JOBS.running} is still running")
+            raise busy(JOBS.running)
         if not body.get("all") and not m:
             raise ValueError("prune: name a character, or all of them")
         chosen = _characters() if body.get("all") else [Path(m)]
@@ -174,6 +192,26 @@ def api(route, query, body):
         return {"characters": done, "removed": sum(d["removed"] for d in done), "freed": sum(d["freed"] for d in done)}
     if route == "status":
         return cli.cmd_status(_args(manifest=Path(m)))
+    if route == "preflight":
+        # what is known to go wrong before a build starts (app/preflight.py): read from the disk alone
+        asked = {key: (body.get(key) or (query.get(key) or [None])[0]) or None for key in ("from", "to", "only")}
+        if any(value not in (None, *engine.NAMES) for value in asked.values()):
+            raise ValueError("preflight: from, to and only are steps of the build")
+        return Project(m).preflight(start=asked["from"], stop=asked["to"], only=asked["only"])
+    if route == "preflight_accept":
+        # the user was asked the stops and built on: this character isn't asked them again as they read now
+        # (it writes the character's state, which a running build holds: never beside one)
+        if JOBS.running:
+            raise busy(JOBS.running)
+        from . import preflight
+        return preflight.accept(Project(m), [str(code) for code in body.get("codes") or []])
+    if route == "forget_eyes_fallback":
+        if JOBS.running:
+            raise busy(JOBS.running)
+        return Project(m).forget_eyes_fallback()
+    if route == "state_aside":
+        # a record of builds that can't be read, set aside at the user's word so the character opens again
+        return engine.set_state_aside(Path(m))
     if route == "manifest":
         return engine.manifest.load(m)
     if route == "pieces":
@@ -215,7 +253,9 @@ def api(route, query, body):
         return JOBS.start("getting it ready", lambda emit: cli.prepare(Path(m), on_event=emit))
     if route == "run":
         def work(emit):
-            return Project(m).run(start=body.get("from"), stop=body.get("to"), only=body.get("only"), on_event=emit)
+            project = Project(m)
+            cli.said_before(project, emit, start=body.get("from"), stop=body.get("to"), only=body.get("only"))
+            return project.run(start=body.get("from"), stop=body.get("to"), only=body.get("only"), on_event=emit)
         return JOBS.start("build", work)
     if route == "regress":
         # every character with a finished build, in scratch folders: the A/B a change to the app needs
@@ -271,7 +311,7 @@ def api(route, query, body):
     if route == "paint_save":
         if JOBS.running:
             # a build may be reading the painted copy this would write again
-            raise StepFailed(f"busy: {JOBS.running} is still running")
+            raise busy(JOBS.running)
         return cli.save_paint(Path(m), body.get("images") or {})
     if route == "paint_draft":
         return cli.save_paint_draft(Path(m), body.get("images") or {})
@@ -293,7 +333,7 @@ def api(route, query, body):
         return engine.hide_character(Path(body.get("path") or m), hide=not body.get("show"))
     if route == "delete":
         if JOBS.running and not body.get("dry"):
-            raise StepFailed(f"busy: {JOBS.running} is still running")
+            raise busy(JOBS.running)
         return engine.delete_character(Path(body.get("path") or m), dry=bool(body.get("dry")))
     if route == "duplicate":
         return cli.duplicate(Path(m), (body.get("name") or "").strip())
@@ -569,10 +609,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._json(api(route, query, body))
         except (StepFailed, ValueError, FileNotFoundError, KeyError) as error:
-            self._json({"error": str(error)}, 400)
+            # with its code when it has one (a refusal of the engine's): what the page may act on is the code,
+            # never the message's words
+            known = getattr(error, "known", None)
+            self._json({"error": str(error), **({"known": known} if known else {})}, 400)
         except ConnectionError:
             pass  # the page left before the answer was written (closed, or reloaded): nobody to tell
         except Exception as error:  # noqa: BLE001 -- said to the page and kept, not lost with the connection
+            if engine.no_space(error):
+                # the app's own write refused by a full drive (a manifest, the face points, paint): said as
+                # that, with its code, not as the app tripping
+                known = errors.describe("VM-DISK-FULL")
+                return self._json({"error": f"{known['what']}: {error}. {known['fix']}", "known": known}, 400)
             # anything else used to end the request with no answer: the page said "Failed to fetch",
             # listed no characters, and nothing anywhere said why
             _log_error(route, traceback.format_exc())

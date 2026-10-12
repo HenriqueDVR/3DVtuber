@@ -5,7 +5,7 @@ export const hex = (n) => `#${n.toString(16).padStart(6, "0")}`;
 export const now = () => new Date().toLocaleTimeString();
 
 // The open character. Pages read and replace these; nothing else holds a copy.
-export const S = { manifestPath: null, manifest: null, status: null, listing: null, movement: null, springs: null,
+export const S = { manifestPath: null, manifest: null, status: null, preflight: null, listing: null, movement: null, springs: null,
   feedback: [], projects: [], runs: [], renders: [], setup: null };
 // Functions one page calls on another, filled in by the module that owns them (go, job,
 // openProject, ...): the pages import each other's work without importing each other.
@@ -23,11 +23,16 @@ export async function call(route, body) {
       + "if it was closed, start OC2VRM.bat again and reload this page.");
   }
   const data = await response.json();
-  if (data.error) throw new Error(data.error);
+  // with the refusal's code when the engine named one (app/errors.py): what a page acts on, never the words
+  if (data.error) throw Object.assign(new Error(data.error), { known: data.known || null });
   return data;
 }
 export async function refreshManifest() { S.manifest = await call("manifest"); }
-export async function refreshStatus() { S.status = await call("status"); }
+// ... and, with it, what is known to go wrong with the next build (app/preflight.py): read anew whenever
+// the status is, since nearly everything that changes one changes the other. Without it the page still works.
+export async function refreshStatus() { [S.status, S.preflight] = await Promise.all([call("status"), call("preflight").catch(() => null)]); }
+// "the arms hang at the sides" as a sentence of its own: the engine's words begin small and end open
+export const sentence = (t) => { t = String(t ?? "").trim(); return t ? t[0].toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? "" : ".") : ""; };
 
 export function say(id, text, bad = false) {
   // an error written beside its button is remembered for a report made in the next minutes
@@ -35,24 +40,25 @@ export function say(id, text, bad = false) {
   const el = $(id); if (!el) return; el.textContent = text; el.classList.toggle("bad", bad);
 }
 
-// the meaningful line of a step's error: the last one that isn't Blender's shutdown chatter
-export const lastLine = (t) => String(t ?? "").split(/\r?\n/).map((l) => l.trim())
-  .filter((l) => l && !l.startsWith("###") && !l.startsWith("Blender")).slice(-1)[0] || "";
-// What a failed face step means for the user, and what to try.
-export function plain(step, reason) {
-  const r = String(reason || "");
-  if (step === "eyes" && /iris shows over the lids/.test(r))
-    return "the blink doesn't cover the moving iris, so eye tracking was left out. Try sliding eye patches (Face), or ask for a fuller blink.";
-  // not "face over the eye patch": a tester who had marked the face was told to mark it
-  if (step === "eyes" && /face over the eye patch/.test(r))
-    return "the sliding eye patch would go under the face, so eye tracking was left out. Try another way for the eyes to move (Face).";
-  if (step === "eyes" && /face points|needs? a face patch/i.test(r)) return "eye tracking needs face points on a face patch (Face page).";
-  return lastLine(r);
-}
+// A failure as the engine hands it over (app/errors.py `failure`: code, what, detail, fix, options), said.
+// Nothing of a log is read here: the page once worked a failure's meaning out of its words, and told a
+// tester who had marked the face to mark it. A failure with no code is one the app has no name for: its
+// `what` says so, its `detail` is the log's last telling line, and the way on is a report.
+export const tell = (f) => f ? `${f.what}${f.detail ? ` (${f.detail})` : ""}` : "";
 // A piece the pose test listed and found right as it is (a cape the arms move free under): not a problem.
 // (results written before the test said so itself are read by its words)
 export const movesFine = (row) => row.expected ?? (!row.suggested && /as they should$/.test(row.why || ""));
 export const stepName = (s) => s.replaceAll("_", " ");
+// How long the steps from `from` on (all of them without it) took in this character's last build, in
+// words ("1 min 40 s"); null when one of them has never run here. Their own times added up: where the
+// computer has room the last steps run side by side, and a build is then quicker than this says.
+export function tookLast(status, from) {
+  const steps = status?.steps || [], first = from ? steps.findIndex((s) => s.step === from) : 0;
+  const run = first < 0 ? [] : steps.slice(first).filter((s) => s.runs);
+  if (!run.length || !run.every((s) => s.seconds)) return null;
+  const total = Math.max(10, Math.round(run.reduce((sum, s) => sum + s.seconds, 0) / 10) * 10);
+  return total < 60 ? `${total} s` : `${Math.floor(total / 60)} min${total % 60 ? ` ${total % 60} s` : ""}`;
+}
 
 // a file under out/ as the server hands it out
 export const served = (path) => { const tail = String(path).replaceAll("\\", "/").split("/out/")[1]; return tail ? `/out/${tail}?t=${Date.now()}` : ""; };

@@ -1,6 +1,6 @@
 // The app: opening a character and drawing every page from it.
-import { $, S, app, call, esc, refreshStatus } from "./core.js";
-import { forgetUndo, toast } from "./ui.js";
+import { $, S, app, call, esc, refreshStatus, sentence } from "./core.js";
+import { ask, forgetUndo, toast } from "./ui.js";
 import "./look.js";
 import { go, renderNav } from "./nav.js";
 import { resume } from "./jobs.js";
@@ -54,14 +54,14 @@ async function openProject(path) {
   $("project").value = S.manifestPath || "";
   try { path ? localStorage.setItem(LAST, path) : localStorage.removeItem(LAST); } catch {}
   if (!path) {
-    Object.assign(S, { manifest: null, status: null, movement: null, springs: null, feedback: [], runs: [], renders: [] });
+    Object.assign(S, { manifest: null, status: null, preflight: null, movement: null, springs: null, feedback: [], runs: [], renders: [] });
     await loadParts(null); setGhost(null); resetPaint();
     renderAll();
     await Promise.all([loadFace(), loadMovement(null), loadSprings(), loadFeedback(), loadRuns(), loadRenders(), loadSheets()]).catch(failed);
     return;
   }
   try {
-    [S.manifest, S.status] = await Promise.all([call("manifest"), call("status")]);
+    [S.manifest, S.status, S.preflight] = await Promise.all([call("manifest"), call("status"), call("preflight").catch(() => null)]);
     resetPaint();
     const pieces = await call("pieces");
     S.listing = pieces.listing; S.listingStale = !!pieces.stale;
@@ -71,7 +71,15 @@ async function openProject(path) {
     await Promise.all([loadFace(), loadMovement(gltf), loadSprings(), loadFeedback(), loadRuns(), loadRenders(), loadSheets()].map((p) => p.catch(failed)));
     renderNav();
     refreshProjects().catch(failed);
-  } catch (e) { failed(e); }
+  } catch (e) {
+    // the record of its builds can't be read, nor its backup (a crash while it was written, a drive that
+    // filled): the character couldn't be opened at all. Set aside at the user's word, it opens again
+    if (e.known?.code !== "VM-STATE-UNREADABLE") return failed(e);
+    const sure = await ask("This character's record of builds can't be read", { text: `${sentence(e.known.what)}\n\nThe app can set it aside: `
+      + "the unreadable file is kept under another name, every build stays where it is, and the next build starts the record afresh.", ok: "Set it aside and open" });
+    if (!sure) return failed(e);
+    try { await call("state_aside", {}); await openProject(path); } catch (again) { failed(again); }
+  }
 }
 app.openProject = openProject;
 

@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { $, S, app, call, say, refreshManifest } from "./core.js";
 import { makeView, toThree, toBlender } from "./views.js";
-import { pushUndo, saved } from "./ui.js";
+import { keyable, pushUndo, saved } from "./ui.js";
 import { onShow } from "./nav.js";
 
 export const jointsView = makeView($("joints-view"));
@@ -68,6 +68,7 @@ export function showJoints() {
       <td>${moved ? `<button class="act alt small" data-reset>Reset</button>` : ""}</td></tr>`;
   }).join("");
   body.querySelectorAll("tr").forEach((tr) => {
+    keyable(tr);
     tr.onclick = (e) => { if (e.target.tagName !== "BUTTON") pickJoint(tr.dataset.key); };
     tr.querySelector("[data-reset]")?.addEventListener("click", () => saveJoint(tr.dataset.key, null));
   });

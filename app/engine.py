@@ -113,11 +113,35 @@ KEY_PLACE = 0.01
 
 
 class StepFailed(Exception):
-    """`known`: the matching errors.KNOWN entry ({"code", "what", "fix", "options"}), when there is one."""
+    """`known`: the matching errors.KNOWN entry ({"code", "what", "fix", "options"}), when there is one.
+    `carries_on`: the step is one a build does without (an optional repair that crashed): the chain
+    goes on with the file before it and the step is kept as failed."""
 
-    def __init__(self, message, known=None):
+    def __init__(self, message, known=None, carries_on=False):
         super().__init__(message)
         self.known = known
+        self.carries_on = carries_on
+
+
+class NoWarudo(FileNotFoundError):
+    """Warudo's Characters folder isn't known: the page asks for it."""
+    known = errors.describe("VM-NO-WARUDO")
+
+
+class NoBlender(FileNotFoundError):
+    """No Blender to run a step with: the Setup page gets one."""
+    known = errors.describe("VM-NO-BLENDER")
+
+
+def refused(code, message, detail=""):
+    """What the engine refuses before a step starts, as a StepFailed with its code (app/errors.py): the
+    page draws what happened and what to do from the code, the message stays for a command line."""
+    return StepFailed(message, {**errors.describe(code), **({"detail": detail} if detail else {})})
+
+
+# What says a step's script fell over (Python's own words, which Blender prints before it exits with
+# the code a script that had nothing to do also exits with).
+CRASHED = "Traceback (most recent call last)"
 
 
 class Cancelled(Exception):
@@ -246,15 +270,19 @@ def find_blender(given=None):
     tested one must not silently take over the user's builds. Below MIN_BLENDER is never picked.
     The portable copies in tools/blender are never picked by themselves, only when chosen.
     """
-    for candidate in (given, os.environ.get("BLENDER"), _read_json(SETTINGS, {}).get("blender"), shutil.which("blender")):
+    # (each asked only when the one before it names none: looking along PATH is some forty milliseconds on
+    # Windows, and this is asked with every look at a character)
+    for candidate in (lambda: given, lambda: os.environ.get("BLENDER"), lambda: _read_json(SETTINGS, {}).get("blender"),
+                      lambda: shutil.which("blender")):
+        candidate = candidate()
         if candidate and Path(candidate).exists():
             return str(candidate)
     found = [(_folder_version(p), p) for p in installed_blenders()]
     found = [(v, p) for v, p in found if v and v >= MIN_BLENDER]
     if found:
         return str(max(found, key=lambda vp: (".".join(map(str, vp[0][:2])) in TESTED, vp[0]))[1])
-    raise FileNotFoundError(f"Blender {'.'.join(map(str, MIN_BLENDER[:2]))} or later not found: "
-                            "put it on PATH, set $BLENDER, or pass --blender")
+    raise NoBlender(f"Blender {'.'.join(map(str, MIN_BLENDER[:2]))} or later not found: "
+                    "put it on PATH, set $BLENDER, or pass --blender")
 
 
 def installed_blenders():
@@ -413,8 +441,18 @@ class Project:
             entry = self.state["steps"].get(name, {})
             steps.append({"step": name, "runs": runs, "skip_reason": why, "status": entry.get("status", "not run"),
                           **{k: entry[k] for k in ("blend", "vrm", "json", "log", "finished", "seconds", "report", "reason",
-                                                     "known", "last_failure")
+                                                     "known", "last_failure", "failure")
                              if k in entry}})
+            # a failure kept by an app from before failures were kept drawn: drawn here, so the page never
+            # reads a log's words itself (nor looks in them for the log's own name, as it did)
+            if entry.get("status") == "failed" and "failure" not in entry:
+                steps[-1]["failure"] = errors.failure(name, entry.get("known"), entry.get("reason", ""))
+                if steps[-1].get("log") is None and _log_named(entry.get("reason")):
+                    steps[-1]["log"] = _log_named(entry.get("reason"))
+            last = entry.get("last_failure")
+            if last and "failure" not in last:
+                steps[-1]["last_failure"] = {**({"log": _log_named(last.get("reason"))} if _log_named(last.get("reason")) else {}), **last,
+                                             "failure": errors.failure(name, last.get("known"), last.get("reason", ""))}
         last = self.latest()
         check = self.state["steps"].get("check", {})
         failed = _read_json(check.get("json"), {}).get("failed")
@@ -424,6 +462,22 @@ class Project:
                 "latest_blend": str(last) if last else None, "options": self.options(), "steps": steps,
                 "check_failed": failed, "verdict": self.verdict(failed), "ships": self.ships(),
                 "approved": self.approved(), "since_approved": self.since_approved()}
+
+    def preflight(self, start=None, stop=None, only=None):
+        """What is known to go wrong with the steps `start` to `stop` (or `only` one) before a Blender
+        starts: lines of kind stop, warn or ok, each with its code and what mends it (app/preflight.py).
+        Read from the disk alone; nothing is run and nothing refused."""
+        from . import preflight
+        return preflight.check(self, start=start, stop=stop, only=only)
+
+    def forget_eyes_fallback(self):
+        """Let the next build try the moving iris first again: the way an earlier build's eye step fell
+        back to is forgotten. The eye step and what follows it are to be built again."""
+        fell = self.state.pop("eyes_fallback", None)
+        if fell:
+            self._save_state()
+            self.mark_stale("eyes")
+        return {"forgot": fell}
 
     def ships(self):
         """What the finished .vrm holds (`shipped`), or None until the build has run to its end."""
@@ -441,7 +495,7 @@ class Project:
         """Keep the current build's reports as the ones later builds are compared with."""
         steps = self.state["steps"]
         if steps.get("vrm_check", {}).get("status") != "done":
-            raise StepFailed("approve: build to the end first, a half-built avatar isn't a baseline")
+            raise refused("VM-NO-EXPORT", "approve: build to the end first, a half-built avatar isn't a baseline")
         folder = self.out / "approved"
         folder.mkdir(parents=True, exist_ok=True)
         kept = {}
@@ -464,15 +518,16 @@ class Project:
         about what they saw has to stay about that file."""
         vrm = self._last_vrm()
         if vrm is None:
-            raise StepFailed("no finished .vrm yet: build first")
+            raise refused("VM-NO-EXPORT", "no finished .vrm yet: build first")
         folder = warudo_folder()
         if folder is None:
-            raise FileNotFoundError("Warudo wasn't found in a Steam library: give its Characters folder "
-                                    r"(Warudo\Warudo_Data\StreamingAssets\Characters)")
+            raise NoWarudo("Warudo wasn't found in a Steam library: give its Characters folder "
+                           r"(Warudo\Warudo_Data\StreamingAssets\Characters)")
         target = folder / f"{self.name}_{vrm.parent.name}.vrm"
         already = target.exists() and target.stat().st_size == vrm.stat().st_size
         if target.exists() and not already:
-            raise StepFailed(f"{target} is there already and is a different file: rename or remove it in Warudo's folder")
+            raise refused("VM-WARUDO-FILE", f"{target} is there already and is a different file: rename or remove it in Warudo's folder",
+                          str(target))
         if not already:
             if free_disk(folder) < vrm.stat().st_size + DISK_FLOOR:
                 known = errors.describe("VM-DISK-FULL")
@@ -760,7 +815,7 @@ class Project:
                 if CANCEL.is_set():
                     raise Cancelled(f"stopped by the user before {name}")
                 if name != "survey" and self.survey() is None and not self.improving:
-                    raise StepFailed("run the survey step first")
+                    raise refused("VM-NO-SURVEY", "run the survey step first")
                 # planned afresh each time: the survey decides what later steps do
                 _, runs, why = self.plan()[index]
                 if not runs:
@@ -798,12 +853,16 @@ class Project:
                     emit({"step": name, "status": "cancelled"})
                     raise
                 except StepFailed as error:
+                    # `failure`: the code, what happened, what to do and the option that does it, as the
+                    # page draws them (errors.failure); `reason` and `known` as they always were
                     failure = {"reason": str(error)[-1500:], "finished": datetime.now().isoformat(timespec="seconds"),
-                               **({"known": error.known} if error.known else {})}
-                    if name not in SOFT | CHECKS:
+                               **({"known": error.known} if error.known else {}),
+                               "failure": errors.failure(name, error.known, str(error))}
+                    if name not in SOFT | CHECKS and not error.carries_on:
                         # the step keeps what it last finished (later steps may read it); the failure
                         # rides beside it so the app can say what went wrong and what to do
                         self._note_failure(name, failure, folder / f"{index:02d}_{name}.log")
+                        error.step = name  # for whoever started the run: which step it ended at
                         raise
                     entry = {"status": "failed", **failure}
                     # the reason keeps only its end, where the log's name no longer is
@@ -863,6 +922,10 @@ class Project:
         """The build's last steps from `index` on, run side by side (`_side_by_side`) when more than one
         is to run and the computer has room for two Blenders now: {step: its entry, or what it raised}.
         {} when it hasn't: the chain then runs them itself, one after another."""
+        if SHARED.held and SHARED.crowd() > 1:
+            # other characters are building beside this one or waiting to (`at_once`): each is one
+            # Blender then, and the computer's room is counted by characters
+            return {}
         plan = self.plan()
         group = [name for name in NAMES[index:last + 1] if name in TAIL and plan[NAMES.index(name)][1]]
         newest = self.latest()
@@ -998,7 +1061,7 @@ class Project:
         # is no longer near the arm
         blend_in = None if fresh else self.latest(before="tpose" if name == "movement" else name)
         if not fresh and blend_in is None:
-            raise StepFailed(f"{name}: no earlier step has produced a .blend yet")
+            raise refused("VM-NOTHING-BUILT", f"{name}: no earlier step has produced a .blend yet")
         free = free_disk(folder)
         if free < DISK_NEEDED:
             known = errors.describe("VM-DISK-FULL")
@@ -1033,6 +1096,12 @@ class Project:
             entry["peak_mb"] = took
         output = log.read_text(encoding="utf-8", errors="replace")
         entry[kind] = str(stem.with_suffix(f".{kind}"))
+        if code == STOPPED and free_disk(folder) < DISK_FLOOR:
+            # stopped on a full drive: what it had half written is no file of any use, and is the room
+            # the user is about to be asked to find (a .blend, Blender's own "@" of one being saved, a .vrm)
+            for half in (stem.with_suffix(".blend"), stem.with_suffix(".blend@"), stem.with_suffix(".blend1"), stem.with_suffix(".vrm")):
+                with contextlib.suppress(OSError):
+                    half.unlink()
         made = Path(entry[kind]).exists()
         if (code != 0 or not made) and found and code not in (STOPPED, CANCELLED):
             # the roles found by themselves must never cost the avatar: without them, as if the option were off
@@ -1043,8 +1112,11 @@ class Project:
                                  f"({', '.join(p['name'] for p in found)}): the step failed with them (see {stem.name}_found.log)"]
             return again
         if code != 0 or not made:
-            # a step the engine itself stopped (STOPPED) had something to do and didn't get to
-            if name in OPTIONAL and code != STOPPED:
+            # a step the engine itself stopped (STOPPED) had something to do and didn't get to. So had
+            # one whose script fell over: read as "nothing to do" too, a repair that crashed was a
+            # build quietly without it. The build still goes on without it (`carries_on`), and says so
+            crashed = name in OPTIONAL and code != STOPPED and CRASHED in output
+            if name in OPTIONAL and code != STOPPED and not crashed:
                 return {"status": "nothing to do", "log": str(log), "finished": entry["finished"]}
             known = errors.classify(name, output)
             if known is None and free_disk(folder) < DISK_FLOOR:
@@ -1053,7 +1125,7 @@ class Project:
             said = f" [{known['code']}] {known['what']}{' (' + known['detail'] + ')' if known.get('detail') else ''}; {known['fix']}" if known else ""
             if OUT_OF_MEMORY in output:
                 raise StepFailed(f"{name}: Blender ran out of memory (see {log}){said}", known)
-            raise StepFailed(f"{name}: failed with exit code {code} (see {log}){said}\n{_tail(output)}", known)
+            raise StepFailed(f"{name}: failed with exit code {code} (see {log}){said}\n{_tail(output)}", known, carries_on=crashed)
         pictures = None
         if name == "export" and (not self.improving or self.keeping):
             # the export's last act, with the app's own Python: Blender's has no picture codec. Before
@@ -1160,7 +1232,7 @@ class Project:
             # what really ships: the exported file, re-imported (the add-on once swapped the pose on export)
             exported = exported or self._last_vrm()
             if exported is None:
-                raise StepFailed("vrm_check: no exported .vrm yet")
+                raise refused("VM-NO-EXPORT", "vrm_check: no exported .vrm yet")
             if self.improving:
                 # the file has its own bone names back: read with the pipeline's, all its meshes as one
                 return ([script, exported, "--json", stem.with_suffix(".json")],
@@ -1281,8 +1353,10 @@ class Project:
         """`error`, its advice changed when the eye step refused the mode that advice names."""
         known = error.known or {}
         advised = (known.get("options") or {}).get("eyes")
+        # (the patch refused has no way advised with it, errors.EYES_REFUSED: this is where it gets one)
+        patch = "face over the eye patch" in (known.get("detail") or "")
         if (name != "eyes" or known.get("code") != "VM-EYES-REFUSED"
-                or advised not in {self.options()["eyes"], *getattr(self, "_eyes_tried", ())}):
+                or not (patch or advised in {self.options()["eyes"], *getattr(self, "_eyes_tried", ())})):
             return error
         inserts = bool((self.survey() or {}).get("parts", {}).get("eye_inserts"))
         fix, options = EYES_REFUSED_AGAIN[inserts and self.data["options"]["eyes"] is not None]
@@ -1312,6 +1386,36 @@ class Project:
     def _save_state(self):
         self.out.mkdir(parents=True, exist_ok=True)
         _write_json(self.state_path, self.state, backup=True)
+
+
+def _log_named(reason):
+    """The log a failure's words name ("... (see <log>)"), for one kept before its log was kept with it."""
+    found = re.search(r"\(see (.+?\.log)\)", str(reason or ""))
+    return found.group(1) if found else None
+
+
+def set_state_aside(manifest_path):
+    """Move a character's unreadable state.json (and its backup) aside, so that the character opens
+    again with its record started afresh: {"aside": [files]}. Nothing is deleted: the files keep
+    their content under another name, for a report, and every run folder stays where it is. Only for
+    a record that really can't be read: one that reads is left alone (ValueError)."""
+    data = manifest.load(Path(manifest_path).resolve())
+    out = manifest.path_of(data, "out_dir") or REPO / "out" / data["name"]
+    state = out / "state.json"
+    try:
+        _load_state(state)
+    except StepFailed:
+        # (without the one-Blender lock: a build of another character holds it, and none of this one
+        # can be running, since a character whose record doesn't read can't be opened to start one)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        moved = []
+        for path in (state, state.with_name("state.json.bak")):
+            if path.exists():
+                aside = path.with_name(f"{path.name}.unreadable-{stamp}")
+                path.replace(aside)
+                moved.append(str(aside))
+        return {"aside": moved}
+    raise ValueError(f"{state} reads: nothing to set aside")
 
 
 def _taken(result):
@@ -1599,6 +1703,7 @@ class _Worker:
         with open(self.folder / "worker.log", "a", encoding="utf-8", errors="replace") as handle:
             self.process = subprocess.Popen([self.blender, "-b", "--factory-startup", "-P", str(STARTUP), "-P", str(WORKER)],
                                             stdin=subprocess.PIPE, stdout=handle, stderr=subprocess.STDOUT, cwd=REPO)
+            dies_with_us(self.process)
 
     def run(self, blend_in, args, log, extra):
         """As `_blender`: the step's exit code, STOPPED or CANCELLED; None when the step can't be handed
@@ -1678,6 +1783,56 @@ def one_blender():
     return _read_json(SETTINGS, {}).get("one_blender") is not False
 
 
+def no_space(error):
+    """Whether an error of the system's says the drive is full (Python's ENOSPC; Windows' own two codes
+    for it, which reach Python as other numbers when a write is refused half way)."""
+    import errno
+    return isinstance(error, OSError) and (error.errno == errno.ENOSPC or getattr(error, "winerror", None) in (39, 112))
+
+
+_JOB = []
+
+
+def dies_with_us(process):
+    """Tie a Blender to this process: when the app ends, however it ends, so does the Blender.
+
+    The app's window closed in the middle of a build (or the app killed in Task Manager) left its
+    Blender running: Windows ends no child with its parent. It went on for minutes holding two or
+    three gigabytes, wrote into a run nothing would read, and the next build, which finds the lock
+    left by a dead process and takes it, ran beside it on a computer with room for one. A Windows job
+    whose last handle is this process's: the system ends what is in it when the handle goes. Elsewhere
+    nothing is done (Linux and macOS were never run; a terminal closed there takes its children along).
+    Returns whether the process was tied."""
+    if os.name != "nt" or not isinstance(getattr(process, "_handle", None), int):
+        return False
+    import ctypes
+    from ctypes import wintypes
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        if not _JOB:
+            class Basic(ctypes.Structure):
+                _fields_ = [("process_time", ctypes.c_int64), ("job_time", ctypes.c_int64), ("flags", wintypes.DWORD),
+                            ("least_set", ctypes.c_size_t), ("most_set", ctypes.c_size_t), ("processes", wintypes.DWORD),
+                            ("affinity", ctypes.c_size_t), ("priority", wintypes.DWORD), ("scheduling", wintypes.DWORD)]
+
+            class Extended(ctypes.Structure):
+                _fields_ = [("basic", Basic), ("io", ctypes.c_uint64 * 6), ("process_memory", ctypes.c_size_t),
+                            ("job_memory", ctypes.c_size_t), ("peak_process", ctypes.c_size_t), ("peak_job", ctypes.c_size_t)]
+            kernel.CreateJobObjectW.restype = wintypes.HANDLE
+            kernel.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+            kernel.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+            kernel.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+            job = kernel.CreateJobObjectW(None, None)
+            limits = Extended()
+            limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not job or not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+                return False
+            _JOB.append(job)  # kept for as long as this process lives: its closing is what ends them
+        return bool(kernel.AssignProcessToJobObject(_JOB[0], wintypes.HANDLE(process._handle)))
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
 def _blender(blender, blend_in, args, log, extra, worker=None, abandon=None):
     """One Blender run, output to `log`; returns the exit code. Stops a run that hangs, fills the
     drive or uses the last of the memory (STOPPED), and one the user stops (CANCELLED). With a
@@ -1696,6 +1851,7 @@ def _blender(blender, blend_in, args, log, extra, worker=None, abandon=None):
         handle.write(" ".join(f'"{c}"' if " " in c else c for c in map(str, command)) + "\n")
         handle.flush()
         process = subprocess.Popen(command, stdout=handle, stderr=subprocess.STDOUT, cwd=REPO)
+        dies_with_us(process)
         started, looks = time.time(), 0
         while process.poll() is None:
             time.sleep(POLL)
@@ -1935,6 +2091,10 @@ class _Lock:
     """One Blender at a time across the app, the CLI and any agent driving it."""
 
     def __enter__(self):
+        # held once for several runs of this process side by side (`together`): their own takings pass
+        self.passed = SHARED.held
+        if self.passed:
+            return self
         LOCK.parent.mkdir(parents=True, exist_ok=True)
         try:
             handle = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -1945,20 +2105,106 @@ class _Lock:
                 held = "pid 0"
             found = re.match(r"pid (\d+)", held)
             if not found or (int(found.group(1)) and _alive(int(found.group(1)))):
-                raise StepFailed(f"another build is running ({held}); if none is, delete {LOCK}") from None
+                raise refused("VM-BUSY", f"another build is running ({held}); if none is, delete {LOCK}", held) from None
             # left by a process that crashed or was killed: without this the user had to find and
             # delete the file by hand. A second taker racing us still loses on O_EXCL.
             LOCK.unlink(missing_ok=True)
             try:
                 handle = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             except FileExistsError:
-                raise StepFailed(f"another build is running ({LOCK.read_text(errors='replace').strip()})") from None
+                raise refused("VM-BUSY", f"another build is running ({LOCK.read_text(errors='replace').strip()})") from None
         os.write(handle, f"pid {os.getpid()} since {datetime.now().isoformat(timespec='seconds')}".encode())
         os.close(handle)
         return self
 
     def __exit__(self, *exc):
-        LOCK.unlink(missing_ok=True)
+        if not self.passed:
+            LOCK.unlink(missing_ok=True)
+
+
+# The lock held once for several runs of this process (`together`), and how many characters `at_once`
+# has building or waiting to as it stands now.
+SHARED = SimpleNamespace(held=False, crowd=lambda: 0)
+
+
+@contextlib.contextmanager
+def together():
+    """The one-build lock held once for several runs of this process side by side (`at_once`): each
+    run's own taking of it passes. While more than one character is building or waiting to
+    (`SHARED.crowd`), each keeps to one Blender (`Project._ahead`), so that what is counted against
+    the computer's room is characters."""
+    with _Lock():
+        SHARED.held = True
+        try:
+            yield
+        finally:
+            SHARED.held, SHARED.crowd = False, lambda: 0
+
+
+def at_once(projects, work, on_event=None, pause=0.5):
+    """`work(project, emit)` for each of `projects`, as many at once as the computer has room for:
+    what each returned, or what it raised, in their order.
+
+    For a command that builds several characters (`regress`): they waited for each other, a minute
+    and a half each, on a computer with room for two or three. The lock is held once for all of them
+    (`together`) and each run keeps to one Blender while another builds or waits, so a character is
+    a Blender: another starts only when `Project._room` says so of its rigging step, the heaviest
+    (2.2 GB on every model of about 50,000 triangles), asked again whenever one ends. As a build's
+    own last steps (`_lanes`): one that fails while others run beside it is run once more by itself,
+    last, before its failure is believed. A computer with no room, or told to keep to one Blender
+    (`blenders`), runs them one after another; the last one left, and one asked for alone, runs its
+    last steps side by side as any build. Every event says its `character`.
+    """
+    emit = on_event or (lambda event: None)
+    results = [None] * len(projects)
+    waiting, alone, running, tried = list(range(len(projects))), [], {}, set()
+    free = free_memory()
+    budget = float("inf") if free is None else free - MEMORY_LOW
+
+    def run(index, lane):
+        try:
+            lane.result = work(projects[index], lambda event: emit({**event, "character": projects[index].name}))
+        except BaseException as error:  # noqa: BLE001 -- kept, to be handed back in its place
+            lane.result = error
+
+    def start(index):
+        lane = SimpleNamespace(need=projects[index]._need("build"), result=None, company=bool(running))
+        lane.thread = threading.Thread(target=run, args=(index, lane), daemon=True)
+        running[index] = lane
+        if len(running) > 1:
+            for other in running.values():
+                other.company = True
+        lane.thread.start()
+
+    with together():
+        SHARED.crowd = lambda: len(waiting) + len(alone) + len(running)
+        while waiting or alone or running:
+            for index, lane in list(running.items()):
+                if lane.thread.is_alive():
+                    continue
+                del running[index]
+                if isinstance(lane.result, StepFailed) and lane.company and index not in tried and not CANCEL.is_set():
+                    tried.add(index)
+                    alone.append(index)
+                    emit({"step": projects[index].name, "character": projects[index].name, "status": "warning",
+                          "reason": f"{projects[index].name} failed with other characters building beside it: "
+                                    "it is built again by itself, last, before that is believed"})
+                    continue
+                results[index] = lane.result
+            if CANCEL.is_set():
+                for index in waiting + alone:
+                    results[index] = Cancelled("stopped by the user")
+                waiting, alone = [], []
+            for index in list(waiting):
+                if not projects[index]._room("build", {other: lane.need for other, lane in running.items()}, budget):
+                    break
+                waiting.remove(index)
+                start(index)
+            if alone and not waiting and not running:
+                start(alone.pop(0))
+            if waiting or alone or running:
+                time.sleep(pause)
+    return results
 
 
 def _alive(pid):
@@ -2841,7 +3087,7 @@ def _load_state(path):
     backup = _read_json(path.with_name(path.name + ".bak"), None)
     if isinstance(backup, dict) and "steps" in backup:
         return backup
-    raise StepFailed(f"{path} is unreadable and has no usable backup; move it aside to start the build afresh")
+    raise refused("VM-STATE-UNREADABLE", f"{path} is unreadable and has no usable backup; move it aside to start the build afresh", str(path))
 
 
 def _tagged(output, tag):

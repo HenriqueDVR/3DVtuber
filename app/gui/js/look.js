@@ -1,27 +1,20 @@
 // The arcade look (arcade.css): the stage behind the pages, character select, the main menu and its
 // lists, the build band, sparks, sound. It adds its own elements and reads what the pages already
 // drew (the sidebar's badges, the Characters cards, the run bar and its events), so the pages know
-// nothing of it: with the classic look chosen on Setup none of this runs and the app is as it was.
-import { $, S, app, esc, lastVrm, stepName } from "./core.js";
+// nothing of it. It is the app's one look: the plain one it had before (app.css alone, none of this
+// run) could be chosen on Setup until 2026-10-12.
+import { $, S, app, esc, lastVrm, stepName, tookLast } from "./core.js";
 import { arm, mood, musicOn, musicVolume, play, setMusic, setVolume, soundOn, switchMusic, switchSound, volume } from "./sfx.js";
 
-const root = document.documentElement, arcade = root.classList.contains("arcade");
-const LOOK = "vtuber-maker-look", MOTION = "vtuber-maker-motion";
+const root = document.documentElement;
+const MOTION = "vtuber-maker-motion";
 
-// Setup's switches, in either look
-$("look").value = arcade ? "arcade" : "classic";
-$("look").onchange = () => {
-  try { localStorage.setItem(LOOK, $("look").value); } catch {}
-  const here = new URL(location.href);
-  if (here.searchParams.has("look")) { here.searchParams.delete("look"); location.href = here; } else location.reload();
-};
+// Setup's switches
 $("look-still").checked = root.classList.contains("still");
 $("look-still").onchange = () => {
   try { localStorage.setItem(MOTION, $("look-still").checked ? "off" : "on"); } catch {}
   root.classList.toggle("still", $("look-still").checked);
 };
-// sound belongs to the arcade look: the classic one has none to turn down
-$("look-sound-row").hidden = $("look-music-row").hidden = !arcade;
 $("look-sound").value = volume();
 $("look-sound").oninput = () => { setVolume(+$("look-sound").value); tuneButton(); };
 $("look-sound").onchange = () => play("select");
@@ -457,7 +450,7 @@ async function band() {
     if (over > settledWas) play("step", share);
   } else {
     name = !S.manifest ? "No character" : left ? (over > 1 ? `${left} to build` : "Ready?") : st?.verdict?.ready ? "Ready for Warudo" : "Built";
-    tag = !S.manifest ? "open or create a character first" : failed.length ? `built without ${failed.map((s) => stepName(s.step)).join(", ")}` : `${list.length} steps · one Blender at a time`;
+    tag = !S.manifest ? "open or create a character first" : failed.length ? `built without ${failed.map((s) => stepName(s.step)).join(", ")}` : `${list.length} steps · ${tookLast(st) ? `about ${tookLast(st)} the last time` : "a few minutes"}`;
   }
   settledWas = over;
   put(A("s-name"), name); put(A("s-tag"), tag);
@@ -597,4 +590,4 @@ function stage() {
   requestAnimationFrame(frame);
 }
 
-if (arcade) start();
+start();

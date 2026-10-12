@@ -110,6 +110,25 @@ export async function redo() {
 }
 // a toast that offers undo for the change it reports
 export const saved = (text) => toast(text, "good", { action: { label: "Undo", run: undo }, ms: 6000 });
+
+// A table row or a column's heading that is chosen by a click (a step, a piece, a joint, what to sort
+// by) could be chosen with a mouse alone: the tab key passed over it. `keyable` puts it in the tab
+// order, and Enter or Space on it clicks it. A page draws its rows again when one is chosen: the row
+// drawn in its place takes the focus back, or the next press of Tab started from the top of the page.
+export function keyable(el) { el.tabIndex = 0; }
+addEventListener("keydown", (e) => {
+  const el = e.target;
+  if ((e.key !== "Enter" && e.key !== " ") || !el.matches?.("tr[tabindex], th[tabindex]")) return;
+  e.preventDefault();
+  const body = el.parentElement, own = ["step", "label", "key", "run"].find((name) => name in el.dataset);
+  el.click();
+  const back = () => {
+    if (el.isConnected || !own || document.activeElement !== document.body) return;
+    body.querySelector(`tr[data-${own}="${CSS.escape(el.dataset[own])}"]`)?.focus();
+  };
+  requestAnimationFrame(back);
+  setTimeout(back, 350);
+});
 addEventListener("keydown", (e) => {
   const key = e.key.toLowerCase();
   if (!(e.ctrlKey || e.metaKey) || (key !== "z" && key !== "y")) return;

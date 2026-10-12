@@ -33,6 +33,13 @@ TIMEOUT = 300
 # A browser asks for its page within a second or two of starting. One that hasn't after this long (s)
 # is ended and started again, up to this many starts in all.
 NEVER_ASKED, STARTS = 25, 3
+# What a browser needs below its profile folder (characters): Edge wrote files up to 120 below it while
+# it drew an avatar, and writes them the old way, inside the 260 Windows gives a path. With less room
+# it drops files without a word (at 200 characters of profile, 280 of its 352), and at 250 it never
+# asks for its page: a character in a deep folder waited the whole five minutes of every build for a
+# look through its file that never came (2026-10-12, SETUP.md "The tester's computer").
+PROFILE_ROOM, WINDOWS_PATH = 120, 259
+PROFILE_NAME = len("\\.browser_12345678")
 
 mimetypes.add_type("model/gltf-binary", ".vrm")
 mimetypes.add_type("text/javascript", ".js")
@@ -52,6 +59,24 @@ def find_browser(given=None):
         if shutil.which(name):
             return shutil.which(name)
     raise NoBrowser("no Edge or Chrome found: set VTUBER_MAKER_BROWSER to one")
+
+
+def profile_for(out_dir):
+    """A new, empty folder for the browser's profile. Beside the sheets, not in %TEMP%: the browser
+    keeps large blobs (a 4096 px texture) in its profile, and on a system drive with 3.7 GB free it
+    refused the main texture: a white body. Unless that is too deep on the disk for the browser to
+    write in (PROFILE_ROOM): then in the app's own out folder, then in the temp folder; with room in
+    none of them, in the shallowest."""
+    places = [Path(out_dir), REPO / "out", Path(tempfile.gettempdir())]
+    roomy = [place for place in places if os.name != "nt" or len(str(place)) + PROFILE_NAME + PROFILE_ROOM <= WINDOWS_PATH]
+    failed = None
+    for place in roomy + sorted((place for place in places if place not in roomy), key=lambda place: len(str(place))):
+        try:
+            place.mkdir(parents=True, exist_ok=True)
+            return tempfile.mkdtemp(prefix=".browser_", dir=place)
+        except OSError as error:
+            failed = error
+    raise failed
 
 
 def launch(browser, profile, url, *flags, log=subprocess.DEVNULL):
@@ -163,9 +188,7 @@ def browse(page, vrm, out_dir, browser=None, timeout=TIMEOUT, query="", prefix="
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    # beside the sheets, not in %TEMP%: the browser keeps large blobs (a 4096 px texture) in its
-    # profile, and on a system drive with 3.7 GB free it refused the main texture: a white body
-    profile = tempfile.mkdtemp(prefix=".browser_", dir=out_dir)
+    profile = profile_for(out_dir)
     url = f"http://127.0.0.1:{server.server_port}/viewer/{page.name}?model=/model.vrm&post=1{query}"
     process = launch(browser, profile, url, "--window-size=1280,900")
     started = launched = time.time()
@@ -181,7 +204,7 @@ def browse(page, vrm, out_dir, browser=None, timeout=TIMEOUT, query="", prefix="
                 # for the whole five minutes (2026-10-12), nothing drawn. Ended and started once more.
                 close(process)
                 shutil.rmtree(profile, ignore_errors=True)
-                profile = tempfile.mkdtemp(prefix=".browser_", dir=out_dir)
+                profile = profile_for(out_dir)
                 process, launched, starts = launch(browser, profile, url, "--window-size=1280,900"), time.time(), starts + 1
         if got["error"]:
             raise RuntimeError(got["error"])

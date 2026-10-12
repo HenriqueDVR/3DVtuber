@@ -2,7 +2,7 @@
 import * as THREE from "three";
 import { $, S, app, call, esc, hex, movesFine, say, roleName, ROLE_INFO, ROLE_STAGE } from "./core.js";
 import { makeView } from "./views.js";
-import { toast } from "./ui.js";
+import { keyable, toast } from "./ui.js";
 import { job } from "./jobs.js";
 
 const moveView = makeView($("movement-view"));
@@ -73,6 +73,7 @@ function renderMovement(selectedLabel) {
   }).join("");
   body.querySelectorAll("tr[data-label]").forEach((tr) => {
     const row = movement.pieces.find((r) => r.label === +tr.dataset.label);
+    keyable(tr);
     tr.onclick = (e) => { if (e.target.tagName !== "BUTTON") renderMovement(row.label); };
     tr.querySelector("[data-use]")?.addEventListener("click", async () => {
       const side = row.findings.find((f) => f.bone)?.bone.startsWith("Left") ? "Left" : "Right";

@@ -118,6 +118,11 @@ th { color: var(--dim); font-weight: 500; font-size: 12px; position: sticky; top
 th.sort { cursor: pointer; user-select: none; } th.sort:hover { color: var(--text); }
 th.sort[data-dir=asc]::after { content: " ▲"; font-size: 9px; } th.sort[data-dir=desc]::after { content: " ▼"; font-size: 9px; }
 tbody tr[data-label], tbody tr[data-key], tbody tr[data-step], tbody tr[data-run] { cursor: pointer; }
+/* a suggestion's button in the list of pieces: its words wrap where the list stands in a narrow column
+   (the page 1280 px wide), or the button's end was cut off behind a sideways scroll bar */
+#piece-rows td:last-child .act { white-space: normal; }
+/* a row or heading reached by the tab key: its ring inside it, or the list around it cuts the ring off */
+tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline-offset: -2px; }
 tbody tr:hover td { background: color-mix(in srgb, var(--raise) 60%, transparent); }
 tr.sel td, tr.sel:hover td { background: var(--sel); }
 td.num, #step-rows td:nth-child(3) { white-space: nowrap; }

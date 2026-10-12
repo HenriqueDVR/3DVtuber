@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { $, S, app, call, esc, hex, say, refreshManifest, ROLES, ROLE_INFO, ROLE_COLOUR, ROLE_STAGE, CORE, BONES, roleName, namedFor } from "./core.js";
 import { makeView } from "./views.js";
-import { ask, pushUndo, saved, toast } from "./ui.js";
+import { ask, keyable, pushUndo, saved, toast } from "./ui.js";
 import { job } from "./jobs.js";
 
 export const partsView = makeView($("parts-view"));
@@ -290,6 +290,7 @@ document.querySelectorAll("#piece-list th.sort").forEach((th) => th.onclick = ()
   document.querySelectorAll("#piece-list th.sort").forEach((t) => t.dataset.dir = t === th ? sort.dir : "");
   renderPieces();
 });
+document.querySelectorAll("#piece-list th.sort").forEach(keyable);
 function sorted(rows) {
   const key = { count: (r) => r.count, name: (r) => (namedFor(r)?.name || r.where || "").toLowerCase(), suggested: (r) => r.suggested }[sort.key];
   return [...rows].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0) * (sort.dir === "asc" ? 1 : -1));
@@ -378,6 +379,7 @@ export function renderPieces() {
   body.querySelectorAll("tr[data-label]").forEach((tr) => {
     const label = +tr.dataset.label, row = S.listing.pieces.find((r) => r.label === label);
     const named = namedFor(row);
+    keyable(tr);
     tr.onclick = (e) => { if (!["SELECT", "INPUT", "BUTTON", "OPTION", "LABEL"].includes(e.target.tagName)) selectPiece(label); };
     tr.onmouseenter = () => { hovered = label; colourPieces(); };
     tr.onmouseleave = () => { hovered = null; colourPieces(); };

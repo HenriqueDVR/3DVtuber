@@ -1,12 +1,13 @@
 // Long jobs (a build, a listing, a render): start one, follow it in the run bar, stop it, say when it ends.
-import { $, S, app, call, say, stepName } from "./core.js";
-import { toast } from "./ui.js";
+import { $, S, app, call, say, sentence, stepName, tell } from "./core.js";
+import { ask, toast } from "./ui.js";
 
 let polling = false, run = null, ticker = null, waiting = [];
 
 // Resolves when the job ends, to its last report ({result, error, cancelled}), after the open
 // character has been read again; to null when it couldn't start.
 export async function job(route, body = {}) {
+  if (route === "run" && !(await mayBuild(body))) return null;
   try { await call(route, body); } catch (e) { toast(e.message, "bad"); $("events").textContent += `\n${e.message}`; return null; }
   $("events").textContent = "";
   // the last run's failure isn't this one's
@@ -18,6 +19,23 @@ export async function job(route, body = {}) {
   return ended;
 }
 app.job = job;
+
+// Before a build: what is known to go wrong with these steps (app/preflight.py), asked afresh. A stop is
+// asked about, each with what mends it; "Build anyway" is remembered for this character, so the same
+// stop is a warning from then on. Every button that starts a build comes through here.
+async function mayBuild(body) {
+  if (!S.manifestPath) return true;
+  const asked = new URLSearchParams(Object.entries({ from: body.from, to: body.to, only: body.only }).filter(([, step]) => step));
+  let found;
+  try { found = await call(`preflight${[...asked].length ? `?${asked}` : ""}`); } catch { return true; }
+  const stops = found.lines.filter((line) => line.kind === "stop");
+  if (!stops.length) return true;
+  const sure = await ask(stops.length > 1 ? `${stops.length} things will go wrong with this build` : "This build will go wrong",
+    { text: stops.map((line) => `${sentence(line.text)}\n${sentence(line.fix)}`).join("\n\n"), ok: "Build anyway", danger: true });
+  if (!sure) { app.go("build"); return false; }
+  try { await call("preflight_accept", { codes: stops.map((line) => line.code) }); } catch {}
+  return true;
+}
 
 // Where a failed job says so: beside the button that started it. Every job's failure was once written
 // on every page, and a face detector that found no face stood in red on Movement after a pose test.
@@ -45,6 +63,8 @@ async function poll(since) {
   catch { setTimeout(() => poll(since), 3000); return; }
   if (state.running && !run) run = { route: state.running, started: Date.now(), steps: [], done: 0, current: null, going: new Set(), over: new Set() };
   for (const e of state.events) {
+    // what was known to go wrong before the build started, said into its progress: no step began or ended
+    if (e.status === "preflight") { $("events").textContent += `before the build, ${e.kind === "stop" ? "known to go wrong" : "worth knowing"}: ${e.reason} [${e.code}]\n`; continue; }
     // "ahead": one of the build's last steps, run beside the others, is over; how it ended is said in its turn
     if (e.status !== "ahead") $("events").textContent += `${e.step} ${e.status}${e.seconds ? ` (${e.seconds} s)` : ""}${e.reason ? ": " + e.reason : ""}\n`;
     // short of memory or disk, an untested Blender: said where it is seen, not only in the log
@@ -74,8 +94,12 @@ async function poll(since) {
   const took = Math.round((Date.now() - finished.started) / 1000);
   if (state.error) {
     $("events").textContent += `\n${state.error}`;
-    if (SAYS[finished.route]) say(SAYS[finished.route], state.error.split("\n")[0], true);
-    toast(`${finished.label || "The run"} failed: ${state.error.split("\n")[0]}`, "bad", { ms: 9000 });
+    // what happened and what to do, as the engine hands them over (a step that ended the run, a refusal
+    // with a code); else the error's own first line, which is a sentence of the app's
+    const f = state.failure;
+    const said = f ? `${f.step ? `“${stepName(f.step)}”: ` : ""}${sentence(tell(f))} ${sentence(f.fix)}${f.code ? ` [${f.code}]` : ""}` : state.error.split("\n")[0];
+    if (SAYS[finished.route]) say(SAYS[finished.route], said, true);
+    toast(`${finished.label || "The run"} failed: ${said}`, "bad", { ms: 9000 });
   } else if (state.cancelled) toast("Stopped. The step that was running keeps what it last finished; run it again when you like.", "info");
   else toast(`${cap(finished.label || "done")}: finished in ${duration(took)}.`);
   if (took > 20) ended(state.error ? "failed" : state.cancelled ? "stopped" : "finished", finished.label);

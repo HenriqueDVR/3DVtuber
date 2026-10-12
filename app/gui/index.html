@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="arcade">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,12 +8,12 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Chakra+Petch:wght@500;600;700&display=swap">
 <link rel="stylesheet" href="/gui/arcade.css">
 <script>
-// The look chosen on Setup, set before the first paint: arcade.css only counts under html.arcade.
+// "Less motion" from Setup, set before the first paint. (The app has the one look, the arcade one:
+// arcade.css counts under html.arcade. The plain look it had before could be chosen on Setup until
+// 2026-10-12; an address or a stored choice that asks for it gets this one.)
 try {
-  var look = new URLSearchParams(location.search).get("look") || localStorage.getItem("vtuber-maker-look") || "arcade";
-  if (look !== "classic") document.documentElement.classList.add("arcade");
   if (localStorage.getItem("vtuber-maker-motion") === "off") document.documentElement.classList.add("still");
-} catch (e) { document.documentElement.classList.add("arcade"); }
+} catch (e) {}
 </script>
 <script type="importmap">
 { "imports": {
@@ -445,6 +445,9 @@ try {
         step to see its log and run from it.</p></details>
   </header>
   <div class="stack">
+    <div class="card w-lg" id="preflight-card" hidden><div class="title">Before you build</div>
+      <p class="help">What is known to go wrong with this build, found without building it. A red one is asked about before a build starts.</p>
+      <div id="preflight"></div></div>
     <div class="card w-lg"><div class="title">What's left</div><div id="todo"></div></div>
     <div class="row"><button class="act" id="run-all" data-job>Build everything</button>
       <button class="act alt" id="vrm-send" disabled title="copies the .vrm into Warudo's Characters folder">Send to Warudo</button>
@@ -648,10 +651,9 @@ try {
       <p class="msg" id="start-version"></p>
     </div>
     <div class="card w-lg"><div class="title">Look</div>
-      <p class="help">How the app itself is drawn; nothing about a character changes. <b>Arcade</b> is a fighting game's menus:
-        character select, a main menu, motion. <b>Classic</b> is the plain look the app had before, with the page list down
-        the left side.</p>
-      <div class="row"><select id="look" aria-label="look"><option value="arcade">Arcade</option><option value="classic">Classic</option></select>
+      <p class="help">How the app itself is drawn: a fighting game's menus, with a character select, a main menu, motion
+        and sound. Nothing about a character changes.</p>
+      <div class="row">
         <label class="inline" title="stops the moving background, the sparks and the page effects"><input type="checkbox" id="look-still"> less motion</label>
         <label class="inline" id="look-sound-row" title="the menus' sounds, and a note for each build step that finishes; all the way left is off">sound
           <input type="range" id="look-sound" min="0" max="1" step="0.05" value="0.5" style="width:120px"></label>

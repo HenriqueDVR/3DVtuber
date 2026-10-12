@@ -1,6 +1,6 @@
 // Build: what's left, the steps with their logs, the verdict, the .vrm, and every earlier run.
-import { $, S, app, call, esc, plain, served, stepName, lastVrm, refreshStatus } from "./core.js";
-import { ask, toast } from "./ui.js";
+import { $, S, app, call, esc, sentence, served, stepName, tell, tookLast, lastVrm, refreshStatus } from "./core.js";
+import { ask, keyable, toast } from "./ui.js";
 import { job } from "./jobs.js";
 import { nextRun } from "./nav.js";
 
@@ -8,14 +8,14 @@ let selectedStep = null, checkDrawn = null;
 
 export function renderSteps() {
   const body = $("step-rows");
-  renderTodo(); renderVrm();
+  renderPreflight(); renderTodo(); renderVrm();
   $("ships").innerHTML = shipsHtml(S.status?.ships);
   if (!S.status) { checkDrawn = null; body.innerHTML = ""; $("check").innerHTML = ""; $("verdict").innerHTML = ""; $("approved").innerHTML = ""; $("step-detail").hidden = true; return; }
   body.innerHTML = S.status.steps.map((s) => `<tr data-step="${s.step}" class="${s.step === selectedStep ? "sel" : ""}">
     <td>${stepName(s.step)}</td><td><span class="chip ${s.runs ? s.status.split(" ")[0] : "off"}">${s.runs ? esc(s.status) : "off"}</span></td>
     <td>${s.seconds ? s.seconds + " s" : ""}</td><td class="msg">${!s.runs ? esc(s.skip_reason)
-      : s.status === "failed" ? `built without it: ${esc(plain(s.step, s.reason))}` : ""}</td></tr>`).join("");
-  body.querySelectorAll("tr").forEach((tr) => tr.onclick = () => { selectedStep = selectedStep === tr.dataset.step ? null : tr.dataset.step; renderSteps(); });
+      : s.status === "failed" ? `built without it: ${esc(tell(s.failure))}` : ""}</td></tr>`).join("");
+  body.querySelectorAll("tr").forEach((tr) => { keyable(tr); tr.onclick = () => { selectedStep = selectedStep === tr.dataset.step ? null : tr.dataset.step; renderSteps(); }; });
   renderDetail();
   const v = S.status.verdict;
   const line = (cls) => ([page, text]) => `<li class="${cls}">${esc(text)} <a href="#${page}">${page}</a></li>`;
@@ -73,17 +73,16 @@ async function renderDetail() {
   const box = $("step-detail"), s = S.status?.steps.find((x) => x.step === selectedStep);
   box.hidden = !s;
   if (!s) return;
-  // a failed step's log is named in its reason ("... (see <log>)"), not kept as its own field
-  const fail = s.last_failure, known = s.known || fail?.known;
-  const log = s.log || fail?.log || String(s.reason || fail?.reason || "").match(/see (.+?\.log)\)/)?.[1];
+  const fail = s.last_failure, f = s.failure || fail?.failure;
+  const log = s.log || fail?.log;
   const file = (p) => p ? `<code>${esc(String(p).replaceAll("\\", "/").split("/").slice(-2).join("/"))}</code>` : "";
   box.innerHTML = `<div class="title">${stepName(s.step)} <span class="chip ${s.status.split(" ")[0]}">${esc(s.runs ? s.status : "off")}</span></div>
     <dl>${s.finished ? `<dt>finished</dt><dd>${esc(s.finished.replace("T", " "))}${s.seconds ? `, ${s.seconds} s` : ""}</dd>` : ""}
       ${!s.runs ? `<dt>off</dt><dd>${esc(s.skip_reason)}</dd>` : ""}
       ${s.blend ? `<dt>made</dt><dd>${file(s.blend)}${s.vrm ? `, ${file(s.vrm)}` : ""}</dd>` : s.json ? `<dt>report</dt><dd>${file(s.json)}</dd>` : ""}
-      ${s.reason ? `<dt>why</dt><dd class="failed">${esc(plain(s.step, s.reason))}</dd>` : ""}
-      ${fail ? `<dt>last try</dt><dd class="failed">${esc(fail.finished.replace("T", " "))}: ${esc(plain(s.step, fail.reason))}</dd>` : ""}
-      ${known ? `<dt>${esc(known.code)}</dt><dd>${esc(known.what)}${known.detail ? ` (${esc(known.detail)})` : ""}. What to do: ${esc(known.fix)}</dd>` : ""}</dl>
+      ${s.failure ? `<dt>why</dt><dd class="failed">${esc(sentence(tell(s.failure)))}</dd>` : s.reason && s.status !== "skipped" ? `<dt>why</dt><dd>${esc(s.reason)}</dd>` : ""}
+      ${fail ? `<dt>last try</dt><dd class="failed">${esc(fail.finished.replace("T", " "))}: ${esc(sentence(tell(fail.failure)))}</dd>` : ""}
+      ${f ? `<dt>${esc(f.code || "what to do")}</dt><dd>${esc(sentence(f.fix))}</dd>` : ""}</dl>
     <div class="row"><button class="act alt small" data-job id="detail-from" ${s.runs ? "" : "disabled"}>Run from here</button>
       <button class="act alt small" data-job id="detail-only" ${s.runs ? "" : "disabled"}>Run only this</button>
       ${log ? `<button class="act alt small" id="detail-reveal">Show log in folder</button>` : ""}
@@ -92,7 +91,7 @@ async function renderDetail() {
   $("detail-from").onclick = () => job("run", { from: s.step });
   $("detail-only").onclick = () => job("run", { only: s.step });
   $("detail-reveal")?.addEventListener("click", () => reveal(log));
-  $("detail-report")?.addEventListener("click", () => app.report(`${stepName(s.step)} failed: ${plain(s.step, s.reason || fail?.reason || "")}`));
+  $("detail-report")?.addEventListener("click", () => app.report(`${stepName(s.step)} failed: ${tell(f)}${f?.code ? ` [${f.code}]` : ""}`));
   if (!$("runbar").hidden) box.querySelectorAll("[data-job]").forEach((b) => b.disabled = true);
   if (!log) return;
   // (another step may have been picked while this one's log was on its way: its box is not this log's)
@@ -120,15 +119,45 @@ function spotsHtml(spots) {
       .map(([file, caption]) => `<figure><img src="${served(s.files[file])}" alt="${esc(caption)}"><figcaption>${esc(caption)}</figcaption></figure>`).join("")}</div>`).join("");
 }
 
-// [label, action] rerunning a failed step, first setting the options its error code names as the fix
-function retry(step, known) {
-  if (!known?.options) return ["Try it again", () => job("run", { from: step.step })];
-  const change = Object.entries(known.options);
-  return [`Set ${change.map(([k, v]) => `${k} to ${v}`).join(", ")} and rerun`, async () => {
+// [label, action] rerunning a failed step, first setting the options its failure names as the fix
+function retry(step, failure) {
+  if (!failure?.options) return ["Try it again", () => job("run", { from: step.step })];
+  const change = Object.entries(failure.options);
+  return [`Set ${change.map(([k, v]) => `${k} to ${v ?? "automatic"}`).join(", ")} and rerun`, async () => {
     try { for (const [key, value] of change) await call("set", { key, value }); await refreshStatus(); }
     catch (e) { toast(e.message, "bad"); return; }
     job("run", { from: step.step });
   }];
+}
+
+// ---------- before a build: what is known to go wrong with it (app/preflight.py), each with the button that mends it
+// What a line's `action` does (errors.py names them); "gone": the page was left or a job started, which
+// reads the character again by itself.
+const ACTIONS = {
+  list_pieces: ["List the parts again", () => { job("list_pieces"); return "gone"; }],
+  remove_pieces: ["Take the role off", async (line) => { for (const name of line.args?.names || []) await call("piece", { name, remove: true }); }],
+  forget_eyes_fallback: ["Try the moving iris again", () => call("forget_eyes_fallback", {})],
+};
+const PAGE_NAMES = { home: "Characters", setup: "Setup", model: "Model", parts: "Parts", joints: "Joints", face: "Face", options: "Options",
+  paint: "Paint", movement: "Movement", review: "Review" };
+// [the button's words, what it does] for a line: the options it names set, else its action, else its page opened
+function mend(line) {
+  const set = Object.entries(line.options || {});
+  if (set.length) return [`Set ${set.map(([key, value]) => `${stepName(key)} to ${value ?? "automatic"}`).join(", ")}`,
+    async () => { for (const [key, value] of set) await call("set", { key, value }); }];
+  if (ACTIONS[line.action]) return [line.action === "remove_pieces" && line.args?.names?.length > 1 ? "Take the roles off" : ACTIONS[line.action][0], () => ACTIONS[line.action][1](line)];
+  return PAGE_NAMES[line.page] ? [`Go to ${PAGE_NAMES[line.page]}`, () => { app.go(line.page); return "gone"; }] : null;
+}
+function renderPreflight() {
+  const lines = S.manifest ? (S.preflight?.lines || []).filter((line) => line.kind !== "ok") : [];
+  $("preflight-card").hidden = !lines.length;
+  $("preflight").innerHTML = lines.map((line, i) => `<div class="todo"><span class="${line.kind === "stop" ? "failed" : "warn"}" title="${esc(line.code)}">${esc(sentence(line.text))}
+      <span class="msg">${esc(sentence(line.fix))}</span></span>
+    ${mend(line) ? `<button class="act alt small" data-mend="${i}">${esc(mend(line)[0])}</button>` : ""}</div>`).join("");
+  $("preflight").querySelectorAll("[data-mend]").forEach((b) => b.onclick = async () => {
+    try { if (await mend(lines[+b.dataset.mend])[1]() !== "gone") await app.openProject(S.manifestPath); }
+    catch (e) { toast(e.message, "bad"); }
+  });
 }
 
 // What to do next, in order, each with the button that does it: the steps table alone left the
@@ -140,22 +169,24 @@ function renderTodo() {
   const improving = !!S.status.improving;
   if (!improving && steps.survey?.status !== "done") add("Survey the model: reads how it stands and what it's made of.", "Run survey", () => job("run", { only: "survey" }), "warn", true);
   if (!improving && !S.listing) add("List the pieces, then give any hair, hat, cape or sleeve its role.", "Go to Parts", () => app.go("parts"));
-  if (!improving && !S.manifest.face) add("Mark the eyes and mouth. Without them the avatar can't blink, has no face tracking and its eyes don't move: only the vowel mouth shapes ship.", "Go to Face", () => app.go("face"));
+  // (the face not marked is said above, with what else is known before a build: preflight's VM-NO-FACE-POINTS)
+  if (!improving && !S.manifest.face && !S.preflight) add("Mark the eyes and mouth. Without them the avatar can't blink, has no face tracking and its eyes don't move: only the vowel mouth shapes ship.", "Go to Face", () => app.go("face"));
   const failed = S.status.steps.filter((s) => s.runs && s.status === "failed");
   const built = S.status.steps.some((s) => s.step !== "survey" && ["done", "stale", "failed"].includes(s.status));
   const next = nextRun(S.status);
   if (!built) add(improving ? "Take the avatar in and write it out improved: about a minute. The file you gave is not changed."
     : "Build the avatar: a few minutes, one step after another.", "Build everything", () => job("run", {}), "warn", true);
-  else if (next) add(`${next.count} step${next.count > 1 ? "s" : ""} to (re)build, from “${stepName(next.from)}”${next.stale ? ": something before it changed" : ""}.`,
+  const took = next && tookLast(S.status, next.from);
+  if (built && next) add(`${next.count} step${next.count > 1 ? "s" : ""} to (re)build, from “${stepName(next.from)}”${next.stale ? ": something before it changed" : ""}${took ? ` (about ${took} the last time)` : ""}.`,
     `Run from ${stepName(next.from)}`, () => job("run", { from: next.from }), "warn", true);
-  for (const f of failed) add(`“${stepName(f.step)}” failed and the avatar was built without it: ${plain(f.step, f.reason)}${f.known ? ` (${f.known.code}: ${f.known.fix})` : ""}`,
-    ...retry(f, f.known), "failed", true);
+  for (const f of failed) add(`“${stepName(f.step)}” failed and the avatar was built without it: ${tell(f.failure)}. ${sentence(f.failure?.fix)}${f.failure?.code ? ` [${f.failure.code}]` : ""}`,
+    ...retry(f, f.failure), "failed", true);
   // a step that stopped the chain: its last good output stays, the failure rides beside it
   for (const f of S.status.steps.filter((s) => s.runs && s.last_failure)) {
-    const k = f.last_failure.known;
+    const k = f.last_failure.failure;
     // which file: a tester's good FBX was refused and nothing on the page said what path the character held
-    const named = k?.code === "VM-UNSUPPORTED-FILE" ? `. The model this character names: ${S.manifest.source}` : "";
-    add(`“${stepName(f.step)}” failed on ${f.last_failure.finished.replace("T", " ")}${k ? `: ${k.what}${k.detail ? ` (${k.detail})` : ""}. ${k.fix}` : `: ${plain(f.step, f.last_failure.reason).split("\n")[0]}`}${named}`,
+    const named = k?.code === "VM-UNSUPPORTED-FILE" ? ` The model this character names: ${S.manifest.source}` : "";
+    add(`“${stepName(f.step)}” failed on ${f.last_failure.finished.replace("T", " ")}: ${tell(k)}. ${sentence(k?.fix)}${k?.code ? ` [${k.code}]` : ""}${named}`,
       ...retry(f, k), "failed", true);
   }
   const pageName = (page) => page[0].toUpperCase() + page.slice(1);
@@ -190,8 +221,8 @@ async function sendToWarudo(folder) {
     const sent = await call("send_warudo", folder === undefined ? {} : { folder });
     toast(`${sent.already ? "Already in Warudo" : "Sent to Warudo"}: pick ${sent.name} as the character's source there.`, "info");
   } catch (e) {
-    if (folder !== undefined || !/Warudo wasn't found/.test(e.message)) return toast(e.message, "bad");
-    const given = await ask("Where is Warudo?", { text: "Warudo wasn't found in a Steam library. Paste the path of its Characters folder "
+    if (folder !== undefined || e.known?.code !== "VM-NO-WARUDO") return toast(e.message, "bad");
+    const given = await ask("Where is Warudo?", { text: "Warudo isn't in any Steam library the app knows. Paste the path of its Characters folder "
       + "(Warudo\\Warudo_Data\\StreamingAssets\\Characters); the app remembers it.", input: true, value: "", ok: "Send" });
     if (given) sendToWarudo(given.trim());
   }
@@ -217,6 +248,8 @@ function renderRuns() {
   $("runs-compare").disabled = ticked.length !== 2;
   $("runs-view").disabled = ticked.length !== 2 || !pair().every((r) => r.vrm_url);
   if (!S.runs.length) { body.innerHTML = `<tr><td colspan="5" class="msg">No runs yet.</td></tr>`; return; }
+  // (a row's buttons wrap when the list is narrow: held on one line, the third was cut off at the list's
+  // edge behind a sideways scroll bar wherever the page stands in two columns, 1280 px wide and the like)
   body.innerHTML = S.runs.map((r) => {
     const when = r.when ? new Date(r.when).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : r.run;
     const check = r.failed == null ? `<span class="msg">—</span>` : r.failed.length ? `<span class="warn" title="${esc(r.failed.join("\n"))}">${r.failed.length} over the limits</span>` : `<span class="done">passed</span>`;
@@ -224,7 +257,7 @@ function renderRuns() {
       <td>${esc(when)} ${r.approved ? `<span class="chip good">good</span>` : ""}${r.current ? ` <span class="chip info" title="the steps' latest files come from this run">in use</span>` : ""}</td>
       <td class="msg" title="${esc(r.steps.join(", "))}">${r.steps.length > 3 ? `${esc(stepName(r.steps[0]))} … ${esc(stepName(r.steps.at(-1)))} (${r.steps.length})` : esc(r.steps.map(stepName).join(", "))}</td>
       <td>${check}</td>
-      <td class="row" style="flex-wrap:nowrap">${r.vrm_url ? `<button class="act alt small" data-view title="open this run's .vrm in the viewer (Review)">View</button>` : ""}
+      <td class="row">${r.vrm_url ? `<button class="act alt small" data-view title="open this run's .vrm in the viewer (Review)">View</button>` : ""}
         <button class="act alt small" data-render data-job title="render this run's last model in the Review page's pose">Render</button>
         <button class="act alt small" data-folder title="show this run's files">Folder</button></td></tr>`;
   }).join("");

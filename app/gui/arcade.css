@@ -150,7 +150,7 @@
 .who h3 { font: italic 400 clamp(60px, 15vh, 150px)/1 Anton, Impact, sans-serif; margin: 2px 0 0; color: #fff; -webkit-text-stroke: 3px #1a1010; paint-order: stroke fill; text-shadow: 6px 6px 0 rgba(0, 0, 0, .4); letter-spacing: .02em; white-space: nowrap; }
 .who p { margin: 4px 0 8px; color: #1a1010; font-weight: 700; text-transform: none; font-size: 14px; }
 .stats { display: flex; gap: 6px; } .stats div { background: rgba(0, 0, 0, .78); padding: 3px 12px 4px; transform: skewX(-12deg); min-width: 74px; }
-.stats b { display: block; font: italic 400 22px/1 Anton, Impact, sans-serif; color: var(--aqua); white-space: nowrap; } .stats span { font-size: 9.5px; font-weight: 600; letter-spacing: .06em; color: #cfcfcf; white-space: nowrap; }
+.stats b { display: block; font: italic 400 22px/1 Anton, Impact, sans-serif; color: var(--aqua); white-space: nowrap; } .stats span { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; color: #cfcfcf; white-space: nowrap; }
 .band.in .who h3 { animation: a-namein .42s cubic-bezier(.2, .9, .2, 1); }
 @keyframes a-namein { 0% { translate: 110px 0; opacity: 0; text-shadow: -16px 0 0 #3df2d8, 16px 0 0 #ff3d8b; } 50% { translate: -8px 0; opacity: 1; text-shadow: -6px 0 0 #3df2d8, 6px 0 0 #ff3d8b; } 70% { translate: 3px 0; } }
 .band.in .tag { animation: a-rise .25s backwards; } .band.in .who p { animation: a-rise .3s .1s backwards; }

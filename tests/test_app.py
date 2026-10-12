@@ -1449,6 +1449,34 @@ class Engine(unittest.TestCase):
         finally:
             sheet.subprocess.Popen, sheet.find_browser, sheet.NEVER_ASKED = real
 
+    def test_the_browsers_profile_lies_where_the_browser_can_write_in_it(self):
+        # Edge writes files 120 characters below its profile and none past Windows' 260: with its profile
+        # in a deep run folder it never came for its page, and every build waited five minutes for it
+        from unittest import mock
+        from app import sheet
+        beside = Path(sheet.profile_for(self.root / "sheets"))
+        self.assertEqual((beside.parent, beside.is_dir(), beside.name[:9]), (self.root / "sheets", True, ".browser_"))
+        if os.name != "nt":
+            return  # Windows' own limit
+        room = lambda place: sheet.WINDOWS_PATH - sheet.PROFILE_ROOM - sheet.PROFILE_NAME - len(str(place))  # noqa: E731
+        deep = self.root / ("d" * room(self.root))  # with its separator, one character too deep
+        self.assertEqual(room(deep), -1)
+        with mock.patch.object(sheet, "REPO", self.root / "app"):
+            # ... the app's own out folder then, made if it isn't there
+            self.assertEqual(Path(sheet.profile_for(deep)).parent, self.root / "app" / "out")
+            self.assertFalse(deep.exists())
+            # a folder with just the room is still the place
+            fits = self.root / ("d" * (room(self.root) - 1))
+            self.assertEqual((room(fits), Path(sheet.profile_for(fits)).parent), (0, fits))
+        temp = self.root / "temp"
+        temp.mkdir()
+        with mock.patch.object(sheet, "REPO", deep), mock.patch.object(sheet.tempfile, "gettempdir", return_value=str(temp)):
+            # the app itself lies deep: the temp folder
+            self.assertEqual(Path(sheet.profile_for(deep / "runs" / "x")).parent, temp)
+        with mock.patch.object(sheet, "REPO", deep / "app"), mock.patch.object(sheet.tempfile, "gettempdir", return_value=str(deep / "t")):
+            # nowhere with room: the shallowest of them, since a browser with little room still draws
+            self.assertEqual(Path(sheet.profile_for(deep / "runs" / "x")).parent, deep / "t")
+
     def landmarks(self, mouth_height=0.0):
         """What the detector found on model A (T-pose)'s face patch picture, the mouth's height set."""
         at = {11: (697, 835), 12: (791, 804), 13: (901, 853), 15: (810, 932), 17: (1112, 853), 18: (1221, 800),
@@ -3171,6 +3199,43 @@ class Paint(unittest.TestCase):
         self.assertEqual(cli._frame({"size": [0.6, 0.4, 1.84], "joints": {"head": [0, 0, 1.347]}}, 1.6)[0], 0.767)
         self.assertEqual(cli._frame(None, 1.6), (None, 1.0))
 
+    def test_the_face_patch_has_only_the_views_drawn_that_something_reads(self):
+        # render_views.py draws 34 views with their depths, for re-texturing by hand. Drawn so for every new
+        # character, 25 of them and 33 depths were read by nothing: half of the face patch's seconds
+        asked = []
+
+        def ran(blender, script, args, log=None, **more):
+            asked.append((script, [str(a) for a in args]))
+            if script.endswith("render_views.py"):
+                Path(args[1]).mkdir(parents=True, exist_ok=True)
+                (Path(args[1]) / "color_head_000.png").write_bytes(self.png((8, 8), (200, 150, 120, 255)))
+            else:
+                Path(args[4]).write_bytes(b"glTF")
+            return 0, ""
+        real, engine.run_script = engine.run_script, ran
+        try:
+            cli.cmd_face_patch(SimpleNamespace(manifest=self.path, blender="blender"))
+        finally:
+            engine.run_script = real
+        (drew, views), (made, patch) = asked
+        self.assertEqual((drew, made), ("retexture/render_views.py", "retexture/face_patch.py"))
+        only = views[views.index("--only") + 1].split(",")
+        # the head from the front, which the patch is made of, and its depth alone
+        self.assertEqual((patch[2], only[0], views[views.index("--depth-of") + 1]), ("head_000", "head_000", "head_000"))
+        # each part from the front and from behind: what a handoff bundle and a tester's report take
+        self.assertEqual(sorted(only), sorted(cli.PATCH_VIEWS))
+        self.assertEqual({name.rsplit("_", 1)[0] for name in only}, {"head", "torso", "hips", "legs", "face"})
+        self.assertTrue(all(name.endswith(("_000", "_180")) for name in only))
+        # ... by the names the script gives its views, which stops on one it doesn't know
+        script = (REPO / "scripts" / "retexture" / "render_views.py").read_text(encoding="utf-8")
+        for tile in ("head", "torso", "hips", "legs"):
+            self.assertIn(f'("{tile}", ', script)
+        self.assertIn('"face_000"', script)
+        self.assertIn("no such view", script)
+        # the marking picture is the head view, twice the size
+        with self.Image.open(self.root / "out" / "face" / "face_patch_head_000.png") as picture:
+            self.assertEqual(picture.size, (2048, 2048))
+
     def test_unsaved_paint_is_kept_as_a_draft_until_it_is_saved(self):
         project = Project(self.path, blender="blender")
         project.state["steps"] = {"build": {"status": "done"}}
@@ -3488,7 +3553,8 @@ Promise.resolve(app.started).finally(() => setTimeout(() => fetch(`/test/page${l
                         time.sleep(wait)
             self.assertIn(run, drawn, f"the {look} page never said it was drawn ({browser}):\n{said[-3000:]}")
             return SimpleNamespace(stdout=drawn[run], stderr=said)
-        # in both looks (Setup): the arcade one adds its own screens, the classic one must stay as it was
+        # the app has the one look, the arcade one (the plain look it had before could be chosen on Setup
+        # until 2026-10-12): as it opens, and for an address or a stored choice that still asks for the other
         pages = {}
         try:
             for look in ("arcade", "classic"):
@@ -3510,12 +3576,16 @@ Promise.resolve(app.started).finally(() => setTimeout(() => fetch(`/test/page${l
             server.Handler.do_GET, server.Handler.do_POST = real_get, real_post
         self.assertEqual(welcomes[:before], [], "a first start said by a page that wasn't one")
         self.assertEqual(greeted, [True])
-        self.assertIn('class="page on" id="setup"', new.stdout)
+        # (the page on show; "fresh" for its first second, while the look slides it in)
+        on_setup = r'class="page on(?: fresh)?" id="setup"'
+        self.assertRegex(new.stdout, on_setup)
         self.assertNotIn('id="start-go" hidden', new.stdout)
         self.assertEqual([line for line in first.stderr.splitlines() if "CONSOLE" in line and "Uncaught" in line], [])
-        for mark in ('class="page on" id="setup"', "Blender 4.2 or later wasn't found", "Get Blender", "App version"):
+        self.assertRegex(first.stdout, on_setup)
+        for mark in ("Blender 4.2 or later wasn't found", "Get Blender", "App version"):
             self.assertTrue(mark in first.stdout, f"first start: {mark}")
-        self.assertNotIn('class="page on" id="home"', first.stdout)
+        self.assertNotRegex(first.stdout, r'class="page on[^"]*" id="home"')
+        self.assertNotRegex(new.stdout, r'class="page on[^"]*" id="home"')
         for look, done in pages.items():
             page = done.stdout
             errors_said = [line for line in done.stderr.splitlines() if "CONSOLE" in line and ("Uncaught" in line or "SyntaxError" in line)]
@@ -3523,9 +3593,57 @@ Promise.resolve(app.started).finally(() => setTimeout(() => fetch(`/test/page${l
             # each is drawn by its module's last lines, or by main.js after every import ran
             for mark in ('data-tool="brush"', "New character", 'class="page on" id="home"', "Open or create a character first"):
                 self.assertTrue(mark in page, f"not drawn in the {look} look: {mark}")
-            # the arcade look's stage, roster and menus are there in it alone
-            for mark in ('id="a-bg"', 'class="slot new', 'id="menu"', 'id="a-crumbs"'):
-                self.assertEqual(mark in page, look == "arcade", f"{look} look: {mark}")
+            # the arcade look's stage, roster and menus are there, whichever was asked for
+            for mark in ('<html lang="en" class="arcade', 'id="a-bg"', 'class="slot new', 'id="menu"', 'id="a-crumbs"'):
+                self.assertTrue(mark in page, f"asked for the {look} look: {mark}")
+            # ... and Setup offers no other: its switches are of motion, sound and music
+            for mark in ('id="look"', "Classic"):
+                self.assertFalse(mark in page, f"asked for the {look} look: {mark}")
+            for mark in ('id="look-still"', 'id="look-sound"', 'id="look-music"'):
+                self.assertTrue(mark in page, f"asked for the {look} look: {mark}")
+
+    def test_what_is_chosen_by_a_click_can_be_chosen_from_the_keyboard(self):
+        # rows of steps, pieces, joints and tested pieces, and the headings the pieces are sorted by, were a
+        # mouse's alone: the tab key passed over them (at every width; seen in the pages 2026-10-12)
+        import re
+        script = lambda name: (server.GUI / "js" / name).read_text(encoding="utf-8")  # noqa: E731
+        shared = script("ui.js")
+        self.assertIn("export function keyable(el) { el.tabIndex = 0; }", shared)
+        self.assertIn('el.matches?.("tr[tabindex], th[tabindex]")', shared)
+        for name, rows in (("build.js", 1), ("parts.js", 2), ("joints.js", 1), ("movement.js", 1)):
+            page = script(name)
+            # ... every row a page gives a click to, it gives the keyboard too (and the import)
+            self.assertEqual(len(re.findall(r"\bkeyable\b", page)), rows + 1, name)
+            self.assertEqual(len(re.findall(r"\btr\.onclick = ", page)), 1, name)
+        # the buttons of a row wrap where a list is narrow: held on one line, the last was cut off at 1280 px
+        self.assertNotIn("nowrap", script("build.js"))
+        self.assertIn("#piece-rows td:last-child .act { white-space: normal; }", (server.GUI / "app.css").read_text(encoding="utf-8"))
+
+    def test_a_build_says_how_long_its_steps_took_the_last_time(self):
+        # "a few minutes", whatever the character: its last build's own seconds are there to be added up
+        script = lambda name: (server.GUI / "js" / name).read_text(encoding="utf-8")  # noqa: E731
+        self.assertIn("export function tookLast(status, from)", script("core.js"))
+        # said in the band over the steps, and of the steps to build again in "What's left"
+        self.assertIn("tookLast(st)", script("look.js"))
+        self.assertIn("tookLast(S.status, next.from)", script("build.js"))
+        # the sum itself, as the page works it out (Node runs the module's one function, where there is a Node)
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("no Node on this computer to run the page's own function")
+        source = script("core.js").replace("\r\n", "\n")
+        body = source[source.index("export function tookLast"):]
+        body = body[:body.index("\n}\n") + 3].replace("export function", "function")
+        steps = lambda *rows: json.dumps({"steps": [{"step": name, "runs": runs, "seconds": seconds} for name, runs, seconds in rows]})  # noqa: E731
+        asked = [(steps(("survey", True, 4), ("build", True, 94), ("hair", True, 6), ("chest", False, None)), "null"),   # 104 s
+                 (steps(("survey", True, 4), ("build", True, 94), ("hair", True, 6)), '"hair"'),                           # 6 s: never under 10
+                 (steps(("survey", True, 4), ("build", True, None)), "null"),                                              # one never run
+                 (steps(("survey", True, 61), ("build", True, 59)), "null"),                                               # 120 s
+                 (steps(("survey", True, 4)), '"export"')]                                                                  # no such step
+        program = body + "\nconsole.log(JSON.stringify([" + ", ".join(f"tookLast({status}, {start})" for status, start in asked) + "]));"
+        said = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)
+        self.assertEqual(json.loads(said.stdout or "null"), ["1 min 40 s", "10 s", None, "2 min", None], said.stderr[-500:])
 
 
 class Detector(unittest.TestCase):
@@ -4311,6 +4429,1272 @@ class Blenders(unittest.TestCase):
         took.wait()
         self.assertTrue(200 << 20 < engine._peak_memory(took) < 600 << 20)
         self.assertTrue(0 <= engine.LOAD.idle_cores(wait=0.2) <= os.cpu_count())
+
+
+class CharactersAtOnce(unittest.TestCase):
+    """`engine.at_once`: the characters of one command (`regress`) built side by side, a Blender each,
+    as many as `Project._room` finds room for."""
+
+    def setUp(self):
+        import threading
+        self.folder = tempfile.TemporaryDirectory()
+        self.root = Path(self.folder.name)
+        self.real = engine.LOCK, engine.free_memory, engine.LOAD, os.environ.pop("OC2VRM_BLENDERS", None)
+        engine.LOCK = self.root / ".blender.lock"
+        # a computer with 16 GB to be had and eight cores idle, not told how many Blenders it may run
+        engine.free_memory = lambda: 16 << 30
+        engine.LOAD = SimpleNamespace(idle_cores=lambda wait=0.0: 8.0)
+        self.going, self.most, self.calls, self.count = 0, 0, [], threading.Lock()
+
+    def tearDown(self):
+        engine.LOCK, engine.free_memory, engine.LOAD, blenders = self.real
+        if blenders is not None:
+            os.environ["OC2VRM_BLENDERS"] = blenders
+        engine.CANCEL.clear()
+        self.folder.cleanup()
+
+    def characters(self, count, gigabytes=5):
+        """Stand-ins for characters whose rigging step takes `gigabytes`: asked for room by the engine's own rule."""
+        import types
+        made = []
+        for index in range(count):
+            character = SimpleNamespace(name=f"C{index}", _need=lambda name, need=gigabytes: need << 30)
+            character._room = types.MethodType(Project._room, character)
+            made.append(character)
+        return made
+
+    def work(self, fails=()):
+        """A build that takes a moment; counts how many go at once. `fails`: (name, on which try) that end as a failed step."""
+        import time
+
+        def build(character, emit):
+            with self.count:
+                self.going += 1
+                self.most = max(self.most, self.going)
+                self.calls.append(character.name)
+                attempt = self.calls.count(character.name)
+            try:
+                emit({"step": "build", "status": "running"})
+                time.sleep(0.25)
+                if (character.name, attempt) in fails:
+                    raise engine.StepFailed(f"{character.name} failed in build")
+                return f"{character.name} built"
+            finally:
+                with self.count:
+                    self.going -= 1
+        return build
+
+    def test_as_many_at_once_as_there_is_room_for_and_each_in_its_place(self):
+        # 16 GB to be had, 2 kept free, 5 a character: two fit, a third would pass what there was
+        events = []
+        got = engine.at_once(self.characters(5), self.work(), on_event=events.append, pause=0.02)
+        self.assertEqual(got, [f"C{i} built" for i in range(5)])
+        self.assertEqual(self.most, 2)
+        # every event says whose it is
+        self.assertEqual({e["character"] for e in events}, {f"C{i}" for i in range(5)})
+        # the lock was held for them all and is let go; a build may take it again
+        self.assertFalse(engine.LOCK.exists() or engine.SHARED.held)
+        with engine._Lock():
+            self.assertTrue(engine.LOCK.exists())
+        # lighter characters, more of them, and never over the engine's own most
+        self.most = 0
+        engine.at_once(self.characters(8, gigabytes=1), self.work(), pause=0.02)
+        self.assertEqual(self.most, engine.MOST_BLENDERS)
+
+    def test_one_at_a_time_without_the_room_or_when_told_so(self):
+        for scarce in ("memory", "cores", "unknown", "told"):
+            self.most = 0
+            real = engine.free_memory, engine.LOAD
+            if scarce == "memory":
+                engine.free_memory = lambda: 6 << 30   # a second character would leave under 2 GB
+            elif scarce == "cores":
+                engine.LOAD = SimpleNamespace(idle_cores=lambda wait=0.0: 1.0)
+            elif scarce == "unknown":
+                engine.free_memory = lambda: None      # a computer that doesn't say what it has left
+            else:
+                os.environ["OC2VRM_BLENDERS"] = "1"
+            try:
+                self.assertEqual(engine.at_once(self.characters(3), self.work(), pause=0.02), ["C0 built", "C1 built", "C2 built"], scarce)
+                self.assertEqual(self.most, 1, scarce)
+            finally:
+                engine.free_memory, engine.LOAD = real
+                os.environ.pop("OC2VRM_BLENDERS", None)
+
+    def test_a_failure_beside_others_is_tried_again_alone_before_it_is_believed(self):
+        events = []
+        got = engine.at_once(self.characters(3), self.work(fails={("C1", 1)}), on_event=events.append, pause=0.02)
+        self.assertEqual(got, ["C0 built", "C1 built", "C2 built"])
+        self.assertEqual((self.calls.count("C1"), self.calls[-1]), (2, "C1"))  # again, last, by itself
+        self.assertIn("built again by itself", next(e["reason"] for e in events if e["status"] == "warning"))
+        # one that fails again alone has failed; so has one that failed alone the first time
+        self.calls = []
+        got = engine.at_once(self.characters(3), self.work(fails={("C1", 1), ("C1", 2)}), pause=0.02)
+        self.assertIsInstance(got[1], engine.StepFailed)
+        self.assertEqual((got[0], got[2], self.calls.count("C1")), ("C0 built", "C2 built", 2))
+        self.calls = []
+        got = engine.at_once(self.characters(1), self.work(fails={("C0", 1)}), pause=0.02)
+        self.assertIsInstance(got[0], engine.StepFailed)
+        self.assertEqual(self.calls, ["C0"])
+
+    def test_each_run_takes_the_lock_inside_and_keeps_to_one_blender(self):
+        seen = []
+
+        def build(character, emit):
+            with engine._Lock():  # as Project.run takes it: passed, since it is held for them all
+                seen.append((engine.LOCK.exists(), engine.SHARED.held))
+            seen.append(engine.LOCK.exists())  # ... and not let go by the one that passed
+        engine.at_once(self.characters(2), build, pause=0.02)
+        self.assertEqual(seen.count((True, True)), 2)
+        self.assertEqual(seen.count(True), 2)
+        # while others build or wait, a run's last steps are not run side by side: the room is counted
+        # by characters. The last one left, and one asked for alone, asks for it as any build does
+        made = Engine("test_survey_decides_what_was_left_to_it")
+        made.setUp()
+        try:
+            project, asked = made.project({"options": {}, "triangles": 40000}), []
+            project._room = lambda name, *args, **more: asked.append(name) or False
+            ahead = lambda: project._ahead(engine.NAMES.index("check"), len(engine.NAMES) - 1, made.root, lambda event: None)  # noqa: E731
+            with engine.together():
+                engine.SHARED.crowd = lambda: 2
+                self.assertEqual((ahead(), asked), ({}, []))
+                engine.SHARED.crowd = lambda: 1
+                self.assertEqual((ahead(), len(asked)), ({}, 1))
+            self.assertEqual((engine.SHARED.held, engine.SHARED.crowd()), (False, 0))
+        finally:
+            made.tearDown()
+        # outside it the lock is one build's alone, as before
+        with engine._Lock():
+            with self.assertRaisesRegex(engine.StepFailed, "another build is running"):
+                with engine._Lock():
+                    pass
+
+    def test_stopped_by_the_user_nothing_more_is_started(self):
+        def build(character, emit):
+            engine.CANCEL.set()
+            raise engine.Cancelled("stopped by the user in build")
+        os.environ["OC2VRM_BLENDERS"] = "1"
+        try:
+            got = engine.at_once(self.characters(3), build, pause=0.02)
+        finally:
+            os.environ.pop("OC2VRM_BLENDERS", None)
+        self.assertTrue(all(isinstance(end, engine.Cancelled) for end in got))
+        self.assertFalse(engine.LOCK.exists())
+
+    def test_a_regression_run_of_several_says_each_in_the_order_asked(self):
+        import time
+        made = Engine("test_survey_decides_what_was_left_to_it")
+        made.setUp()
+        real = Project.run, cli.REPO
+        cli.REPO = made.root
+        try:
+            check = lambda head: {"poses": {"head turn": {"stretch_cm": head}}, "unweighted": 0, "worst": {}, "failed": []}  # noqa: E731
+            paths = []
+            for index, name in enumerate(("Anna", "Bea", "Cleo")):
+                data = manifest.load(made.path)
+                data["name"], data["out_dir"] = name, str(made.root / "out" / name)
+                paths.append(made.root / f"{name}.json")
+                manifest.save(data, paths[-1])
+                project = Project(paths[-1], blender="blender")
+                base = made.root / f"{name}_check.json"
+                base.write_text(json.dumps(check(2.0)))
+                project._record("check", {"status": "done", "json": str(base)})
+
+            def run(scratch, on_event=None, **rest):
+                with self.count:
+                    self.going += 1
+                    self.most = max(self.most, self.going)
+                time.sleep(0.25)
+                folder = scratch.out / "runs" / "20260101-100000"
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / "09_tpose.blend").write_text("x")
+                (folder / "13_check.json").write_text(json.dumps(check(2.0 + len(scratch.name))))
+                scratch._record("check", {"status": "done", "json": str(folder / "13_check.json")})
+                with self.count:
+                    self.going -= 1
+            Project.run = run
+            events = []
+            result = cli.cmd_regress(SimpleNamespace(manifests=paths, keep=False, blender="blender", on_event=events.append))
+            left = [sorted(p.name for p in (made.root / "out" / "regress" / name / "runs" / "20260101-100000").iterdir()) for name in ("Anna", "Bea", "Cleo")]
+        finally:
+            Project.run, cli.REPO = real
+            made.tearDown()
+        self.assertEqual([row["name"] for row in result["characters"]], ["Anna", "Bea", "Cleo"])
+        self.assertEqual([row["worse"] for row in result["characters"]],
+                         [[f"rig check, head turn: stretch 2.0 -> {2.0 + len(name):.1f} cm"] for name in ("Anna", "Bea", "Cleo")])
+        self.assertEqual((result["worse"], result["failed"]), (3, []))
+        self.assertGreater(self.most, 1)  # side by side, where there is the room
+        # each one's models went as it ended, its reports stay
+        self.assertEqual(left, [["13_check.json"]] * 3)
+        self.assertEqual({e["character"] for e in events}, {"Anna", "Bea", "Cleo"})
+
+
+class Failures(unittest.TestCase):
+    """Every failure and refusal handed to the page drawn: a code, what happened, what to do and the
+    option that does it (app/errors.py `failure`), or no code and the log's telling line for one the app
+    has no name for. The page reads none of a log's words: it once did, and told a tester who had marked
+    the face to mark it."""
+
+    def setUp(self):
+        self.made = Engine("test_survey_decides_what_was_left_to_it")
+        self.made.setUp()
+        self.root, self.path = self.made.root, self.made.path
+        self.real = engine._blender, engine.LOCK
+        engine.LOCK = self.root / ".blender.lock"
+
+    def tearDown(self):
+        engine._blender, engine.LOCK = self.real
+        self.made.tearDown()
+
+    def project(self, **options):
+        return self.made.project({"options": {}, "triangles": 40000, "parts": {"eye_inserts": True}}, **options)
+
+    def blender(self, said, code=1, makes=False):
+        """Every Blender of a run ends with `code`, having written `said` (a dict by script name, or
+        one text for all) into its log; with `makes`, also the file the step is asked for."""
+        def blender(blender, blend_in, args, log, extra):
+            script = Path(str(args[0])).stem
+            text = said.get(script, "") if isinstance(said, dict) else said
+            Path(log).parent.mkdir(parents=True, exist_ok=True)
+            Path(log).write_text(text)
+            return code if (text or not isinstance(said, dict)) else 0
+        engine._blender = blender
+
+    def test_the_eye_steps_refusals_are_told_apart_by_the_engine(self):
+        # one code, as before (the fallback goes by it), and what happened said for each
+        log = "wrote 11_eyes.blend\nFAILED: face over the eye patch, left eye looking Out with eyeBlinkRight: 136 of 1550 points\nFAILED: face over the eye patch, right eye: 9\n"
+        patch = errors.classify("eyes", log)
+        self.assertEqual(patch["code"], "VM-EYES-REFUSED")
+        self.assertIn("would go under the face", patch["what"])
+        self.assertEqual(patch["detail"], "face over the eye patch, left eye looking Out with eyeBlinkRight: 136 of 1550 points")
+        # the advice never names the way that was just refused
+        self.assertIsNone(patch["options"])
+        self.assertNotIn("slide", patch["fix"])
+        iris = errors.classify("eyes", "FAILED: iris shows over the lids, right eye looking Down with eyeBlinkRight: 17 of 379 points\n")
+        self.assertEqual((iris["code"], iris["options"]), ("VM-EYES-REFUSED", {"eyes": "slide"}))
+        self.assertIn("blink doesn't cover the moving iris", iris["what"])
+        discs = errors.classify("eyes", "FAILED: the eyes aren't modelled as iris discs narrower than the eyes: nothing to slide\n")
+        self.assertEqual(discs["options"], {"eyes": None})
+        # a refusal in words the table doesn't have keeps the code's own, with what was said
+        other = errors.classify("eyes", "FAILED: left iris over the lids\n")
+        self.assertEqual((other["what"], other["detail"]), (errors.describe("VM-EYES-REFUSED")["what"], "left iris over the lids"))
+
+    def test_a_refused_patch_gets_the_engines_advice_whatever_the_table_says(self):
+        # (the table gives the patch no option: the engine knows whether the model has eye pieces to slide instead)
+        log = "FAILED: face over the eye patch, left eye looking In: 80 of 1550 points\n"
+        refused = engine.StepFailed("eyes: failed", errors.classify("eyes", log))
+        advice = self.project(eyes="slide")._eyes_advice("eyes", refused)
+        self.assertEqual(advice.known["options"], {"eyes": "modelled"})
+        self.assertIn("would go under the face", advice.known["what"])
+
+    def test_a_failure_is_kept_as_the_page_draws_it(self):
+        project = self.project(eyes="slide")
+        project._record("mouth", {"status": "done", "blend": str(self.root / "x.blend")})
+        (self.root / "x.blend").write_bytes(b"BLENDER")
+        self.blender("wrote 11_eyes.blend\nFAILED: face over the eye patch, left eye looking In: 80 of 1550 points\nBlender quit\n")
+        project.state["steps"]["face_tracking"] = {"status": "done", "blend": str(self.root / "x.blend")}
+        project.run(only="eyes")
+        kept = project.state["steps"]["eyes"]
+        self.assertEqual(kept["status"], "failed")
+        drawn = kept["failure"]
+        self.assertEqual((drawn["code"], drawn["page"], drawn["options"]), ("VM-EYES-REFUSED", "face", {"eyes": "modelled"}))
+        self.assertIn("would go under the face", drawn["what"])
+        self.assertIn("left eye looking In", drawn["detail"])
+        self.assertIn("set eyes to modelled", drawn["fix"])
+        # ... and as it always was, for whoever reads the state by its old fields
+        self.assertEqual(kept["known"]["code"], "VM-EYES-REFUSED")
+        self.assertIn("FAILED: face over the eye patch", kept["reason"])
+        shown = next(s for s in Project(self.path, blender="blender").status()["steps"] if s["step"] == "eyes")
+        self.assertEqual(shown["failure"], drawn)
+
+    def test_a_failure_with_no_name_says_the_logs_telling_line_and_no_code(self):
+        project = self.project()
+        self.blender("Read blend\nTraceback (most recent call last):\n  File \"fix_fingers.py\", line 3\n"
+                     "ValueError: found 2 digits standing out from the hand, need 5\n\nError: script failed, file: 'fix_fingers.py', exiting.\n"
+                     "Blender 5.2.2 LTS (hash d13f752e3b9c built 2026-09-15)\n\nBlender quit\n")
+        project.state["steps"]["pieces"] = {"status": "done", "blend": str(self.root / "x.blend")}
+        (self.root / "x.blend").write_bytes(b"BLENDER")
+        project.run(only="finger_guides")
+        drawn = project.state["steps"]["finger_guides"]["failure"]
+        self.assertEqual((drawn["code"], drawn["options"]), (None, None))
+        self.assertEqual(drawn["detail"], "ValueError: found 2 digits standing out from the hand, need 5")
+        self.assertIn("no name for", drawn["what"])
+        self.assertIn("report", drawn["fix"])
+        self.assertNotIn("known", project.state["steps"]["finger_guides"])
+
+    def test_the_telling_line_of_a_log_is_the_error_not_what_blender_printed_after_it(self):
+        # a tester's build of v1, as its state kept it: the error, then the FBX importer's and the baker's lines
+        log = ("FBX version: 7400\nTraceback (most recent call last):\n  File \"make_vrm.py\", line 107, in <module>\n    main()\n    ~~~~^^\n"
+               "  File \"face_points.py\", line 270, in _patch_mapping\n    raise FacePointsError(\"the face patch has no polygons\")\n"
+               "vtuber_maker.pipeline.face_points.FacePointsError: the face patch has no polygons\nFBX version: 7400\n"
+               "Info: Baking map saved to internal image, save it externally or pack it\n\nError: script failed, file: 'make_vrm.py', exiting.\n"
+               "Blender 5.2.2 LTS (hash d13f752e3b9c built 2026-09-15 01:37:04)\n\nBlender quit\n")
+        self.assertEqual(errors.last_line(log), "FacePointsError: the face patch has no polygons")
+        self.assertEqual(errors.failure("build", None, log)["detail"], "FacePointsError: the face patch has no polygons")
+        # a script that ends with a sentence of its own (no traceback): the sentence, not Blender's talk after it
+        self.assertEqual(errors.last_line("Read blend\nno hand had fingers to rig; nothing written\nInfo: Saved copy\n\nBlender quit\n"),
+                         "no hand had fingers to rig; nothing written")
+        # of two tracebacks the last is the one that ended it
+        self.assertEqual(errors.last_line("Traceback (most recent call last):\n  File \"a.py\"\nKeyError: 'x'\n\nDuring handling of the above "
+                                          "exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"b.py\"\n"
+                                          "ValueError: no bone Head in the rig\n"), "ValueError: no bone Head in the rig")
+        self.assertEqual(errors.last_line(""), "")
+
+    def test_a_step_that_stops_the_chain_is_kept_drawn_beside_its_last_good_output(self):
+        project = self.project()
+        self.blender("LandmarkError: the arms don't stand clear of the body: they hang at its sides\n")
+        with self.assertRaises(engine.StepFailed) as failed:
+            project.run(only="build")
+        self.assertEqual(failed.exception.step, "build")
+        drawn = project.state["steps"]["build"]["last_failure"]["failure"]
+        self.assertEqual((drawn["code"], drawn["page"]), ("VM-ARMS-AT-SIDES", "model"))
+        self.assertIn("T-pose", drawn["fix"])
+
+    def test_a_state_from_before_failures_were_kept_drawn_reads_the_same(self):
+        # as v14 and every version before it wrote them: the reason's end, and `known` when there was a code
+        old = {"steps": {
+            "survey": {"status": "done", "json": str(self.root / "survey.json")},
+            "eyes": {"status": "failed", "finished": "2026-10-10T01:22:00", "reason": "wrote 11_eyes.blend\nFAILED: face over the eye patch, right eye looking Up: 16 of 1452 points\n",
+                     "known": {"code": "VM-EYES-REFUSED", "what": errors.describe("VM-EYES-REFUSED")["what"],
+                               "fix": errors.describe("VM-EYES-REFUSED")["fix"], "options": {"eyes": "slide"}}},
+            "finger_guides": {"status": "failed", "finished": "2026-10-11T22:00:00",
+                              "reason": "ValueError: found 2 digits standing out from the hand, need 5\n\nError: script failed, file: 'x', exiting.\nBlender quit\n"},
+            "build": {"status": "done", "blend": "good.blend", "last_failure": {
+                "finished": "2026-10-09T10:00:00", "reason": "build: Blender ran out of memory (see x.log)",
+                "known": {"code": "VM-OOM", "what": "Blender ran out of memory", "fix": "close other programs"}}}}}
+        self.project()
+        (self.root / "out").mkdir(exist_ok=True)
+        (self.root / "out" / "state.json").write_text(json.dumps(old))
+        steps = {s["step"]: s for s in Project(self.path, blender="blender").status()["steps"]}
+        eyes = steps["eyes"]["failure"]
+        self.assertIn("would go under the face", eyes["what"])
+        self.assertEqual(eyes["detail"], "face over the eye patch, right eye looking Up: 16 of 1452 points")
+        # (the old advice named the way that had just been refused: not said again)
+        self.assertEqual((eyes["options"], "slide" in eyes["fix"]), (None, False))
+        self.assertEqual(steps["finger_guides"]["failure"]["detail"], "ValueError: found 2 digits standing out from the hand, need 5")
+        self.assertIsNone(steps["finger_guides"]["failure"]["code"])
+        self.assertEqual((steps["build"]["last_failure"]["failure"]["code"], steps["build"]["last_failure"]["failure"]["fix"]),
+                         ("VM-OOM", "close other programs"))
+        # nothing of the file is written over by being read
+        self.assertEqual(json.loads((self.root / "out" / "state.json").read_text()), old)
+
+    def test_an_optional_repair_that_crashes_is_a_failure_and_the_build_goes_on_without_it(self):
+        # the loose step's script falling over read as "nothing to do": the avatar built quietly without the repair
+        project = self.project()
+        (self.root / "x.blend").write_bytes(b"BLENDER")
+        project.state["steps"]["face_tracking"] = {"status": "done", "blend": str(self.root / "x.blend")}
+        self.blender("Traceback (most recent call last):\n  File \"fix_loose_pieces.py\", line 80\nKeyError: 'Head'\n\nError: script failed, file: 'x', exiting.\n")
+        project.run(only="loose")  # (not raised: the chain goes on with the file before it)
+        kept = project.state["steps"]["loose"]
+        self.assertEqual((kept["status"], kept["failure"]["code"], kept["failure"]["detail"]), ("failed", None, "KeyError: 'Head'"))
+        self.assertEqual(project.latest(), self.root / "x.blend")
+        # one that says it had nothing to do is believed, as before
+        self.blender("no skinned mesh in the file\n")
+        project.run(only="loose")
+        self.assertEqual(project.state["steps"]["loose"]["status"], "nothing to do")
+        # and one the engine itself stopped had something to do: the chain ends there
+        self.blender("Malloc returns null\n", code=engine.STOPPED)
+        with self.assertRaises(engine.StepFailed) as stopped:
+            project.run(only="loose")
+        self.assertEqual(stopped.exception.known["code"], "VM-OOM")
+
+    def test_what_the_engine_refuses_has_a_code(self):
+        project = self.project()
+        with self.assertRaises(engine.StepFailed) as nothing:
+            project.run(only="tpose")
+        self.assertEqual(nothing.exception.known["code"], "VM-NOTHING-BUILT")
+        self.assertEqual(project.state["steps"]["tpose"]["last_failure"]["failure"]["page"], "build")
+        with self.assertRaises(engine.StepFailed) as no_file:
+            project.send_to_warudo()
+        self.assertEqual(no_file.exception.known["code"], "VM-NO-EXPORT")
+        with self.assertRaises(engine.StepFailed) as early:
+            project.approve()
+        self.assertEqual(early.exception.known["code"], "VM-NO-EXPORT")
+        self.assertEqual(engine.NoWarudo("Warudo wasn't found").known["code"], "VM-NO-WARUDO")
+        self.assertTrue(issubclass(engine.NoWarudo, FileNotFoundError))
+        # a model not surveyed: every later step reads the survey
+        project.state["steps"].pop("survey")
+        with self.assertRaises(engine.StepFailed) as unsurveyed:
+            project.run(only="build")
+        self.assertEqual(unsurveyed.exception.known["code"], "VM-NO-SURVEY")
+        # another build holding the lock
+        engine.LOCK.write_text(f"pid {os.getpid()} since now")
+        try:
+            with self.assertRaisesRegex(engine.StepFailed, "another build is running") as busy:
+                project.run(only="survey")
+        finally:
+            engine.LOCK.unlink()
+        self.assertEqual((busy.exception.known["code"], busy.exception.known["detail"]), ("VM-BUSY", f"pid {os.getpid()} since now"))
+        # a record of the builds that can't be read, nor its backup
+        project._save_state()
+        project.state_path.write_text("{ half a state")
+        project.state_path.with_name("state.json.bak").unlink(missing_ok=True)
+        with self.assertRaises(engine.StepFailed) as unread:
+            Project(self.path, blender="blender")
+        self.assertEqual(unread.exception.known["code"], "VM-STATE-UNREADABLE")
+        self.assertEqual(server.busy("build").known["code"], "VM-BUSY")
+        # every code a refusal names is one the app can say
+        for code in ("VM-BUSY", "VM-NO-SURVEY", "VM-NOTHING-BUILT", "VM-NO-EXPORT", "VM-STATE-UNREADABLE", "VM-WARUDO-FILE", "VM-NO-WARUDO"):
+            self.assertTrue(errors.describe(code)["what"] and errors.describe(code)["fix"], code)
+
+    def test_a_job_that_fails_hands_the_page_its_failure_drawn(self):
+        import time
+        jobs = server.Jobs()
+
+        def ends_at_build(emit):
+            error = engine.StepFailed("build: failed with exit code 1 (see x.log)\nKeyError: 'Hips'\nBlender quit", None)
+            error.step = "build"
+            raise error
+        jobs.start("build", ends_at_build)
+        while jobs.running:
+            time.sleep(0.01)
+        failure = jobs.poll()["failure"]
+        self.assertEqual((failure["step"], failure["code"], failure["detail"]), ("build", None, "KeyError: 'Hips'"))
+        # a refusal with a code
+        jobs.start("build", lambda emit: (_ for _ in ()).throw(engine.refused("VM-NO-SURVEY", "run the survey step first")))
+        while jobs.running:
+            time.sleep(0.01)
+        self.assertEqual((jobs.poll()["failure"]["code"], jobs.poll()["error"]), ("VM-NO-SURVEY", "run the survey step first"))
+        # a sentence of the app's own (bad input) is said as it is, and the next job starts clean
+        jobs.start("init", lambda emit: (_ for _ in ()).throw(ValueError("the name can't have ? in it")))
+        while jobs.running:
+            time.sleep(0.01)
+        self.assertEqual((jobs.poll()["failure"], jobs.poll()["error"]), (None, "the name can't have ? in it"))
+
+    def test_the_page_reads_no_word_of_a_log(self):
+        # what the Build page says of a failure comes from `failure`: no pattern over a reason is left in it
+        core = (server.GUI / "js" / "core.js").read_text(encoding="utf-8")
+        build = (server.GUI / "js" / "build.js").read_text(encoding="utf-8")
+        jobs = (server.GUI / "js" / "jobs.js").read_text(encoding="utf-8")
+        pages = core + build + jobs
+        for words in ("plain(", "lastLine", "iris shows over the lids", "face over the eye patch", "Warudo wasn't found", ".match(/see", "reason).split"):
+            self.assertFalse(words in pages, f"the page still reads a failure's words: {words}")
+        self.assertTrue("tell(s.failure)" in build and "state.failure" in jobs)
+
+
+class Preflight(unittest.TestCase):
+    """What is known to go wrong with a build before a Blender starts (app/preflight.py): each line fires
+    on what had the problem and says nothing of what is right. The limits behind the lines were held
+    against the characters on the developers' computer (SETUP.md "Preflight: what is known to go wrong
+    before a build"); these hold what each line reads and when it is said."""
+
+    # a face marked as model A's is, in the 2048 px picture of the face patch
+    FACE = {"image": "face_patch.png", "size": [2048, 2048],
+            "right_eye": {"inner": [911, 1418], "outer": [715, 1403], "top": [800, 1373], "bottom": [814, 1512]},
+            "left_eye": {"inner": [1131, 1416], "outer": [1332, 1402], "top": [1235, 1367], "bottom": [1235, 1508]},
+            "mouth": {"left": [958, 1677], "right": [1069, 1684], "top": [1013, 1649], "bottom": [1013, 1710]}}
+    SURVEY = {"options": {}, "triangles": 52000, "texture": [4096, 4096], "face_patch": True,
+              "pose": {"kind": "T-pose", "arm_drop_degrees": 3.3}, "parts": {"read": True, "eye_inserts": True},
+              "orientation": {"up_sure": True, "facing_sure": True, "turned": False}, "notes": []}
+
+    def setUp(self):
+        self.made = Engine("test_survey_decides_what_was_left_to_it")
+        self.made.setUp()
+        self.root, self.path = self.made.root, self.made.path
+        (self.root / "model.glb").write_bytes(b"the model")
+        self.mark(self.FACE)
+        # a computer with a Blender and its add-on, whatever this one has
+        self.real = engine.blender_version, engine.vrm_addon_version, engine.find_blender
+        engine.blender_version, engine.vrm_addon_version = lambda blender: "5.2.2", lambda blender, version: "4.7.2"
+        # ... and its system drive not looked at, but where a test says so (the tests' folder may be on another);
+        # nor OneDrive, and a browser found (class TestersComputer says what is said of those)
+        self.system = os.environ.pop("SystemDrive", None)
+        self.onedrive = {name: os.environ.pop(name) for name in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial") if name in os.environ}
+        from app import sheet
+        self.find_browser, sheet.find_browser = sheet.find_browser, lambda given=None: "msedge.exe"
+
+    def tearDown(self):
+        engine.blender_version, engine.vrm_addon_version, engine.find_blender = self.real
+        if self.system is not None:
+            os.environ["SystemDrive"] = self.system
+        os.environ.update(self.onedrive)
+        from app import sheet
+        sheet.find_browser = self.find_browser
+        self.made.tearDown()
+
+    def mark(self, points):
+        (self.root / "face.json").write_text(json.dumps(points))
+
+    def project(self, survey=None, **options):
+        return self.made.project({**self.SURVEY, **(survey or {})}, **options)
+
+    def found(self, project, **steps):
+        """{code: line} of what a look at `project` stops at or warns of."""
+        said = project.preflight(**steps)
+        self.assertEqual(said["skipped"], [])
+        return {line["code"]: line for line in said["lines"] if line["kind"] != "ok"}
+
+    def pieces(self, *pieces):
+        data = manifest.load(self.path)
+        data["pieces"] = [{"name": name, "point": point, "count": count, "role": role} for name, point, count, role in pieces]
+        manifest.save(data, self.path)
+
+    def listing(self, rows, **more):
+        out = self.root / "out"
+        out.mkdir(exist_ok=True)
+        (out / "pieces.json").write_text(json.dumps({"model": str(self.root / "model.glb"), "pieces": [
+            {"label": i, "count": count, "point": point, "suggested": suggested, "why": why}
+            for i, (point, count, suggested, why) in enumerate(rows)], **more}))
+
+    def built(self, project, **report):
+        """`project` as it stands built to its end today, its rigging step having reported `report`."""
+        project.state["steps"]["build"] = {"status": "done", "report": report}
+        project.state["steps"]["vrm_check"] = {"status": "done", "finished": "2099-01-01T00:00:00"}
+        return project
+
+    def test_a_character_with_nothing_wrong_is_not_stopped_or_warned(self):
+        said = self.project().preflight()
+        self.assertEqual((said["stops"], said["warns"], said["skipped"]), (0, 0, []))
+        # ... and an agent is told what was looked at
+        self.assertEqual([line["code"] for line in said["lines"]], ["OK-TOOLS", "OK-MODEL", "OK-FACE", "OK-ROOM"])
+        self.assertIn("Blender 5.2.2 with the VRM Add-on 4.7.2", said["lines"][0]["text"])
+        self.assertEqual((said["from"], said["to"]), ("survey", "springs"))
+
+    def test_every_line_has_a_code_the_app_knows_and_says_what_to_do(self):
+        import re
+        source = (REPO / "app" / "preflight.py").read_text(encoding="utf-8")
+        codes = set(re.findall(r'"(VM-[A-Z-]+)"', source))
+        self.assertGreater(len(codes), 20)
+        for code in codes:
+            known = errors.describe(code)
+            self.assertIsNotNone(known, code)
+            self.assertTrue(known["what"] and known["fix"], code)
+        # what the computer ran short of is never promised to fail again
+        self.assertFalse(any(errors.repeats(code) for code in ("VM-OOM", "VM-DISK-FULL", "VM-TIMEOUT", "VM-BAD-OUTPUT", "VM-NO-SUCH-CODE")))
+        self.assertTrue(errors.repeats("VM-ARMS-AT-SIDES") and errors.repeats("VM-EYES-REFUSED"))
+
+    def test_its_limits_are_the_pipelines_own(self):
+        # survey.py and list_pieces.py import bpy: their numbers and words are held here by reading them
+        import re
+        survey = (REPO / "addon" / "vtuber_maker" / "pipeline" / "survey.py").read_text(encoding="utf-8")
+        from app import preflight
+        said = {name: int(value.replace("_", "")) for name, value in re.findall(r"^(HEAVY_TRIANGLES|COARSE_TRIANGLES) = ([\d_]+)", survey, re.M)}
+        self.assertEqual(said, {"HEAVY_TRIANGLES": preflight.HEAVY_TRIANGLES, "COARSE_TRIANGLES": preflight.COARSE_TRIANGLES})
+        listing = (REPO / "scripts" / "list_pieces.py").read_text(encoding="utf-8")
+        self.assertIn(f'"{preflight.THE_FACE}"', listing)
+        self.assertIn(f'"{preflight.AN_INSERT}', listing)
+
+    def test_no_blender_an_old_one_or_no_add_on_stops_any_run(self):
+        project = self.project()
+        engine.blender_version = lambda blender: None
+        self.assertEqual(self.found(project)["VM-NO-BLENDER"]["kind"], "stop")
+        engine.blender_version = lambda blender: "4.1.1"
+        self.assertEqual(self.found(project)["VM-BLENDER-OLD"]["page"], "setup")
+        engine.blender_version, engine.vrm_addon_version = lambda blender: "5.2.2", lambda blender, version: None
+        # ... of a run of one check alone too: nothing runs without them
+        self.assertEqual(list(self.found(project, only="springs")), ["VM-NO-VRM-ADDON"])
+
+        def none(given=None):
+            raise FileNotFoundError("Blender 4.2 or later not found")
+        engine.find_blender = none
+        self.assertEqual(self.found(Project(self.path))["VM-NO-BLENDER"]["kind"], "stop")
+
+    def test_a_file_the_character_names_and_is_gone(self):
+        data = manifest.load(self.path)
+        data["rig"], data["paint"] = "rig.fbx", "paint/overlays"
+        manifest.save(data, self.path)
+        gone = [line for line in self.project().preflight()["lines"] if line["kind"] != "ok"]
+        self.assertEqual([(line["kind"], line["code"]) for line in gone], [("stop", "VM-FILE-GONE"), ("warn", "VM-FILE-GONE")])
+        self.assertIn("rig.fbx", gone[0]["text"])
+        (self.root / "model.glb").unlink()
+        self.assertEqual(self.found(self.project())["VM-NO-MODEL"]["kind"], "stop")
+        self.assertIn("model.glb", self.found(self.project())["VM-NO-MODEL"]["text"])
+
+    def rigged_glb(self, value):
+        """A GLB with one skin whose inverse bind matrix is all `value`."""
+        body = json.dumps({"skins": [{"inverseBindMatrices": 0, "joints": [0]}], "nodes": [{}],
+                           "accessors": [{"bufferView": 0, "count": 1, "componentType": 5126, "type": "MAT4"}],
+                           "bufferViews": [{"buffer": 0, "byteLength": 64}], "buffers": [{"byteLength": 64}]}).encode()
+        body += b" " * (-len(body) % 4)
+        binary = struct.pack("<16f", *[value] * 16)
+        (self.root / "rig.glb").write_bytes(struct.pack("<4sII", b"glTF", 2, 28 + len(body) + len(binary)) + struct.pack("<I4s", len(body), b"JSON")
+                                           + body + struct.pack("<I4s", len(binary), b"BIN\0") + binary)
+        data = manifest.load(self.path)
+        data["rig"] = "rig.glb"
+        manifest.save(data, self.path)
+
+    def test_a_rigged_glb_whose_bones_would_all_import_broken(self):
+        # Tripo's rigged GLB came with bind matrices like 1e31: every bone at NaN (model E's)
+        self.rigged_glb(1e31)
+        self.assertEqual(self.found(self.project())["VM-RIG-GLB"]["kind"], "stop")
+        self.rigged_glb(1.0)
+        self.assertEqual(self.found(self.project()), {})
+
+    def test_a_colour_multiplied_by_a_grey_factor_is_seen_and_read_through(self):
+        # newer Tripo exports: a Mix node once imported, which stopped the texture steps (VM-TRIPO-MIX) until
+        # every step read through it. Said as looked at, never as a fault: models that carry it build
+        def model(factor):
+            body = json.dumps({"materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}, **factor}}]}).encode()
+            body += b" " * (-len(body) % 4)
+            (self.root / "model.glb").write_bytes(struct.pack("<4sII", b"glTF", 2, 20 + len(body)) + struct.pack("<I4s", len(body), b"JSON") + body)
+            said = self.project().preflight()
+            self.assertEqual((said["stops"], said["warns"]), (0, 0))
+            return [line["text"] for line in said["lines"] if line["code"] == "OK-COLOUR-FACTOR"]
+        self.assertEqual(model({}), [])
+        self.assertEqual(model({"baseColorFactor": [1.0, 1.0, 1.0, 1.0]}), [])
+        self.assertIn("multiplied by 0.8", model({"baseColorFactor": [0.8, 0.8, 0.8, 1.0]})[0])
+        # a step that did fail on it is promised to fail again, as any failure its inputs decide
+        self.assertTrue(errors.repeats("VM-TRIPO-MIX"))
+
+    def test_what_the_survey_measured_of_the_model(self):
+        for survey, code, kind in (({"texture": None}, "VM-NO-TEXTURE", "stop"),
+                                   ({"pose": {"kind": "arms down", "arm_drop_degrees": 84.0}}, "VM-ARMS-DOWN", "stop"),
+                                   ({"triangles": 1_050_000}, "VM-HEAVY-MODEL", "stop"),
+                                   ({"triangles": 2_400}, "VM-COARSE-MODEL", "warn"),
+                                   # model A's stand-in decimated in Blender across its texture seams: 1,740 pieces of 163
+                                   ({"pieces": 1_740}, "VM-FRAGMENTS", "stop"),
+                                   ({"parts": {"read": False}}, "VM-PARTS-NOT-READ", "warn")):
+            said = self.found(self.project(survey))
+            self.assertEqual([(c, line["kind"], line["page"]) for c, line in said.items()], [(code, kind, "model")], code)
+        self.assertIn("84", self.found(self.project({"pose": {"kind": "arms down", "arm_drop_degrees": 84.0}}))["VM-ARMS-DOWN"]["text"])
+        # an A-pose builds (models A and B are 73 and 61 degrees down), and so does a note of joints placed
+        # by proportion, which the survey makes of half the good characters
+        fine = {"pose": {"kind": "A-pose", "arm_drop_degrees": 73.4}, "notes": ["the shoulders were placed from typical proportions"],
+                "pieces": 239}  # (model B's count, the most of any character here)
+        self.assertEqual(self.found(self.project(fine)), {})
+        # none of it is said of a run that doesn't rig
+        self.assertEqual(self.found(self.project({"texture": None}), start="tpose"), {})
+
+    def test_an_orientation_in_doubt_is_asked_until_the_character_has_been_built_and_seen(self):
+        unsure = {"orientation": {"up_sure": False, "facing_sure": True, "turned": False}}
+        project = self.project(unsure)
+        project.state["steps"]["survey"]["finished"] = "2026-10-12T10:00:00"
+        self.assertEqual(self.found(project)["VM-ORIENT-UNSURE"]["kind"], "stop")
+        self.assertIn("which way up", self.found(project)["VM-ORIENT-UNSURE"]["text"])
+        project.state["steps"]["vrm_check"] = {"status": "done", "finished": "2026-10-12T10:05:00"}
+        self.assertEqual(self.found(project)["VM-ORIENT-UNSURE"]["kind"], "warn")
+        # surveyed again since (another model): in doubt again
+        project.state["steps"]["survey"]["finished"] = "2026-10-12T11:00:00"
+        self.assertEqual(self.found(project)["VM-ORIENT-UNSURE"]["kind"], "stop")
+
+    def test_face_points_that_cannot_be_a_face(self):
+        import copy
+
+        def moved(**parts):
+            points = copy.deepcopy(self.FACE)
+            for part, change in parts.items():
+                for name, (dx, dy) in change.items():
+                    for key in ([name] if name != "all" else list(points[part])):
+                        points[part][key] = [points[part][key][0] + dx, points[part][key][1] + dy]
+            return points
+
+        def said(points):
+            self.mark(points)
+            line = self.found(self.project()).get("VM-FACE-MARKS")
+            return line and (line["kind"], line["page"], line["text"])
+        # model D's fault, on a face whose eyes are marked: the mouth saved again 300 px down the picture
+        kind, page, text = said(moved(mouth={"all": (0, 300)}))
+        self.assertEqual((kind, page), ("stop", "face"))
+        self.assertIn("on the chin or the throat", text)
+        self.assertIn("off to one side", said(moved(mouth={"all": (260, 0)}))[2])
+        self.assertIn("at the height of the eyes", said(moved(mouth={"all": (0, -260)}))[2])
+        self.assertIn("far above the other", said(moved(left_eye={"all": (0, -200)}))[2])
+        self.assertIn("on the same eye", said(moved(left_eye={"all": (-400, 0)}))[2])
+        self.assertIn("outside the picture", said(moved(mouth={"bottom": (0, 500)}))[2])
+        self.assertIn("corners are marked on the same spot", said(moved(right_eye={"inner": (-196, -15)}))[2])
+        self.assertIn("mouth's two corners", said(moved(mouth={"left": (111, 7)}))[2])
+        # what is right: the marks as they are; a mouth 200 px lower (a long face: the pirate's is 0.91 eye
+        # distances down, this 1.0); a chibi's, close under the eyes; the two eyes kept under each other's
+        # names (model B's are, and she builds right); the mouth alone, the eyes being covered
+        swapped = dict(self.FACE, right_eye=self.FACE["left_eye"], left_eye=self.FACE["right_eye"])
+        for right in (self.FACE, moved(mouth={"all": (0, 200)}), moved(mouth={"all": (0, -80)}), swapped,
+                      {key: value for key, value in self.FACE.items() if not key.endswith("_eye")}):
+            self.assertIsNone(said(right))
+        # points that can't be read at all are another line, and the only one
+        self.mark({key: value for key, value in self.FACE.items() if key != "mouth"})
+        self.assertEqual(list(self.found(self.project())), ["VM-FACE-FILE"])
+        (self.root / "face.json").write_text("{ half a file")
+        self.assertIn("isn't JSON", self.found(self.project())["VM-FACE-FILE"]["text"])
+        # ... and no points at all is worth knowing, not a fault
+        data = manifest.load(self.path)
+        data["face"] = None
+        manifest.save(data, self.path)
+        self.assertEqual([(code, line["kind"]) for code, line in self.found(self.project()).items()], [("VM-NO-FACE-POINTS", "warn")])
+
+    def test_marks_made_on_another_framing_of_the_face_patch(self):
+        # the points are pixels in the picture the patch was made from: a patch made again framed otherwise
+        # (a demon girl's, first framed up among her horns) leaves them off the face
+        face = self.root / "out" / "face"
+        face.mkdir(parents=True)
+        (face / "head_at.json").write_text(json.dumps({"head_at": 0.923, "body": 1.0}))
+        project = self.project()
+        self.assertEqual(self.found(project), {})  # marks from before the frame was kept say nothing
+        cli.save_face(self.path, self.FACE, blender="blender")
+        kept = json.loads((self.root / "out" / "face.json").read_text())
+        self.assertEqual(kept["frame"], {"head_at": 0.923, "body": 1.0})
+        self.assertEqual(self.found(self.project()), {})
+        (face / "head_at.json").write_text(json.dumps({"head_at": 0.901, "body": 1.0}))
+        line = self.found(self.project())["VM-FACE-REFRAMED"]
+        self.assertEqual((line["kind"], line["page"]), ("stop", "face"))
+        # (a millimetre's difference in how a survey rounds is the same frame)
+        (face / "head_at.json").write_text(json.dumps({"head_at": 0.924, "body": 1.0}))
+        self.assertEqual(self.found(self.project()), {})
+
+    HEAD = ([0.0, -0.1, 1.4], 1898, "body", "the face"), ([0.02, -0.11, 1.41], 243, "body", "an eye or mouth insert (face tracking moves it)")
+    HAIR = ([0.0, 0.0, 1.5], 3385, "hair", "reads as hair"), ([0.0, -0.1, 1.5], 1000, "hair", "reads as hair"), ([0.1, 0.0, 1.4], 168, "hair", "reads as hair")
+
+    def test_a_swinging_role_on_the_face_and_hair_named_a_hat(self):
+        # a tester's fox girl, every suggestion of a listing made before her eyes were marked accepted: her
+        # face called hair, four of her hair pieces hats. Her face swung on hair springs and her hair stood still
+        self.listing([*self.HEAD, *self.HAIR], eyes_marked=True)
+        self.pieces(("hair_7792", self.HEAD[0][0], 1898, "hair"), ("hat_8351", self.HEAD[1][0], 243, "hat"),
+                    ("hat_6783", self.HAIR[0][0], 3385, "hat"), ("hat_6546", self.HAIR[1][0], 1000, "hat"), ("hair_10329", self.HAIR[2][0], 168, "hair"))
+        said = self.found(self.project())
+        self.assertEqual([(code, line["kind"], line["page"], line["action"]) for code, line in said.items()],
+                         [("VM-ROLE-ON-FACE", "stop", "parts", "remove_pieces"), ("VM-HAIR-AS-HAT", "stop", "parts", "remove_pieces")])
+        self.assertEqual(said["VM-ROLE-ON-FACE"]["args"], {"names": ["hair_7792"]})
+        self.assertIn("the face the eyes are marked on", said["VM-ROLE-ON-FACE"]["text"])
+        self.assertEqual(said["VM-HAIR-AS-HAT"]["args"], {"names": ["hat_6783", "hat_6546"]})
+        self.assertIn("4,385 of its 4,553 vertices", said["VM-HAIR-AS-HAT"]["text"])
+        # an eye piece on a swinging role is the same fault; as a hat it only follows the head
+        self.pieces(("cloth", self.HEAD[1][0], 243, "swing_cloth"))
+        self.assertIn("an eye or mouth piece", self.found(self.project())["VM-ROLE-ON-FACE"]["text"])
+        # what is right: the hair called hair, one small bit of it a hat, a hat on what is no hair
+        self.pieces(("hair_a", self.HAIR[0][0], 3385, "hair"), ("clip", self.HAIR[2][0], 168, "hat"), ("eye", self.HEAD[1][0], 243, "hat"))
+        self.assertEqual(self.found(self.project()), {})
+        # ... and all of it a hat when the user asked for a solid head themselves
+        self.pieces(("hat_6783", self.HAIR[0][0], 3385, "hat"), ("hat_6546", self.HAIR[1][0], 1000, "hat"))
+        self.assertIn("VM-HAIR-AS-HAT", self.found(self.project()))
+        self.assertEqual(self.found(self.project(rigid_head=True)), {})
+
+    def test_roles_given_from_a_listing_made_before_the_eyes_were_marked(self):
+        self.listing([*self.HEAD, *self.HAIR])  # no word of the eyes: a listing of before v13, or before the marks
+        self.pieces(("hat_6783", self.HAIR[0][0], 3385, "hat"), ("hair_7792", self.HEAD[0][0], 1898, "hair"))
+        line = self.found(self.project())["VM-LISTING-STALE"]
+        self.assertEqual((line["kind"], line["page"], line["action"]), ("warn", "parts", "list_pieces"))
+        # built to its end with these marks, hair swinging: its user has seen the face and the hair move
+        self.assertEqual(self.found(self.built(self.project(), hair_chains=12)), {})
+        # ... but hats on a head no hair swings from are still worth the look
+        self.assertIn("VM-LISTING-STALE", self.found(self.built(self.project(), hair_chains=0)))
+        # roles that have nothing to do with the head say nothing, listed when they may
+        self.listing([*self.HEAD, *self.HAIR, ([0.0, 0.0, 0.8], 900, "body", "nothing special")])
+        self.pieces(("skirt", [0.0, 0.0, 0.8], 900, "fitted_skirt"))
+        self.assertEqual(self.found(self.project()), {})
+        # and a character whose eyes aren't marked has no face to hold a role against
+        self.pieces(("hat_6783", self.HAIR[0][0], 3385, "hat"))
+        self.mark({key: value for key, value in self.FACE.items() if not key.endswith("_eye")})
+        self.assertEqual(self.found(self.project()), {})
+
+    def test_a_piece_named_that_the_model_no_longer_has(self):
+        # the build refuses a piece whose vertex count isn't the model's (roles.find: "a different or re-exported model?")
+        self.listing([*self.HEAD, *self.HAIR], eyes_marked=True)
+        self.pieces(("skirt", [0.0, 0.0, 0.8], 777, "fitted_skirt"))
+        line = self.found(self.project())["VM-PIECE-GONE"]
+        self.assertEqual((line["kind"], line["args"]), ("stop", {"names": ["skirt"]}))
+        # a listing of another model, or one older than the model's file, says nothing of this one
+        listed = json.loads((self.root / "out" / "pieces.json").read_text())
+        (self.root / "out" / "pieces.json").write_text(json.dumps({**listed, "model": str(self.root / "other.glb")}))
+        self.assertEqual(self.found(self.project()), {})
+        (self.root / "out" / "pieces.json").write_text(json.dumps(listed))
+        os.utime(self.root / "model.glb", (4102444800, 4102444800))
+        self.assertEqual(self.found(self.project()), {})
+
+    def test_eye_tracking_chosen_and_no_eyes_marked(self):
+        self.mark({key: value for key, value in self.FACE.items() if not key.endswith("_eye")})
+        self.assertEqual([(code, line["kind"]) for code, line in self.found(self.project(eyes="iris")).items()], [("VM-EYES-UNMARKED", "warn")])
+        self.assertEqual(self.found(self.project(eyes=None)), {})
+
+    def test_a_fallback_remembered_from_before_the_face_points_were_saved_again(self):
+        # "a character keeps building sliding eyes": the patch an earlier build fell back to is remembered
+        project = self.project()
+        project.state["eyes_fallback"] = "slide"
+        project.state["steps"]["eyes"] = {"status": "done", "finished": "2020-01-01T00:00:00"}
+        line = self.found(project)["VM-EYES-FALLBACK"]
+        self.assertEqual((line["kind"], line["action"]), ("warn", "forget_eyes_fallback"))
+        # the page's button: forgotten, and the eye step is to be built again
+        self.assertEqual(project.forget_eyes_fallback(), {"forgot": "slide"})
+        self.assertEqual((project.state.get("eyes_fallback"), project.state["steps"]["eyes"]["status"]), (None, "stale"))
+        self.assertEqual(self.found(project), {})
+        # marks older than the eye step, a way of the model's own discs, or eyes chosen by the user: nothing to say
+        for fell, chosen, finished in (("slide", None, "2099-01-01T00:00:00"), ("modelled", None, "2020-01-01T00:00:00"),
+                                       ("slide", "slide", "2020-01-01T00:00:00")):
+            project = self.project(eyes=chosen)
+            project.state["eyes_fallback"] = fell
+            project.state["steps"]["eyes"] = {"status": "done", "finished": finished}
+            self.assertEqual(self.found(project), {}, (fell, chosen, finished))
+
+    def failed(self, project, step, code, soft=True, **known):
+        """`step` as a run that started from the manifest as it is now left it: failed with `code`."""
+        from app import preflight
+        import hashlib
+        run = project.out / "runs" / "20261012-120000"
+        run.mkdir(parents=True, exist_ok=True)
+        (run / "run.json").write_text(json.dumps({"manifest_sha256": hashlib.sha256(self.path.read_bytes()).hexdigest()[:16],
+                                                  "commit": preflight._commit()}))
+        log = run / f"11_{step}.log"
+        log.write_text("FAILED: face over the eye patch")
+        failure = {"reason": "...", "finished": "2099-01-01T00:00:00", "known": {**errors.describe(code), **known}, "log": str(log)}
+        project.state["steps"][step] = {"status": "failed", **failure} if soft else {"status": "not run", "last_failure": failure}
+        return project
+
+    def test_what_failed_last_time_and_would_fail_the_same_way_again(self):
+        # a tester pressed Build on an eye mode the model can't take, got the same refusal each time,
+        # and sent a report headed "face points done, still failing"
+        project = self.failed(self.project(eyes="slide"), "eyes", "VM-EYES-REFUSED", fix="set eyes to modelled", options={"eyes": "modelled"})
+        line = self.found(project)["VM-EYES-REFUSED"]
+        self.assertEqual((line["kind"], line["page"], line["options"], line["fix"]), ("stop", "face", {"eyes": "modelled"}, "set eyes to modelled"))
+        self.assertIn('"eyes" failed this way on the last build', line["text"])
+        # of a run that goes through the eye step, and no other
+        self.assertEqual(self.found(project, only="check"), {})
+        self.assertIn("VM-EYES-REFUSED", self.found(project, start="tpose"))
+        # anything it reads changed since: not promised (the choice, here)
+        cli.cmd_set(SimpleNamespace(manifest=self.path, key="eyes", value='"modelled"'))
+        again = Project(self.path, blender="blender")
+        again.state = project.state
+        self.assertEqual(self.found(again), {})
+        # left on automatic, the build tries the other ways by itself ...
+        project = self.failed(self.project(eyes=None), "eyes", "VM-EYES-REFUSED")
+        self.assertEqual(self.found(project), {})
+        # ... unless the eyes are painted and slide from the start: there is nothing else to try
+        project = self.failed(self.project({"parts": {"read": True, "eye_inserts": False}}, eyes=None), "eyes", "VM-EYES-REFUSED")
+        self.assertIn("VM-EYES-REFUSED", self.found(project))
+        # a step that stopped the chain, the same: arms the survey couldn't find stay unfound
+        project = self.failed(self.project(), "build", "VM-ARMS-AT-SIDES", soft=False)
+        self.assertEqual(self.found(project)["VM-ARMS-AT-SIDES"]["page"], "model")
+        # what the computer ran short of may well work the next time, and a failure with no name is not known
+        for code in ("VM-OOM", "VM-DISK-FULL", "VM-TIMEOUT", "VM-BAD-OUTPUT"):
+            self.assertEqual(self.found(self.failed(self.project(), "build", code, soft=False)), {}, code)
+        # ... nor is one from a run that kept no record of what it was started from
+        project = self.failed(self.project(), "build", "VM-ARMS-AT-SIDES", soft=False)
+        (project.out / "runs" / "20261012-120000" / "run.json").unlink()
+        self.assertEqual(self.found(project), {})
+
+    def test_files_saved_by_a_newer_blender_than_the_one_chosen_now(self):
+        # a file saved by 5.2 can't be opened by 4.2
+        project = self.project()
+        run = project.out / "runs" / "20261012-120000"
+        run.mkdir(parents=True)
+        (run / "02_hair.blend").write_bytes(b"BLENDER")
+        (run / "run.json").write_text(json.dumps({"blender_version": "5.2.2"}))
+        project.state["steps"]["hair"] = {"status": "done", "blend": str(run / "02_hair.blend")}
+        self.assertEqual(self.found(project, start="tpose"), {})
+        engine.blender_version = lambda blender: "4.2.1"
+        line = self.found(project, start="tpose")["VM-BLEND-NEWER"]
+        self.assertEqual((line["kind"], line["page"]), ("stop", "setup"))
+        self.assertIn("5.2.2", line["text"])
+        self.assertEqual(self.found(project), {})  # from the start nothing of it is opened
+
+    def test_too_little_room_on_the_drive_or_in_memory(self):
+        project = self.project()
+        engine.free_disk = lambda path: 600 << 20
+        self.assertEqual(self.found(project)["VM-DISK-FULL"]["kind"], "stop")
+        # room for a step, not for the build: it would be stopped part way
+        engine.free_disk = lambda path: 1500 << 20
+        self.assertEqual(self.found(project)["VM-DISK-LOW"]["kind"], "stop")
+        # ... which a run of one check alone doesn't write: worth knowing there, no more
+        self.assertEqual(self.found(project, only="springs")["VM-DISK-LOW"]["kind"], "warn")
+        engine.free_disk = lambda path: 2500 << 20
+        self.assertEqual(self.found(project)["VM-DISK-LOW"]["kind"], "warn")
+        engine.free_disk = lambda path: 100 << 30
+        # memory: against what this character's heaviest step took the last time
+        project.state["steps"]["build"] = {"status": "done", "peak_mb": 2900}
+        engine.free_memory = lambda: 2500 << 20
+        line = self.found(project)["VM-MEMORY-LOW"]
+        self.assertEqual(line["kind"], "stop")
+        self.assertIn("took 2.8 GB", line["text"])
+        self.assertEqual(self.found(project, only="check"), {})  # a check takes a third of that
+        engine.free_memory = lambda: 3500 << 20
+        self.assertEqual(self.found(project), {})
+        # a character never built: what a rigging step is taken to need
+        engine.free_memory = lambda: 1900 << 20
+        self.assertIn("is taken to need", self.found(self.project())["VM-MEMORY-LOW"]["text"])
+        # a system that doesn't say what it has left is not held to anything
+        engine.free_memory = lambda: None
+        self.assertEqual(self.found(self.project()), {})
+        # Windows' page file grows on the system drive: said when that one is nearly full and is another
+        # than the build's (this computer's C:, at 3 GB, while its builds go to E:)
+        if os.name == "nt":
+            other = next(letter for letter in "CD" if not str(self.root.resolve()).upper().startswith(letter))
+            os.environ["SystemDrive"] = f"{other}:"
+            engine.free_disk = lambda path: (3 << 30) if str(path).upper().startswith(other) else (100 << 30)
+            line = self.found(self.project())["VM-SYSTEM-DISK-LOW"]
+            self.assertEqual((line["kind"], line["text"][:18]), ("warn", f"{other}: has 3.0 GB free"))
+            del os.environ["SystemDrive"]
+
+    def test_a_stop_built_past_is_asked_of_that_character_once(self):
+        from app import preflight
+        project = self.project({"pose": {"kind": "arms down", "arm_drop_degrees": 84.0}})
+        self.assertEqual(preflight.accept(project, ["VM-ARMS-DOWN", "VM-NO-TEXTURE"]), {"accepted": ["VM-ARMS-DOWN"]})
+        line = self.found(project)["VM-ARMS-DOWN"]
+        self.assertEqual((line["kind"], line["accepted"]), ("warn", True))
+        self.assertEqual(json.loads((project.out / "state.json").read_text())["accepted"]["VM-ARMS-DOWN"], line["text"])
+        # what it says has changed (another model, lower arms): asked again
+        project.state["steps"]["survey"]["json"] = str(self.root / "other.json")
+        (self.root / "other.json").write_text(json.dumps({**self.SURVEY, "pose": {"kind": "arms down", "arm_drop_degrees": 89.0}}))
+        self.assertEqual(self.found(project)["VM-ARMS-DOWN"]["kind"], "stop")
+
+    def test_a_look_that_cannot_be_made_never_stands_in_the_way(self):
+        project = self.project()
+        project.state["steps"]["survey"]["json"] = str(self.root / "survey.json")
+        (self.root / "survey.json").write_text("{ half a survey")
+        said = project.preflight()
+        self.assertEqual((said["lines"], said["stops"]), ([], 0))
+        self.assertIn("everything", said["skipped"][0])
+        # ... and one part that can't be made leaves the others said
+        project = self.project({"pose": "not what a survey says"})
+        said = project.preflight()
+        self.assertEqual([part.split(":")[0] for part in said["skipped"]], ["model"])
+        self.assertIn("OK-ROOM", [line["code"] for line in said["lines"]])
+
+    def test_a_finished_vrm_is_asked_for_its_licence_and_nothing_of_a_model(self):
+        # a VRM 0.x avatar whose licence forbids changed versions: the user's to read and say, never set for them
+        vrm = self.root / "avatar.vrm"
+        body = json.dumps({"extensions": {"VRM": {"meta": {"title": "A", "licenseName": "CC_BY_ND"}, "humanoid": {"humanBones": []}}}}).encode()
+        body += b" " * (-len(body) % 4)
+        vrm.write_bytes(struct.pack("<4sII", b"glTF", 2, 20 + len(body)) + struct.pack("<I4s", len(body), b"JSON") + body)
+        data = manifest.load(self.path)
+        data["source"], data["face"] = "avatar.vrm", None
+        manifest.save(data, self.path)
+        line = self.found(Project(self.path, blender="blender"))["VM-LICENCE"]
+        self.assertEqual((line["kind"], line["page"], line["options"]), ("stop", "options", None))
+        self.assertIn("doesn't allow changed versions", line["text"])
+        cli.cmd_set(SimpleNamespace(manifest=self.path, key="licence_read", value="true"))
+        self.assertEqual(self.found(Project(self.path, blender="blender")), {})
+
+    def test_the_command_says_it_and_a_strict_run_does_not_start(self):
+        import contextlib
+        import io
+        from unittest import mock
+        self.project({"pose": {"kind": "arms down", "arm_drop_degrees": 84.0}})._save_state()
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cli.main(["--blender", "blender", "preflight", str(self.path)]), 0)
+        said = json.loads(out.getvalue())
+        self.assertEqual((said["stops"], said["lines"][0]["code"], said["lines"][0]["page"]), (1, "VM-ARMS-DOWN", "model"))
+        with mock.patch.object(Project, "run", return_value={"ran": True}) as run:
+            with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as events:
+                self.assertEqual(cli.main(["--blender", "blender", "run", str(self.path), "--strict"]), 1)
+            self.assertIn("VM-ARMS-DOWN", json.loads(out.getvalue())["error"])
+            run.assert_not_called()
+            # without the word the run starts, the stop said first among its events
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as events:
+                self.assertEqual(cli.main(["--blender", "blender", "run", str(self.path)]), 0)
+            run.assert_called_once()
+        first = json.loads(events.getvalue().splitlines()[0])
+        self.assertEqual((first["status"], first["kind"], first["code"]), ("preflight", "stop", "VM-ARMS-DOWN"))
+
+    def test_the_page_reads_it_with_a_get_and_remembers_with_a_post(self):
+        self.project({"pose": {"kind": "arms down", "arm_drop_degrees": 84.0}})._save_state()
+        self.assertIn("preflight", server.READ_ONLY)
+        self.assertFalse({"preflight_accept", "forget_eyes_fallback"} & server.READ_ONLY)
+        real = server.Project
+        server.Project = lambda path, blender=None: real(path, blender="blender")
+        try:
+            said = server.api("preflight", {"manifest": [str(self.path)], "from": ["tpose"]}, {})
+            self.assertEqual((said["from"], said["stops"]), ("tpose", 0))
+            self.assertEqual(server.api("preflight", {"manifest": [str(self.path)]}, {})["stops"], 1)
+            with self.assertRaises(ValueError):
+                server.api("preflight", {"manifest": [str(self.path)], "from": ["../x"]}, {})
+            self.assertEqual(server.api("preflight_accept", {}, {"manifest": str(self.path), "codes": ["VM-ARMS-DOWN"]}), {"accepted": ["VM-ARMS-DOWN"]})
+            self.assertEqual(server.api("preflight", {"manifest": [str(self.path)]}, {})["stops"], 0)
+        finally:
+            server.Project = real
+
+
+class TestersComputer(unittest.TestCase):
+    """What a tester's computer does that the developers' doesn't: folders with spaces and letters of other
+    alphabets, deep ones, OneDrive, a build killed in its middle, a drive that fills, no Edge or Chrome."""
+
+    def setUp(self):
+        self.made = Engine("test_survey_decides_what_was_left_to_it")
+        self.made.setUp()
+        self.root, self.path = self.made.root, self.made.path
+        self.real = engine._blender, engine.LOCK, engine.blender_version, engine.vrm_addon_version
+        engine.LOCK = self.root / ".blender.lock"
+        engine.blender_version, engine.vrm_addon_version = lambda blender: "5.2.2", lambda blender, version: "4.7.2"
+        self.environment = dict(os.environ)
+        for name in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial", "SystemDrive"):
+            os.environ.pop(name, None)
+
+    def tearDown(self):
+        engine._blender, engine.LOCK, engine.blender_version, engine.vrm_addon_version = self.real
+        os.environ.clear()
+        os.environ.update(self.environment)
+        self.made.tearDown()
+
+    def project(self, **options):
+        (self.root / "model.glb").write_bytes(b"the model")
+        (self.root / "face.json").write_text(json.dumps(Preflight.FACE))
+        return self.made.project(Preflight.SURVEY, **options)
+
+    def warned(self, project, **steps):
+        return {line["code"]: line for line in project.preflight(**steps)["lines"] if line["kind"] != "ok"}
+
+    def test_a_blender_ends_with_the_app_that_started_it(self):
+        # the app's window closed in the middle of a build: its Blender ran on for minutes, holding gigabytes,
+        # beside the next build, which had rightly taken the lock a dead process left
+        import subprocess
+        import time
+        if os.name != "nt":
+            self.skipTest("a Windows job; elsewhere a closed terminal takes its children along")
+        code = ("import subprocess, sys, time\nsys.path.insert(0, {repo!r})\nfrom app import engine\n"
+                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+                "tied = engine.dies_with_us(child) if {tie} else None\nprint(child.pid, tied, flush=True)\ntime.sleep(120)\n")
+        ended = {}
+        for tie in (True, False):
+            app = subprocess.Popen([sys.executable, "-c", code.format(repo=str(REPO), tie=tie)], stdout=subprocess.PIPE, text=True)
+            pid, tied = app.stdout.readline().split()
+            self.assertEqual(tied, str(tie) if tie else "None")
+            app.kill()  # as Task Manager ends it: no chance to tidy up
+            app.wait()
+            app.stdout.close()
+            for _ in range(50):
+                if not engine._alive(int(pid)):
+                    break
+                time.sleep(0.1)
+            ended[tie] = not engine._alive(int(pid))
+            if not ended[tie]:
+                subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
+        # tied, it went with the app; left alone (as before), it outlived it
+        self.assertEqual(ended, {True: True, False: False})
+        # a stand-in for a process (the tests') is not tied, and nothing is raised for it
+        self.assertFalse(engine.dies_with_us(SimpleNamespace(_handle=None)))
+
+    def test_a_step_stopped_on_a_full_drive_gives_back_what_it_had_half_written(self):
+        project = self.project()
+        (self.root / "x.blend").write_bytes(b"BLENDER")
+        project.state["steps"]["hair"] = {"status": "done", "blend": str(self.root / "x.blend")}
+        seen = {}
+
+        def blender(blender, blend_in, args, log, extra):
+            # half a save, Blender's own "@" of it, and the drive is full: the engine stops it
+            stem = Path(args[1]).with_suffix("")
+            for kind in (".blend", ".blend@"):
+                stem.with_suffix(kind).write_bytes(b"BLENDER half")
+            seen["stem"] = stem
+            Path(log).write_text("Saving...\n\nSTOPPED by the engine after 12 s: disk full\n")
+            engine.free_disk = lambda path: 10 << 20
+            return engine.STOPPED
+        engine._blender = blender
+        with self.assertRaises(engine.StepFailed) as stopped:
+            project.run(only="tpose")
+        self.assertEqual(stopped.exception.known["code"], "VM-DISK-FULL")
+        self.assertEqual([p.name for p in seen["stem"].parent.glob("*.blend*")], [])
+        self.assertEqual(project.state["steps"]["tpose"]["last_failure"]["failure"]["page"], "home")
+        # the file the step read is not the step's to remove
+        self.assertTrue((self.root / "x.blend").exists())
+
+    def test_the_apps_own_write_refused_by_a_full_drive_is_said_as_that(self):
+        import contextlib
+        import errno
+        import io
+        import time
+        from unittest import mock
+        full = OSError(errno.ENOSPC, "No space left on device")
+        self.assertTrue(engine.no_space(full))
+        windows = OSError(22, "There is not enough space on the disk")
+        windows.winerror = 112
+        self.assertTrue(engine.no_space(windows))
+        self.assertFalse(engine.no_space(OSError(errno.EACCES, "denied")) or engine.no_space(ValueError("x")))
+        jobs = server.Jobs()
+        with mock.patch.object(server, "_log_error"):
+            jobs.start("build", lambda emit: (_ for _ in ()).throw(full))
+            while jobs.running:
+                time.sleep(0.01)
+        self.assertEqual((jobs.poll()["failure"]["code"], jobs.poll()["failure"]["page"]), ("VM-DISK-FULL", "home"))
+        # on the command line too: a sentence and its code, not a traceback
+        self.project()._save_state()
+        with mock.patch.object(Project, "status", side_effect=full), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cli.main(["--blender", "blender", "status", str(self.path)]), 1)
+        self.assertEqual(json.loads(out.getvalue())["code"], "VM-DISK-FULL")
+        # any other trouble of the system's is not taken for it
+        with mock.patch.object(Project, "status", side_effect=OSError(errno.EACCES, "denied")):
+            with self.assertRaises(OSError):
+                cli.main(["--blender", "blender", "status", str(self.path)])
+
+    def test_a_record_of_builds_that_cannot_be_read_is_set_aside_at_the_users_word(self):
+        project = self.project()
+        project._record("build", {"status": "done", "blend": "a.blend"})
+        with self.assertRaisesRegex(ValueError, "nothing to set aside"):  # one that reads is left alone
+            engine.set_state_aside(self.path)
+        project.state_path.write_text('{"steps": {"bui', encoding="utf-8")
+        project.state_path.with_name("state.json.bak").write_text("", encoding="utf-8")
+        with self.assertRaises(engine.StepFailed) as unread:
+            Project(self.path, blender="blender")
+        self.assertEqual(unread.exception.known["code"], "VM-STATE-UNREADABLE")
+        moved = engine.set_state_aside(self.path)["aside"]
+        self.assertEqual(len(moved), 2)
+        self.assertEqual(Path(moved[0]).read_text(encoding="utf-8"), '{"steps": {"bui')  # kept as it was, for a report
+        self.assertEqual(Project(self.path, blender="blender").state, {"steps": {}})
+        self.assertNotIn("state_aside", server.READ_ONLY)
+
+    def test_folders_with_spaces_and_letters_of_other_alphabets(self):
+        # a tester's Documents is "C:\\Users\\José María\\Documents", a model "キャラ 1.glb"
+        import contextlib
+        import io
+        home = self.root / "José María" / "Mes modèles ñ 日本語"
+        home.mkdir(parents=True)
+        model = home / "キャラ 1.glb"
+        model.write_bytes(b"glTF-not-really")
+        manifest_path = home / "out put" / "character.json"
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cli.main(["--blender", "blender", "init", str(model), "--name", "Zoë", "--manifest", str(manifest_path)]), 0)
+        made = json.loads(out.getvalue())
+        self.assertEqual(Path(made["manifest"]), manifest_path.resolve())
+        project = Project(manifest_path, blender="blender")
+        self.assertEqual(manifest.path_of(project.data, "source"), model.resolve())
+        # the manifest is UTF-8 whatever the computer's own code page, and reads back the same
+        self.assertEqual(json.loads(manifest_path.read_bytes().decode("utf-8"))["name"], "Zoë")
+        # a relative path to it is the same character
+        here = os.getcwd()
+        os.chdir(home)
+        try:
+            self.assertEqual(Project(Path("out put") / "character.json", blender="blender").manifest_path, manifest_path.resolve())
+        finally:
+            os.chdir(here)
+        # what a Blender is started with: every path whole, one argument each, and in the step's log as it is
+        command = engine._command("blender", home / "a b.blend", ["x.py", model, home / "o ut.vrm"], [])
+        self.assertIn(str(model), command)
+        self.assertIn(str(home / "a b.blend"), command)
+        started = {}
+
+        class Ran:
+            returncode = 0
+
+            def __init__(self, command, **kwargs):
+                started["command"] = command
+
+            def poll(self):
+                return 0
+        real = engine.subprocess.Popen
+        engine.subprocess.Popen = Ran
+        try:
+            log = home / "logs ñ" / "01 build.log"
+            self.assertEqual(engine._blender("blender", None, ["x.py", model], log, []), 0)
+        finally:
+            engine.subprocess.Popen = real
+        self.assertIn(str(model), started["command"])
+        self.assertIn("キャラ 1.glb", log.read_text(encoding="utf-8"))
+        # ... and what the run's one Blender is told, which crosses a pipe as JSON
+        order = json.loads(json.dumps({"blend": str(home / "a b.blend"), "log": str(log)}))
+        self.assertEqual(order["blend"], str(home / "a b.blend"))
+        # the state and its backup, written and read there
+        project._record("survey", {"status": "done", "json": str(home / "survey ñ.json")})
+        self.assertEqual(Project(manifest_path, blender="blender").state["steps"]["survey"]["json"], str(home / "survey ñ.json"))
+
+    def test_a_folder_too_deep_for_windows_is_said_before_the_build(self):
+        if os.name != "nt":
+            self.skipTest("Windows' own limit")
+        deep = self.root / ("a" * 60) / ("b" * 60) / ("c" * 60)
+        data = manifest.load(self.path)
+        data["out_dir"] = str(deep)
+        manifest.save(data, self.path)
+        line = self.warned(self.project())["VM-PATH-LONG"]
+        self.assertEqual(line["kind"], "stop")
+        self.assertIn(str(len(str(deep.resolve()))), line["text"])
+        # one that leaves room for the longest file a build writes says nothing
+        data["out_dir"] = str(self.root / "out")
+        manifest.save(data, self.path)
+        self.assertNotIn("VM-PATH-LONG", self.warned(self.project()))
+        from app import preflight
+        self.assertLess(len(str((self.root / "out").resolve())) + preflight.LONGEST_WRITTEN, preflight.WINDOWS_PATH)
+        # the longest is a close-up of the rig check's, by the names scripts/check_avatar.py gives them
+        # (one character short of it, a folder at the limit built until the check drew a stretch)
+        script = (REPO / "scripts" / "check_avatar.py").read_text(encoding="utf-8")
+        words = [("stretch", "squash"), ("front", "back", "side"), ("rest", "posed")]
+        for word in (w for group in words for w in group):
+            self.assertIn(f'"{word}"', script)
+        name = max((f"{kind}_{view}_{state}.png" for kind in words[0] for view in words[1] for state in words[2]), key=len)
+        self.assertEqual(preflight.LONGEST_WRITTEN, len(f"\\runs\\20261012-155109\\{engine.NAMES.index('check'):02d}_check_spots\\{name}"))
+
+    def test_builds_written_inside_onedrive_and_a_model_kept_online_only(self):
+        from unittest import mock
+        from app import preflight
+        project = self.project()
+        self.assertEqual(self.warned(project), {})
+        os.environ["OneDriveCommercial"] = str(self.root)
+        line = self.warned(project)["VM-ONEDRIVE"]
+        self.assertEqual(line["kind"], "warn")
+        self.assertIn(str(self.root), line["text"])
+        os.environ["OneDriveCommercial"] = str(self.root / "elsewhere")
+        self.assertEqual(self.warned(project), {})
+        with mock.patch.object(preflight, "_online_only", return_value=True):
+            self.assertEqual(self.warned(project)["VM-MODEL-ONLINE"]["page"], "model")
+        self.assertFalse(preflight._online_only(self.root / "model.glb"))  # a file that is simply there
+
+    def test_no_edge_or_chrome_is_said_and_holds_nothing_up(self):
+        from unittest import mock
+        from app import sheet
+        project = self.project()
+        with mock.patch.object(sheet, "find_browser", side_effect=sheet.NoBrowser("no Edge or Chrome found")):
+            line = self.warned(project)["VM-NO-BROWSER"]
+            self.assertEqual((line["kind"], line["at"]), ("warn", "vrm_check"))
+            # only of a run that comes to the exported file's check
+            self.assertEqual(self.warned(project, start="survey", stop="tpose"), {})
+            self.assertEqual(project.preflight()["stops"], 0)
+
+    def test_no_blender_found_is_a_refusal_with_its_code(self):
+        from unittest import mock
+        with mock.patch.object(engine, "installed_blenders", return_value=[]), mock.patch.object(engine.shutil, "which", return_value=None), \
+                mock.patch.dict(os.environ, {"BLENDER": ""}):
+            with self.assertRaises(FileNotFoundError) as none:
+                engine.find_blender()
+        self.assertEqual(none.exception.known["code"], "VM-NO-BLENDER")
+
+
+class Inputs(unittest.TestCase):
+    """`python -m app inputs` (app/inputs.py): a model's transformed copies built and held against the model's
+    own build. What the copies are is scripts/make_variants.py's, in Blender; what is judged of them is here."""
+
+    def setUp(self):
+        self.made = Engine("test_survey_decides_what_was_left_to_it")
+        self.made.setUp()
+        self.root, self.path = self.made.root, self.made.path
+
+    def tearDown(self):
+        self.made.tearDown()
+
+    def check(self, name, stretch):
+        path = self.root / f"{name}.json"
+        path.write_text(json.dumps({"failed": [], "unweighted": 0, "poses": {"arms raised": {"stretch_cm": stretch, "squash": 0.8}}}))
+        return path
+
+    def test_a_copy_is_held_to_the_models_own_build_or_to_the_stop_it_should_meet(self):
+        from app import inputs
+        same = {"outcome": "same", "codes": []}
+        self.assertTrue(inputs._as_expected(same, "same"))
+        # stopped where the same was hoped for keeps the rule (it was said) and is still not what was expected
+        self.assertFalse(inputs._as_expected({"outcome": "stopped", "codes": ["VM-ORIENT-UNSURE"]}, "same"))
+        self.assertFalse(inputs._as_expected({"outcome": "worse", "codes": []}, "same"))
+        self.assertTrue(inputs._as_expected({"outcome": "stopped", "codes": ["VM-ARMS-AT-SIDES"]}, "VM-ARMS-DOWN VM-ARMS-AT-SIDES"))
+        self.assertFalse(inputs._as_expected({"outcome": "stopped", "codes": ["VM-NO-TEXTURE"]}, "VM-ARMS-DOWN VM-ARMS-AT-SIDES"))
+        # a copy without its picture that built all the same was not stopped: the fault this looks for
+        self.assertFalse(inputs._as_expected(same, "VM-NO-TEXTURE"))
+
+    def test_two_builds_are_compared_by_what_does_not_number_vertices(self):
+        from app import inputs
+        movement = lambda name, labels: (self.root / f"{name}.json").write_text(json.dumps({"pieces": [{"label": n, "findings": []} for n in labels]})) and self.root / f"{name}.json"  # noqa: E731
+        model = {"check": self.check("check_a", 1.2), "movement": movement("moves_a", [10, 20])}
+        # the same pieces under other vertex numbers (a file saved again): nothing worse
+        self.assertEqual(inputs._held(model, {"check": self.check("check_b", 1.2), "movement": movement("moves_b", [777, 888])}),
+                         {"worse": [], "better": []})
+        worse = inputs._held(model, {"check": self.check("check_c", 9.5), "movement": movement("moves_c", [1, 2, 3])})
+        self.assertEqual(len(worse["worse"]), 2)
+        self.assertTrue(worse["worse"][0].startswith("rig check"))
+        self.assertIn("3 pieces flagged, the model's own build has 2", worse["worse"][1])
+
+    def test_a_copy_is_a_new_character_with_the_models_options_and_nothing_else_of_it(self):
+        from app import inputs
+        base = self.made.project({"options": {}, "triangles": 40000}, chest=True, eyes="none")
+        base.data["pieces"] = [{"name": "cape", "point": [0, 0, 1], "count": 9, "role": "swing_cloth"}]
+        model = self.root / "copy one.glb"
+        model.write_bytes(b"glTF")
+        copy = inputs._character(self.root / "out" / "inputs" / "turn_x_90", model, base, "turn_x_90")
+        self.assertEqual((copy.name, copy.out), ("Test_turn_x_90", self.root / "out" / "inputs" / "turn_x_90"))
+        self.assertEqual((copy.data["options"]["chest"], copy.data["options"]["eyes"]), (True, "none"))
+        self.assertEqual((copy.data["pieces"], copy.data.get("face"), copy.data["joints"]), ([], None, {}))
+        self.assertEqual(manifest.path_of(copy.data, "source"), model)
+        # a rigged FBX is its own rig there too
+        rigged = self.root / "copy two.fbx"
+        rigged.write_bytes(b"Kaydara FBX ... J_Bip_C_Hips ...")
+        self.assertEqual(manifest.path_of(inputs._character(self.root / "out" / "inputs" / "as_fbx", rigged, base, "as_fbx").data, "rig"), rigged)
+
+    def test_the_copies_it_asks_for_are_the_ones_the_script_makes(self):
+        # the names the command line takes (--only) and the codes a copy is held to are make_variants.py's own
+        import re
+        script = (REPO / "scripts" / "make_variants.py").read_text(encoding="utf-8")
+        names = re.findall(r'^        \("([a-z0-9_]+)", ', script, re.M)
+        self.assertGreaterEqual(len(names), 17)
+        for code in set(re.findall(r"VM-[A-Z-]+", script)):
+            self.assertIsNotNone(errors.describe(code), code)
 
 
 if __name__ == "__main__":

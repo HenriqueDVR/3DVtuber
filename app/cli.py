@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import engine, face_guess, inside, paint, report, sheet, update, vendor
+from . import engine, face_guess, inside, paint, preflight, report, sheet, update, vendor
 from .engine import REPO, Project, StepFailed, manifest
 
 
@@ -56,11 +56,19 @@ def main(argv=None):
     p = sub.add_parser("prepare", help="all a new character needs before its face is marked: survey, piece listing, face patch")
     p.add_argument("manifest", type=Path)
 
+    p = sub.add_parser("preflight", help="what is known to go wrong with a build before it starts: stop, warn and ok lines, "
+                       "each with its code and what mends it (no Blender, nothing written)")
+    p.add_argument("manifest", type=Path)
+    p.add_argument("--from", dest="start", choices=engine.NAMES)
+    p.add_argument("--to", dest="stop", choices=engine.NAMES)
+    p.add_argument("--only", choices=engine.NAMES)
+
     p = sub.add_parser("run", help="run the build chain, or part of it")
     p.add_argument("manifest", type=Path)
     p.add_argument("--from", dest="start", choices=engine.NAMES)
     p.add_argument("--to", dest="stop", choices=engine.NAMES)
     p.add_argument("--only", choices=engine.NAMES)
+    p.add_argument("--strict", action="store_true", help="don't start when `preflight` has a stop: the build is known to go wrong")
 
     p = sub.add_parser("set", help="set an option (value read as JSON when it parses, else text)")
     p.add_argument("manifest", type=Path)
@@ -184,6 +192,13 @@ def main(argv=None):
     p.add_argument("manifests", type=Path, nargs="*", help="which characters (default: every one with a finished build)")
     p.add_argument("--keep", action="store_true", help="keep the scratch builds' .blend and .vrm files")
 
+    p = sub.add_parser("inputs", help="the character's model handed over otherwise (turned, in centimetres, in parts, decimated, "
+                       "as FBX or OBJ, arms down, no picture), each copy built in a scratch folder and held against the model's own build")
+    p.add_argument("manifest", type=Path)
+    p.add_argument("--only", help="names of the copies to make and build, with commas (scripts/make_variants.py; default: all)")
+    p.add_argument("--rigged", type=Path, help="a rigged FBX (Tripo's), for the two copies with their arms lowered")
+    p.add_argument("--keep", action="store_true", help="keep the copies and the scratch builds' .blend and .vrm files")
+
     p = sub.add_parser("disk", help="how much disk a character's runs take, and what `prune` would free")
     p.add_argument("manifest", type=Path)
 
@@ -195,7 +210,15 @@ def main(argv=None):
     try:
         result = COMMANDS[args.command](args)
     except (StepFailed, ValueError, FileNotFoundError) as error:
-        print(json.dumps({"error": str(error)}))
+        known = getattr(error, "known", None)
+        print(json.dumps({"error": str(error), **({"code": known["code"], "fix": known.get("fix", "")} if known and known.get("code") else {})}))
+        return 1
+    except OSError as error:
+        # the app's own write refused by a full drive: said as that, not as a traceback
+        if not engine.no_space(error):
+            raise
+        known = engine.errors.describe("VM-DISK-FULL")
+        print(json.dumps({"error": f"{known['what']}: {error}", "code": known["code"], "fix": known["fix"]}))
         return 1
     print(json.dumps(result, indent=2, default=str))
     return 0
@@ -315,12 +338,14 @@ def cmd_regress(args):
     with its baseline: the build marked good, else its last build. Its own files are not touched.
 
     Every pipeline change so far was A/B'd by hand in scratch folders (out/_regress_0928,
-    out/compare/*); this is that, as one command and one table. One Blender at a time, a few
-    minutes a character. `worse` > 0 means something measured worse than the baseline.
+    out/compare/*); this is that, as one command and one table. As many characters at once as the
+    computer has room for, one Blender each (`engine.at_once`; one after another on a computer
+    without the room, or told to keep to one Blender), a minute or two a character. `worse` > 0
+    means something measured worse than the baseline.
     """
     events = getattr(args, "on_event", None) or (lambda event: print(json.dumps(event, default=str), file=sys.stderr, flush=True))
     chosen = [Path(m).resolve() for m in args.manifests] or [m for m in engine.characters() if Project(m).baseline()[0]]
-    rows = []
+    rows, jobs, took = [], [], {}
     for path in chosen:
         project = Project(path, blender=getattr(args, "blender", None))
         what, before = project.baseline()
@@ -329,19 +354,29 @@ def cmd_regress(args):
         if what is None:
             row["error"] = "never built to a rig check: nothing to compare with"
             continue
-        scratch = _scratch_copy(project)
-        events({"step": project.name, "status": "running", "reason": f"rebuilding in {scratch.out}"})
+        jobs.append((row, before, _scratch_copy(project)))
+
+    def rebuild(scratch, emit):
+        emit({"step": scratch.name, "status": "running", "reason": f"rebuilding in {scratch.out}"})
         started = datetime.now()
         try:
-            scratch.run(on_event=events)
-        except StepFailed as error:
-            row["error"] = str(error).splitlines()[0]
-        row["seconds"] = round((datetime.now() - started).total_seconds())
+            scratch.run(on_event=emit)
+        finally:
+            took[scratch.out] = round((datetime.now() - started).total_seconds())
+            # as each one ends, not when all have: twenty characters' models are 12 GB
+            if not args.keep:
+                for model in (p for p in scratch.out.rglob("*") if p.is_file() and p.suffix.lower() in engine.MODELS):
+                    model.unlink()
+
+    ended = engine.at_once([scratch for _, _, scratch in jobs], rebuild, on_event=events)
+    for (row, before, scratch), end in zip(jobs, ended):
+        if isinstance(end, StepFailed):
+            row["error"] = str(end).splitlines()[0]
+        elif isinstance(end, BaseException):
+            raise end
+        row["seconds"] = took.get(scratch.out)
         row.update(engine.changes(before, scratch.reports()))
         row["out"] = str(scratch.out)
-        if not args.keep:
-            for model in (p for p in scratch.out.rglob("*") if p.is_file() and p.suffix.lower() in engine.MODELS):
-                model.unlink()
     return {"characters": rows, "worse": sum(len(r["worse"]) for r in rows), "failed": [r["name"] for r in rows if r["error"]]}
 
 
@@ -366,6 +401,13 @@ def _scratch_copy(project):
     return scratch
 
 
+def cmd_inputs(args):
+    from . import inputs
+    events = lambda event: print(json.dumps(event, default=str), file=sys.stderr, flush=True)  # noqa: E731
+    return inputs.run(args.manifest, only=args.only.split(",") if args.only else None, rigged=args.rigged, keep=args.keep,
+                      on_event=events, blender=getattr(args, "blender", None))
+
+
 def cmd_disk(args):
     return _project(args).usage()
 
@@ -374,9 +416,26 @@ def cmd_prune(args):
     return _project(args).prune(dry=args.dry_run)
 
 
+def cmd_preflight(args):
+    return _project(args).preflight(start=args.start, stop=args.stop, only=args.only)
+
+
+def said_before(project, emit, start=None, stop=None, only=None):
+    """Say what `preflight` found as the run's first events (status "preflight": the page writes them
+    into its progress, an agent reads them on stderr); returns the stops. Nothing is refused here."""
+    found = [line for line in project.preflight(start=start, stop=stop, only=only)["lines"] if line["kind"] != "ok"]
+    for line in found:
+        emit({"step": line["at"] or only or start or engine.NAMES[0], "status": "preflight", "kind": line["kind"],
+              "code": line["code"], "reason": line["text"], "fix": line["fix"]})
+    return [line for line in found if line["kind"] == "stop"]
+
+
 def cmd_run(args):
     project = _project(args)
     events = lambda event: print(json.dumps(event, default=str), file=sys.stderr, flush=True)  # noqa: E731
+    stops = said_before(project, events, start=args.start, stop=args.stop, only=args.only)
+    if stops and getattr(args, "strict", False):
+        raise StepFailed("not started: " + "; ".join(f"{line['text']} [{line['code']}]" for line in stops))
     return project.run(start=args.start, stop=args.stop, only=args.only, on_event=events)
 
 
@@ -677,7 +736,8 @@ def cmd_face_patch(args):
         head_at += ["--body", body]
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "head_at.json").write_text(json.dumps({"head_at": head_at[1], "body": body}), encoding="utf-8")
-    code, output = engine.run_script(project.blender, "retexture/render_views.py", [before, views, 1024, *head_at],
+    code, output = engine.run_script(project.blender, "retexture/render_views.py",
+                                     [before, views, 1024, *head_at, "--only", ",".join(PATCH_VIEWS), "--depth-of", PATCH_VIEW],
                                      log=folder / "render_views.log")
     if code != 0 or not (views / "color_head_000.png").exists():
         raise StepFailed(f"rendering the head failed (see {folder / 'render_views.log'})\n{output[-2000:]}")
@@ -813,6 +873,14 @@ def paint_state(manifest_path, blender=None):
 # The face patch as scripts/retexture/face_patch.py now makes it: hair lying over the face on its
 # own picture (2). cmd_face_patch notes it beside the patched model.
 PATCH_VERSION = 2
+# What `face-patch` has drawn of the model: the head from the front, which the patch is made of (and
+# its depth alone, by which the patch tells what lies hidden), and each part from the front and from
+# behind, which a handoff bundle and a tester's report take (`_000`, `_180`). render_views.py draws 34
+# views with their depths when not told otherwise, for re-texturing by hand: drawn so for every new
+# character, 25 views and 33 depths were read by nothing, 9 of the face patch's 18 seconds and 30 of
+# its 38 MB (the fox girl, 2026-10-12). The patched model is the same file byte for byte.
+PATCH_VIEW = "head_000"
+PATCH_VIEWS = (PATCH_VIEW, "head_180", "torso_000", "torso_180", "hips_000", "hips_180", "legs_000", "legs_180", "face_000")
 
 
 def _old_patch(source):
@@ -886,6 +954,11 @@ def save_face(manifest_path, points, blender=None):
     project = Project(manifest_path, blender=blender)
     keep = {"image": points.get("image") or "face_patch.png", "size": points["size"],
             **{key: {n: [round(float(v), 1) for v in points[key][n]] for n in names} for key, names in marked.items()}}
+    # how the picture they were marked on frames the head: a patch made again framed otherwise leaves
+    # the marks off the face, and the look before a build then says so (preflight._reframed)
+    frame = preflight.patch_frame(project)
+    if frame is not None:
+        keep["frame"] = frame
     path = project.out / "face.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(keep, indent=2), encoding="utf-8")
@@ -1102,10 +1175,10 @@ def cmd_report(args):
                        blender=getattr(args, "blender", None))
 
 
-COMMANDS = {"report": cmd_report, "init": cmd_init, "status": cmd_status, "run": cmd_run, "set": cmd_set, "joint": cmd_joint,
+COMMANDS = {"report": cmd_report, "init": cmd_init, "status": cmd_status, "preflight": cmd_preflight, "run": cmd_run, "set": cmd_set, "joint": cmd_joint,
             "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "portraits": cmd_portraits, "sheet": cmd_sheet, "inside": cmd_inside, "movement": cmd_movement, "springs": cmd_springs,
             "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "paint": cmd_paint, "duplicate": cmd_duplicate, "rename": cmd_rename, "hide": cmd_hide, "delete": cmd_delete, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
-            "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup,
+            "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup, "inputs": cmd_inputs,
             "regress": cmd_regress, "vendor": cmd_vendor, "update": cmd_update, "pack": cmd_pack, "detector": cmd_detector, "warudo": cmd_warudo}
 
 
