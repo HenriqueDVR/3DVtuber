@@ -278,6 +278,7 @@ def export(filepath, armature):
     normalize_bones(filepath, look_at_origin=origin)
     verify(filepath, armature)
     sparse_morph_targets(filepath)
+    fold_emissive_strength(filepath)
     from . import improve  # it reads this module, so not at the top
     if not improve.imported(armature):
         use_mipmaps(filepath)  # a file taken in as it was keeps the samplers its author gave it
@@ -556,6 +557,46 @@ def use_mipmaps(filepath):
     if plain:
         _write_glb(filepath, gltf, binary)
     return len(plain)
+
+
+EMISSIVE_STRENGTH = "KHR_materials_emissive_strength"
+
+
+def fold_emissive_strength(filepath):
+    """Rewrite a .vrm so a material's emission says itself in emissiveFactor alone; returns how
+    many materials changed.
+
+    The VRM Add-on writes Blender's emission colour (white by default) as emissiveFactor [1, 1, 1]
+    and its strength (0) in KHR_materials_emissive_strength. Warudo reads the extension; VNyan's
+    UniVRM doesn't, and drew every material glowing full white: the whole avatar white, no picture
+    (the user, 2026-10-14). A strength up to 1 goes into the factor, which then means the same to
+    every reader, and the extension goes; one above 1 is an HDR glow the factor can't hold and stays.
+    """
+    gltf, binary = _read_glb(filepath)
+    changed = 0
+    for material in gltf.get("materials", []):
+        strength = material.get("extensions", {}).get(EMISSIVE_STRENGTH, {}).get("emissiveStrength", 1.0)
+        if EMISSIVE_STRENGTH not in material.get("extensions", {}) or strength > 1.0:
+            continue
+        factor = [c * strength for c in material.get("emissiveFactor", (0.0, 0.0, 0.0))]
+        if any(factor):
+            material["emissiveFactor"] = factor
+        else:
+            material.pop("emissiveFactor", None)  # glTF's default: no emission
+        del material["extensions"][EMISSIVE_STRENGTH]
+        if not material["extensions"]:
+            del material["extensions"]
+        changed += 1
+    if not changed:
+        return 0
+    if not any(EMISSIVE_STRENGTH in m.get("extensions", {}) for m in gltf.get("materials", [])):
+        for key in ("extensionsUsed", "extensionsRequired"):
+            if EMISSIVE_STRENGTH in gltf.get(key, []):
+                gltf[key].remove(EMISSIVE_STRENGTH)
+                if not gltf[key]:
+                    del gltf[key]
+    _write_glb(filepath, gltf, binary)
+    return changed
 
 
 # A roll axis this close (cosine: 5 degrees) to a model axis is renamed to it. VRoid names its

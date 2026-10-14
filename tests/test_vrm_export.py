@@ -320,6 +320,36 @@ class Mipmaps(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
 
 
+class EmissiveStrength(unittest.TestCase):
+    """VNyan reads no KHR_materials_emissive_strength: a white factor at strength 0 drew all white."""
+
+    def build(self, name, materials):
+        gltf = {"asset": {"version": "2.0"}, "materials": materials,
+                "extensionsUsed": ["KHR_materials_emissive_strength", "VRMC_materials_mtoon"]}
+        return glb(FIXTURE_OUT / name, gltf, b"")
+
+    def strength(self, value, factor=(1.0, 1.0, 1.0)):
+        return {"emissiveFactor": list(factor), "extensions": {
+            "KHR_materials_emissive_strength": {"emissiveStrength": value}, "VRMC_materials_mtoon": {}}}
+
+    def test_strength_goes_into_the_factor(self):
+        path = self.build("emissive.glb", [self.strength(0.0), self.strength(0.5, (1.0, 0.2, 0.0)), {}])
+        self.assertEqual(vrm_export.fold_emissive_strength(path), 2)
+        gltf = vrm_export._read_glb(path)[0]
+        dark, half, plain = gltf["materials"]
+        self.assertNotIn("emissiveFactor", dark)
+        self.assertEqual(half["emissiveFactor"], [0.5, 0.1, 0.0])
+        self.assertEqual(list(dark["extensions"]), ["VRMC_materials_mtoon"])
+        self.assertEqual(plain, {})
+        self.assertEqual(gltf["extensionsUsed"], ["VRMC_materials_mtoon"])
+
+    def test_an_hdr_glow_is_kept(self):
+        path = self.build("emissive_hdr.glb", [self.strength(4.0)])
+        before = path.read_bytes()
+        self.assertEqual(vrm_export.fold_emissive_strength(path), 0)
+        self.assertEqual(path.read_bytes(), before)
+
+
 class NormalizeBones(unittest.TestCase):
     """A small skinned file with turned joints: positions, skinning at rest and colliders survive."""
 
