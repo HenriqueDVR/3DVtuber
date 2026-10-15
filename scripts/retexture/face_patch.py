@@ -90,6 +90,14 @@ def to_view(p):
 
 mw = obj.matrix_world
 normal_mat = mw.to_3x3().inverted().transposed()
+# Below the marked mouth a piece in front of the skin is in front from UNDER_MOUTH_LAYER, not LAYER: the
+# princess's choker lies a few mm off her neck, and the neck behind it shared its texels: the choker's
+# blue showed on her neck as a smudge (her own texture there is the choker's grey-blue, painted wide). As
+# a layer of its own, the neck behind it is filled with the skin round it (fill). Known only once the face
+# is marked (--keep: the lowest box is the mouth's). A surface in front of itself measures nothing.
+UNDER_MOUTH_LAYER = 0.0015
+_marked = [tuple(float(v) for v in argv[i + 1].split(",")) for i, a in enumerate(argv) if a == "--keep"]
+UNDER_MOUTH = min(box[1] for box in _marked) if _marked else None
 chosen, behind = [], 0
 for poly in mesh.polygons:
     n = (normal_mat @ poly.normal).normalized()
@@ -163,8 +171,13 @@ def depths(polys):
 
 
 farthest = depths(chosen)
+def layer_at(y):
+    """How far apart (a share of the height) two surfaces are layers at view height `y` (see UNDER_MOUTH_LAYER)."""
+    return UNDER_MOUTH_LAYER if UNDER_MOUTH is not None and y < UNDER_MOUTH else LAYER
+
+
 over = [i for i in chosen
-        if any(farthest[min(int(y * G), G - 1), min(int(x * G), G - 1)] - z > height * LAYER for x, y, z in _in(mesh.polygons[i]))]
+        if any(farthest[min(int(y * G), G - 1), min(int(x * G), G - 1)] - z > height * layer_at(y) for x, y, z in _in(mesh.polygons[i]))]
 # A separate piece in front of the face anywhere is in front of it altogether. Model D's visor lies
 # under LAYER from the skin along its rim, and the skin wholly behind it isn't in the patch at all:
 # only 36 of its polygons counted as in front, the rest stayed on the face's picture, the skin
@@ -180,7 +193,7 @@ for piece in piece_of.values():
 face_piece = max(sizes, key=sizes.get) if sizes else None
 skin = depths([i for i in chosen if piece_of[i] == face_piece])
 in_front = {piece_of[i] for i in chosen if piece_of[i] != face_piece
-            and any(skin[min(int(y * G), G - 1), min(int(x * G), G - 1)] - z > height * LAYER for x, y, z in _in(mesh.polygons[i]))}
+            and any(skin[min(int(y * G), G - 1), min(int(x * G), G - 1)] - z > height * layer_at(y) for x, y, z in _in(mesh.polygons[i]))}
 over = [i for i in chosen if i in set(over) or piece_of[i] in in_front]
 # ... and in front of each other they need a picture each, for the same reason: with model D's
 # visor and hair on one, the visor's outline was in the hair's texels. The piece most in front of
@@ -266,7 +279,8 @@ front_set = set(over)
 face_depth = depths([i for i in chosen if i not in front_set])
 rows = np.minimum((np.arange(G) + 0.5) * RES / G, RES - 1).astype(int)
 nearest = zbuf[np.ix_(rows, rows)]
-hidden = (face_depth > 0) & (nearest > 0) & (face_depth - nearest > height * LAYER)
+under = (np.arange(G)[:, None] + 0.5) / G < (UNDER_MOUTH if UNDER_MOUTH is not None else -1)
+hidden = (face_depth > 0) & (nearest > 0) & (face_depth - nearest > height * np.where(under, UNDER_MOUTH_LAYER, LAYER))
 # ... and all of what a piece in front covers, however near it lies (the skin under a visor's rim)
 hidden |= (face_depth > 0) & (depths(over) > 0)
 for u0, v0, u1, v1 in KEEP:
