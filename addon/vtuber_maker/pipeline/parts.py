@@ -163,6 +163,19 @@ def _components(count, a, b):
         labels = updated
 
 
+def _face_piece(verts, labels, inserts, small, eyes):
+    """(The piece nearest the first of `eyes` (eye inserts' centres), the vertex of it nearest each eye): no insert, nor another piece an insert's size
+    (`small`) when a bigger one is there: the miko's eye-white shells, 3 mm behind the head's median depth,
+    weren't inserts, lay nearest her eyes and were taken for the face (49 vertices); her face (2869) stayed a
+    quarter on the neck, and her eyes left it on a head tilt."""
+    others = ~np.isin(labels, inserts)
+    if (others & ~np.isin(labels, small)).any():
+        others &= ~np.isin(labels, small)
+    candidates = np.nonzero(others)[0]
+    nearest = [int(candidates[np.argmin(np.linalg.norm(verts[candidates] - eye, axis=1))]) for eye in eyes]
+    return int(labels[nearest[0]]), nearest
+
+
 def find(mesh_obj, joints, eyes_at=None, file_parts=None):
     """Split the mesh into parts and pick out the hair, the eye and mouth inserts, and the face.
 
@@ -194,10 +207,8 @@ def find(mesh_obj, joints, eyes_at=None, file_parts=None):
 
     face = -1
     if eyes:
-        others = ~np.isin(labels, inserts)
-        candidates = np.nonzero(others)[0]
-        nearest = [candidates[np.argmin(np.linalg.norm(verts[candidates] - centre[p], axis=1))] for p in eyes.values()]
-        face = int(labels[nearest[0]])
+        small = [p for p in ids if (high[p] - low[p]).max() < INSERT_SIZE * head_height]
+        face, nearest = _face_piece(verts, labels, inserts, small, [centre[p] for p in eyes.values()])
 
     colors = texture_space.vertex_colors(mesh_obj, texture_space.base_color_image(mesh_obj))
     hair_color = _dominant_color(colors[(verts[:, 2] > top - CROWN * head_height) & (verts[:, 2] <= top)])

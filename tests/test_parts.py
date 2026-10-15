@@ -356,6 +356,20 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TheFaceAroundTheEyes(unittest.TestCase):
+    """The miko's eye-white shell, no insert by depth, lay nearest her eye: it was taken for her face."""
+
+    def test_a_small_piece_beside_the_eye_is_not_the_face(self):
+        face = np.array([[x, 0.0, z] for x in np.linspace(-0.1, 0.1, 11) for z in np.linspace(1.3, 1.5, 11)])
+        shell = np.array([[0.04, -0.002, 1.42], [0.05, -0.002, 1.42], [0.045, -0.002, 1.43]])
+        insert = np.array([[0.045, -0.004, 1.425]])
+        verts = np.vstack([face, shell, insert])
+        labels = np.array([0] * len(face) + [1] * len(shell) + [2])
+        self.assertEqual(parts._face_piece(verts, labels, [2], [1, 2], [insert[0]])[0], 0)
+        # with no bigger piece about, the small one is still taken
+        self.assertEqual(parts._face_piece(verts[len(face):], labels[len(face):], [2], [1, 2], [insert[0]])[0], 1)
+
+
 class EyePairAtTheMarks(unittest.TestCase):
     """A tester's head, as measured: inner-ear pieces bigger than the eyes and 11 cm above them."""
 
