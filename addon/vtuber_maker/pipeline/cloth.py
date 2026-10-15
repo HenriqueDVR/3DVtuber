@@ -421,6 +421,10 @@ APPENDAGE_ROOT_BLEND = 0.15
 # It forks into two chains when a second end, at least this share of the length out, lies this
 # share of the length away from the first over the surface.
 APPENDAGE_FORK = 0.6
+# ... and the two chains share the vertices about the line between their halves, over this share of the
+# length: each vertex wholly on its own branch, the demon girl's wings (a chain along the top edge and one
+# along the bottom) sheared along that line when the springs moved the two apart, and tore in Warudo.
+APPENDAGE_FORK_BLEND = 0.25
 # Small pieces riding on an appendage (see attach_riders): size as a share of the height, and how
 # far (m) their median vertex may lie from it. Model C's feather and patch decorations float 1.1 to
 # 2.9 cm off her wings and tails (a 2 cm cut on half their vertices missed most, and they flew off
@@ -484,8 +488,10 @@ def build_appendage_chain(mesh_obj, armature, joints, members, index, bone=None)
         tips.append(int(piece[np.argmax(far)]))
         from_second = _surface_distance(mesh_obj, verts, [tips[1]], piece)[piece]
         branch = (from_second < from_first).astype(int)
+        second = np.clip(0.5 + (from_first - from_second) / (2 * APPENDAGE_FORK_BLEND * reach.max()), 0.0, 1.0)
     else:
         branch = np.zeros(len(piece), dtype=int)
+        second = np.zeros(len(piece))
     chains, new_weights = [], {}
     for b, tip in enumerate(tips):
         mine = branch == b
@@ -503,10 +509,14 @@ def build_appendage_chain(mesh_obj, armature, joints, members, index, bone=None)
             positions = positions[0] + np.linspace(0.0, 1.0, APPENDAGE_BONES + 1)[:, None] * (positions[-1] - positions[0])
         names = [f"Appendage{index + b}_{k}" for k in range(APPENDAGE_BONES)]
         chains.append(Chain(names, np.array(positions), bone))
-        for vertex, at in zip(piece[mine], np.clip(d[mine], 0.0, 1.0)):
-            weights = {}
-            _along_chain(weights, names, float(at), 1.0)
-            new_weights[int(vertex)] = (weights, min(float(at) / APPENDAGE_ROOT_BLEND, 1.0))
+        share = second if b else 1.0 - second
+        for vertex, at, part, own in zip(piece, np.clip(d, 0.0, 1.0), share, mine):
+            if part <= 0:
+                continue
+            weights, root = new_weights.get(int(vertex), ({}, None))
+            _along_chain(weights, names, float(at), float(part))
+            # the blend from the bone at the root goes by the vertex's own branch
+            new_weights[int(vertex)] = (weights, min(float(at) / APPENDAGE_ROOT_BLEND, 1.0) if own or root is None else root)
     _add_bones(armature, chains)
     _apply(mesh_obj, new_weights)
     return [c.names for c in chains]

@@ -62,6 +62,56 @@ class AppendageOnSyntheticCharacter(unittest.TestCase):
         self.assertLess(moved.max(), 1e-4)
 
 
+class AWingOnTwoChains(unittest.TestCase):
+    """The demon girl's wings: one surface forking into a top edge and a bottom edge, a chain along each.
+    With each vertex wholly on its own chain the membrane sheared along the line between them and tore."""
+
+    @classmethod
+    def setUpClass(cls):
+        mesh, _ = load_fixture("synthetic_character_parts")  # for a whole skeleton
+        verts = meshdata.world_vertices(mesh)
+        cls.joints = landmarks.detect_body(verts, meshdata.triangles(mesh.data))
+        cls.armature = rig.build_armature(cls.joints)
+        bone = cls.armature.data.bones[rig.BONE_NAMES["chest"]]
+        chest = np.array(cls.armature.matrix_world @ bone.head_local)
+        # a fan behind the chest, from its root out to the left, 100 degrees wide
+        rings, spokes = 12, 21
+        points = [chest + [0.0, 0.15, 0.0]]
+        for r in range(1, rings + 1):
+            for k in range(spokes):
+                a = math.radians(-50 + 100 * k / (spokes - 1))
+                reach = 0.3 + 0.15 * abs(math.degrees(a)) / 50  # the two edges reach furthest, as a wing's do
+                points.append(chest + [reach * r / rings * math.cos(a), 0.15, reach * r / rings * math.sin(a)])
+        faces = [(0, 1 + k, 2 + k) for k in range(spokes - 1)]
+        for r in range(rings - 1):
+            for k in range(spokes - 1):
+                i = 1 + r * spokes + k
+                faces.append((i, i + 1, i + spokes + 1, i + spokes))
+        data = bpy.data.meshes.new("wing")
+        data.from_pydata([list(p) for p in points], [], faces)
+        cls.mesh = bpy.data.objects.new("wing", data)
+        bpy.context.scene.collection.objects.link(cls.mesh)
+        cls.points = np.array(points)
+        cls.names = cloth.build_appendage_chain(cls.mesh, cls.armature, cls.joints, np.ones(len(points), dtype=bool), 0)
+
+    def share(self, index, chain):
+        groups = self.mesh.vertex_groups
+        return sum(g.weight for g in self.mesh.data.vertices[int(index)].groups if groups[g.group].name in chain)
+
+    def test_it_forks_into_two_chains(self):
+        self.assertEqual(len(self.names), 2)
+
+    def test_the_middle_of_the_membrane_hangs_on_both(self):
+        rim = len(self.points) - 21  # the outer ring's first vertex
+        middle = rim + 10
+        self.assertGreater(min(self.share(middle, set(c)) for c in self.names), 0.2)
+
+    def test_its_edges_hang_on_their_own_chain(self):
+        rim = len(self.points) - 21
+        for edge in (rim, rim + 20):
+            self.assertGreater(max(self.share(edge, set(c)) for c in self.names), 0.95)
+
+
 class RidersBesideTheFace(unittest.TestCase):
     """A fringe on a spring hangs in front of the face; an eye modelled as its own piece lies on the face."""
 
