@@ -39,6 +39,13 @@ FRONT_HANGS_ABOVE = 0.35
 # spiky side tufts, level with the middle of his head, hung from there on three chains and read stretched in
 # Warudo (none before), and the layer of hair under the miko's fringe ran her bangs' chains back into her head
 FRONT_DEPTH = 0.4
+# A chain hung from the front's line shorter than FRONT_TUFT (head radii, along it) and rooted over
+# FRONT_TUFT_BEHIND (head radii) behind the eyes is a tuft at the side and stays on the head: the plain boy's,
+# 0.49 to 0.75 long, 2.2 to 4.6 cm behind his eyes (his face shallow, so depth alone didn't part them), and the
+# catgirl's two short side locks (0.65, 3.5 cm). Her bangs (0.7, level with her eyes), the miko's (0.86) and the
+# demon girl's temple locks (0.80 to 0.89, 4.4 cm behind) swing.
+FRONT_TUFT = 0.78
+FRONT_TUFT_BEHIND = 0.125
 MIN_CHAIN_LENGTH = 0.4
 # Fraction of a chain's length over which weight hands over from the head bone.
 ROOT_BLEND = 0.12
@@ -112,8 +119,13 @@ def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None, off_a
             points = verts[members[in_piece]]
             if len(points) < MIN_CHAIN_VERTICES or np.ptp(points[:, 2]) < MIN_CHAIN_LENGTH * head.radius:
                 continue
+            positions = _chain_positions(points)
+            if (positions[0][2] > head.center[2] - HANGS_BELOW_CENTER * head.radius
+                    and positions[0][1] > head.center[1] - (1.0 - FRONT_TUFT_BEHIND) * head.radius
+                    and np.linalg.norm(np.diff(positions, axis=0), axis=1).sum() < FRONT_TUFT * head.radius):
+                continue
             names = [f"Hair{len(chains)}_{k}" for k in range(BONES_PER_CHAIN)]
-            chain = _Chain(names, _chain_positions(points), center + start + width / 2, width)
+            chain = _Chain(names, positions, center + start + width / 2, width)
             chains.append(chain)
             strand_chains.append(chain)
         if strand_chains:

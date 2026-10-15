@@ -208,12 +208,12 @@ class BangsOverTheForehead(unittest.TestCase):
 
 
 class ATuftBesideTheHead(unittest.TestCase):
-    """The plain boy's spiky side tufts, within the front's angle but level with the middle of his head: by
-    angle alone they hung from the front's line on chains and read stretched in Warudo."""
+    """The plain boy's spiky side tufts, within the front's angle: by angle alone they hung from the front's
+    line on chains and read stretched in Warudo. A short bang over the face still swings."""
 
-    def test_it_stays_on_the_head(self):
+    def chains(self, y):
         bpy.ops.wm.read_factory_settings(use_empty=True)
-        verts, faces = _sheet(0.04, 0.06, 1.47, 1.6, -0.03, 3, 14, 0)
+        verts, faces = _sheet(0.04, 0.06, 1.47, 1.6, y, 7, 27, 0)
         data = bpy.data.meshes.new("hair")
         data.from_pydata(verts.tolist(), [], faces.tolist())
         mesh = bpy.data.objects.new("hair", data)
@@ -229,8 +229,20 @@ class ATuftBesideTheHead(unittest.TestCase):
             bone.head, bone.tail = joints[key].tolist(), (joints[key] + [0, 0, 0.1]).tolist()
         bpy.ops.object.mode_set(mode="OBJECT")
         mesh.vertex_groups.new(name=rig.BONE_NAMES["head"]).add(list(range(len(verts))), 1.0, "REPLACE")
+        # head joint 1.4, top 1.6: radius 0.1; the eyes 1 cm in front of y -0.09, the centre at y 0
         features = {"left_eye": np.array([0.03, -0.1, 1.5]), "right_eye": np.array([-0.03, -0.1, 1.5])}
-        self.assertEqual(hair.build_hair_bones(mesh, armature, joints, features, np.ones(len(verts), dtype=bool)), [])
+        return hair.build_hair_bones(mesh, armature, joints, features, np.ones(len(verts), dtype=bool))
+
+    def test_a_tuft_level_with_the_middle_of_the_head_stays(self):
+        self.assertEqual(self.chains(-0.03), [])
+
+    def test_a_short_one_rooted_behind_the_eyes_stays(self):
+        # 6.5 cm from the front's line, 0.65 head radii, 3 cm behind the eyes: the boy's, his face shallow
+        self.assertEqual(self.chains(-0.07), [])
+
+    def test_a_short_bang_level_with_the_eyes_swings(self):
+        # the catgirl's bangs: 0.7 head radii, level with her eyes
+        self.assertEqual(len(self.chains(-0.1)), 1)
 
 
 class BangsJoinedToLongLocks(unittest.TestCase):
