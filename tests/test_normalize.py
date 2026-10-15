@@ -99,6 +99,28 @@ class TextureStepsOnARiggedFbx(unittest.TestCase):
             self.assertEqual(manifest.rig_of(glb), fbx)
             self.assertEqual(normalize.import_unrigged(glb), fbx)  # the next step names it again
 
+    def test_a_model_exported_in_parts_comes_in_as_one_mesh(self):
+        # Tripo's segmentation: 171 objects, the first a speck the views framed instead of the model
+        mesh, _ = load_fixture()
+        speck = bpy.data.objects.new("a_speck", bpy.data.meshes.new("a_speck"))
+        speck.data.from_pydata([(0, 0, 1), (.001, 0, 1), (0, 0, 1.001)], [], [(0, 1, 2)])
+        speck.data.materials.append(mesh.data.materials[0] if mesh.data.materials else bpy.data.materials.new("m"))
+        bpy.context.scene.collection.objects.link(speck)
+        bpy.context.view_layer.update()
+        count = len(mesh.data.vertices) + 3
+        expected = np.vstack([meshdata.world_vertices(mesh), meshdata.world_vertices(speck)])
+        with tempfile.TemporaryDirectory() as folder:
+            glb = Path(folder) / "parts.glb"
+            bpy.ops.export_scene.gltf(filepath=str(glb), export_format="GLB")
+            bpy.ops.wm.read_factory_settings(use_empty=True)
+            normalize.import_unrigged(glb)
+            meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+            self.assertEqual(len(meshes), 1)
+            got = meshdata.world_vertices(meshes[0])
+            self.assertGreaterEqual(len(got), count)  # a GLB splits vertices at UV seams
+            np.testing.assert_allclose(got.min(axis=0), expected.min(axis=0), atol=1e-4)
+            np.testing.assert_allclose(got.max(axis=0), expected.max(axis=0), atol=1e-4)
+
 
 class AlphaOfAPictureOpaqueWhereItIsUsed(unittest.TestCase):
     """A flat-colour FBX (a palette, its unused cells clear) came in with the palette's alpha wired

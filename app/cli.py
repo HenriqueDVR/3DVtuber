@@ -789,7 +789,12 @@ def _frame(survey, height):
     horns, her mouth at the picture's lower edge. The head view is sized by the body too.
     """
     whole = max(float((survey or {}).get("size", [0, 0, height])[2]), height)
-    body = round(height / whole, 3)
+    body = height / whole
+    share = float(((survey or {}).get("head") or {}).get("height") or 0)
+    if share > BIG_HEAD:
+        # a chibi's head: sized for a grown body's, the view held her eyes cut at its edges and no mouth
+        body *= share / HEAD_SHARE
+    body = round(body, 3)
     if survey and survey.get("eyes"):
         # the modelled eyes, a little under the face's middle
         return round((survey["eyes"][2] - FACE_BELOW_EYES * height) / whole, 3), body
@@ -825,6 +830,10 @@ def _patched(model):
 FACE_ABOVE_HEAD = 0.04
 # ... and this share under the eyes, so the mouth and chin are in the frame too.
 FACE_BELOW_EYES = 0.02
+# The head's share of the height (survey "head.height") the head view is sized for: grown bodies
+# measure 0.19 to 0.25. Over BIG_HEAD (chibis: 0.44 to 0.58) the view grows with the head.
+HEAD_SHARE = 0.23
+BIG_HEAD = 0.3
 
 FACE_KEYS = {"right_eye": ("inner", "outer", "top", "bottom"), "left_eye": ("inner", "outer", "top", "bottom"),
              "mouth": ("left", "right", "top", "bottom")}

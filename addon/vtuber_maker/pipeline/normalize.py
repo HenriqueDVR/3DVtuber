@@ -47,6 +47,7 @@ def import_unrigged(path):
     old = set(bpy.data.objects)
     import_model(path)
     imported = [obj for obj in bpy.data.objects if obj not in old]
+    meshes = [obj for obj in imported if obj.type == "MESH"]
     if any(obj.type == "ARMATURE" for obj in imported):
         for obj in imported:
             if obj.type != "MESH":
@@ -60,6 +61,17 @@ def import_unrigged(path):
         for obj in imported:
             if obj.type == "ARMATURE":
                 bpy.data.objects.remove(obj)
+    # One mesh, as the build joins them (prepare): the texture steps read "the mesh", and of a model
+    # exported in parts (Tripo's segmentation: 171 objects) the first was a speck of 3 mm, which the
+    # views framed and the face patch searched for a face.
+    if len(meshes) > 1:
+        for obj in meshes:
+            if obj.data.users > 1:
+                obj.data = obj.data.copy()
+        make_active(meshes[0])
+        for obj in meshes[1:]:
+            obj.select_set(True)
+        bpy.ops.object.join()
     return manifest.rig_of(path)
 
 

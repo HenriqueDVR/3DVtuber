@@ -63,12 +63,17 @@ SKIN_DISTANCE = 0.25
 LOPSIDED = 0.08
 
 
-def survey(mesh_obj, joint_warnings=(), marked=None):
+def survey(mesh_obj, joint_warnings=(), marked=None, joints_override=None):
     """Measure a prepared character and work out how it should be built.
 
     `marked` are the face points when the eyes have been marked: the eye inserts are then the pair
     at the marks (parts.find `eyes_at`). By size alone the fox girl's inner-ear pieces were her
     "eyes", an ear her face, and her real face counted as hair.
+
+    `joints_override`: joints that stand over the detected ones, as the build takes them (a rig of
+    this model made elsewhere, adopt.joints). The demon girl's wings read as arms hanging at 30
+    degrees on some copies of her: head 13 cm high, no eyes found, the face patch framed on her crown
+    and her eyes sent to the sliding patch, while the build, on Tripo's joints, found them.
 
     Returns a dict of measurements, `notes` worth telling the user, and the build
     `options` the mesh asks for (the keys build_avatar takes). Nothing here changes
@@ -82,6 +87,7 @@ def survey(mesh_obj, joint_warnings=(), marked=None):
 
     joints = landmarks.detect_body(verts, tris, warnings)
     joints = landmarks.refine_limbs(verts, tris, joints)
+    joints.update({k: np.asarray(v, dtype=float) for k, v in (joints_override or {}).items()})
     found = _find_parts(mesh_obj, joints, face_points.eye_places(mesh_obj, marked))
 
     report = {

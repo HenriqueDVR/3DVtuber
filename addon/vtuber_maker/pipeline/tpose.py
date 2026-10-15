@@ -553,7 +553,10 @@ def relax_thumb_web(mesh_obj, armature_obj, side, passes=None):
     names = hand_setup._names(side)
     groups = {mesh_obj.vertex_groups[n].index: n for n in names if n in mesh_obj.vertex_groups}
     thumb = {i for i, n in groups.items() if n in names[1:4]}
-    if not passes or not thumb or names[0] not in armature_obj.data.bones:
+    proximal = [finger_rig.bone_name(side, f, "proximal") for f in finger_rig.FINGERS[1:]]
+    # the hand's frame is read from all four knuckles: a hand the finger step found only some
+    # fingers on (the princess's gloves: thumb, index, middle) stopped the T-pose step
+    if not passes or not thumb or any(n not in armature_obj.data.bones for n in [names[0], *proximal]):
         return 0
     verts = meshdata.world_vertices(mesh_obj)
     count = len(verts)
@@ -571,8 +574,7 @@ def relax_thumb_web(mesh_obj, armature_obj, side, passes=None):
     head = lambda n: np.array(world @ armature_obj.data.bones[n].head_local)
     tail = lambda n: np.array(world @ armature_obj.data.bones[n].tail_local)
     wrist = head(names[0])
-    frame = finger_guides._hand_frame(
-        wrist, [head(finger_rig.bone_name(side, f, "proximal")) for f in finger_rig.FINGERS[1:]], side)
+    frame = finger_guides._hand_frame(wrist, [head(n) for n in proximal], side)
     share = held / np.maximum(budget, 1e-9)
     web = (finger_guides.hand_piece(mesh_obj, side, verts) & (budget > .5) & (share > .02) & (share < .98)
            & ((verts - wrist) @ frame["along"] > WEB_FROM * frame["length"]))

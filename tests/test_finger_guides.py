@@ -208,6 +208,16 @@ class FingerGuides(unittest.TestCase):
             return float(np.linalg.norm(summed[moved] / degree[moved, None] - co[moved], axis=1).mean())
         self.assertLess(roughness(after), roughness(before))
 
+    def test_a_hand_missing_a_finger_is_left_as_it_is(self):
+        # the princess's gloves: the finger step found thumb, index and middle on one hand
+        mesh, arm, _ = build(math.radians(35))
+        finger_guides.rebuild(mesh, arm, sides=("left",))
+        tpose.to_t_pose(mesh, arm, straighten="spec")
+        arm.data.bones[fingers.bone_name("left", "ring", "proximal")].name = "not a ring finger"
+        before = np.array([v.co for v in mesh.data.vertices])
+        self.assertEqual(tpose.relax_thumb_web(mesh, arm, "left"), 0)
+        self.assertTrue(np.array_equal(np.array([v.co for v in mesh.data.vertices]), before))
+
     def test_opened_fingers_lie_level_with_their_knuckles_at_one_height(self):
         mesh, arm, _ = build(math.radians(35))
         finger_guides.rebuild(mesh, arm, sides=("left",))
