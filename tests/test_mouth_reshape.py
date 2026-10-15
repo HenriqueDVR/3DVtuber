@@ -247,6 +247,38 @@ class AnUpperLipOverTheMouth(unittest.TestCase):
         self.assertAlmostEqual(pushed[0, 1], -0.01 - face_rig.MOUTH_SURFACE_GAP, places=6)
 
 
+class ALipComingDownOverTheMouth(unittest.TestCase):
+    """The miko's upper lip, 10 mm in front of her drawn mouth, came down over it in a frown: skin through the
+    mouth in Warudo. The lip stops at the mouth's edge; the mouth stays where it is."""
+
+    def test_the_lip_stops_short_of_the_mouth(self):
+        from mathutils import Vector
+        from mathutils.bvhtree import BVHTree
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        quad = lambda x0, x1, z0, z1, y: [(x0, y, z0), (x1, y, z0), (x1, y, z1), (x0, y, z1)]
+        verts = quad(-0.05, 0.05, -0.05, 0.05, 0.0)                      # the face
+        verts += quad(-0.01, 0.01, -0.002, 0.002, -face_rig.MOUTH_SURFACE_GAP)  # the drawn mouth
+        verts += quad(-0.015, 0.015, 0.003, 0.01, -0.01)                  # the lip standing out above it
+        mesh = bpy.data.meshes.new("face")
+        mesh.from_pydata(verts, [], [(0, 1, 2, 3), (4, 5, 6, 7), (8, 9, 10, 11)])
+        obj = bpy.data.objects.new("face", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        grid = np.zeros((12, 3))
+        grid[4:8, 2] = 1.0
+        mesh.attributes.new(face_rig.MOUTH_GRID_ATTRIBUTE, "FLOAT_VECTOR", "POINT").data.foreach_set("vector", grid.ravel())
+        obj.shape_key_add(name="Basis")
+        frown = obj.shape_key_add(name="mouthFrownLeft")
+        for i in range(8, 12):
+            frown.data[i].co.z -= 0.008  # down over the mouth
+        self.assertGreater(face_rig.lip_off_mouth(obj), 0)
+        moved = np.array([v.co for v in frown.data])
+        face = BVHTree.FromPolygons([Vector(v) for v in moved], [(0, 1, 2, 3), (8, 9, 10, 11)])
+        for x, y, z in moved[4:8]:
+            hit = face.ray_cast(Vector((x, y - 0.03, z)), Vector((0.0, 1.0, 0.0)), 0.06)[0]
+            self.assertTrue(hit is None or hit.y > y, "skin in front of the mouth")
+        np.testing.assert_allclose(moved[4:8], np.array(verts[4:8]), atol=1e-7)  # the mouth stays
+
+
 class AnInsertThatIsNoEye(unittest.TestCase):
     """The lid blink is sized from the eye insert. A girl in glasses had a scrap of 4 x 5.5 mm found for it
     in an eye marked 39 x 31 mm: her blink moved 1.3 mm. Model B's inserts, a quarter of her marked eyes'

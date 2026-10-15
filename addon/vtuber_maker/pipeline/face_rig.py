@@ -595,6 +595,60 @@ def patch_in_front(obj):
     return changed
 
 
+# Rounds of halving the move of overhanging skin that comes over the drawn mouth in a key (lip_off_mouth).
+LIP_TRIES = 6
+
+
+def lip_off_mouth(obj):
+    """In every shape key but the basis, overhanging skin (MOUTH_OVERHANG in front of the mouth at rest: an upper
+    lip) that comes in front of the drawn mouth moves less, halved round by round (LIP_TRIES), until none covers
+    it; returns how many vertices were held back. The mouth itself is left where patch_in_front put it.
+
+    The miko's and the chibi's upper lips came down over their mouths in a frown (13 mm in front of 7 of 99 mouth
+    points) and a smile: skin through the mouth in Warudo. Pushing the mouth out after the lip floated it 14 mm in
+    profile; the lip stops at the mouth's edge instead.
+    """
+    mesh = obj.data
+    if MOUTH_GRID_ATTRIBUTE not in mesh.attributes or mesh.shape_keys is None:
+        return 0
+    grid = np.empty(len(mesh.vertices) * 3)
+    mesh.attributes[MOUTH_GRID_ATTRIBUTE].data.foreach_get("vector", grid)
+    patch = grid.reshape(-1, 3)[:, 2] > 0.5
+    if not patch.any():
+        return 0
+    polygons = [p.vertices[:] for p in mesh.polygons if not patch[list(p.vertices)].all()]
+    rest = np.empty(len(mesh.vertices) * 3)
+    mesh.shape_keys.reference_key.data.foreach_get("co", rest)
+    rest = rest.reshape(-1, 3)
+    rest_depth = np.array([rest[list(p), 1].mean() for p in polygons])
+    mouth_rest = rest[patch, 1]
+    held = set()
+    for key in mesh.shape_keys.key_blocks:
+        if key == mesh.shape_keys.reference_key:
+            continue
+        values = np.empty(len(key.data) * 3)
+        key.data.foreach_get("co", values)
+        moved = values.reshape(-1, 3)
+        changed = False
+        for _ in range(LIP_TRIES):
+            surface = BVHTree.FromPolygons([Vector(v) for v in moved], polygons)
+            over = set()
+            for (x, y, z), behind in zip(moved[patch], mouth_rest):
+                hit = surface.ray_cast(Vector((x, y - 0.03, z)), Vector((0.0, 1.0, 0.0)), 0.06)
+                if hit[0] is not None and hit[0].y < y and rest_depth[hit[2]] <= behind - MOUTH_OVERHANG:
+                    over.update(polygons[hit[2]])
+            if not over:
+                break
+            index = np.fromiter(over, dtype=np.int64)
+            moved[index] = rest[index] + 0.5 * (moved[index] - rest[index])
+            held.update(over)
+            changed = True
+        if changed:
+            key.data.foreach_set("co", moved.astype(np.float32).ravel())
+    mesh.update()
+    return len(held)
+
+
 def _in_front_of_face(points, surface, cell, samples=5, skip=None):
     """Like _onto_face, but in front of the frontmost face seen anywhere within a cell (x, z) round each point.
 
