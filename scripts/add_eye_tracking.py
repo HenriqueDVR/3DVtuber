@@ -34,6 +34,39 @@ RANGE_NAMES = ("horizontal_outer", "horizontal_inner", "vertical_up", "vertical_
 # girl's moved 2.8 mm in openings 24 mm tall and her eyes stayed open in "blink" (OC3's, good in Warudo:
 # 7.3 of 28.8).
 BLINK_LEAST = 0.2
+# ... and so does one whose eye inserts cover under this share of the drawn opening: the lid blink closes the
+# inserts, and the knight's (discs in sockets lower than his drawn eyes, 52%) left his drawing open in "blink" with
+# the iris over the lashes. OC3's inserts are the whole eye (77%), the demon girl's 12%.
+INSERT_COVER_LEAST = 0.6
+
+
+def inserts_cover(obj, built):
+    """The smaller of the two eyes' share of the drawn opening that lies within its eye inserts' box (world x, z);
+    1 for a model with no inserts."""
+    mesh = obj.data
+    if face_rig.EYE_INSERT_ATTRIBUTE not in mesh.attributes:
+        return 1.0
+    inserted = eyes.get_int(mesh, face_rig.EYE_INSERT_ATTRIBUTE) > 0
+    if not inserted.any():
+        return 1.0
+    xz = meshdata.world_vertices(obj)[:, [0, 2]]
+    face = eyes.FacePatch(obj)
+    shares = []
+    for info in built["eyes"].values():
+        window = face.world(info["window_pixels"])
+        mine = inserted & (np.sign(xz[:, 0]) == np.sign(window[:, 0].mean()))
+        if not mine.any() or not len(window):
+            shares.append(0.0)
+            continue
+        low, high = xz[mine].min(axis=0), xz[mine].max(axis=0)
+        shares.append(float(np.all((window >= low) & (window <= high), axis=1).mean()))
+    return min(shares) if shares else 1.0
+
+
+def squeezed(failures):
+    """The moving iris's failures with a squeeze blink: the iris left in the slit of an eye squeezed shut is the
+    blink as painted eyes have it (the knight's), not an iris over the lids."""
+    return [failure for failure in failures if "with eyeBlink" not in failure]
 
 
 def lid_travel(obj):
@@ -128,9 +161,11 @@ def main():
         built = eyes.add_moving_irises(obj, points, still_iris=args.still_iris, travel=args.travel, only=args.only,
                                        upright=args.upright)
         tallest = min(info["opening_size"][1] for info in built["eyes"].values())
-        squeeze = lids < BLINK_LEAST * tallest
+        cover = inserts_cover(obj, built)
+        squeeze = lids < BLINK_LEAST * tallest or cover < INSERT_COVER_LEAST
         if squeeze:
-            print(f"the lids blink {1000 * lids:.1f} mm in openings {1000 * tallest:.1f} mm tall: the whole eye squeezes instead")
+            print(f"the lids blink {1000 * lids:.1f} mm in openings {1000 * tallest:.1f} mm tall, over {cover:.0%} of the "
+                  f"drawing: the whole eye squeezes instead")
             bpy.ops.wm.revert_mainfile()
             arm = next(o for o in bpy.data.objects if o.type == "ARMATURE")
             obj = next(o for o in bpy.data.objects if o.type == "MESH" and o.parent == arm)
@@ -144,6 +179,8 @@ def main():
             eyes.scale_blinks(obj, args.lid_travel)
         parts = built["eyes"]
         numbers, failures = eyes.check_irises(obj, built)
+        if squeeze:
+            failures = squeezed(failures)
         if built["misread"]:
             # no retry can mend it: the iris read is the whole eye, so it looks round as the eye itself
             failures = ["both irises read nearly as wide as their eyes: no iris to move here"] + failures
@@ -175,6 +212,8 @@ def main():
                 eyes.scale_blinks(obj, args.lid_travel)
             parts = built["eyes"]
             numbers, failures = eyes.check_irises(obj, built)
+            if squeeze:
+                failures = squeezed(failures)
         report_irises(built, numbers)
     if args.only:
         covered = "right" if args.only == "left" else "left"

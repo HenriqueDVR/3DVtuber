@@ -34,5 +34,15 @@ class TheLidsBlink(unittest.TestCase):
         self.assertLess(step.lid_travel(obj), step.BLINK_LEAST * 0.024)
 
 
+class ASqueezeBlink(unittest.TestCase):
+    """The knight's drawn eyes squeezed shut to a slit: the iris left in it is the blink, not an iris over the lids."""
+
+    def test_only_looks_with_a_blink_are_let_through(self):
+        step = load()
+        failures = ["iris shows over the lids, left eye looking ahead with eyeBlinkLeft: 142 of 368 points",
+                    "iris shows over the lids, right eye looking In+Up: 8 of 377 points"]
+        self.assertEqual(step.squeezed(failures), failures[1:])
+
+
 if __name__ == "__main__":
     unittest.main()
