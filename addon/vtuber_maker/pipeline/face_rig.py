@@ -595,6 +595,55 @@ def patch_in_front(obj):
     return changed
 
 
+# The skin above a drawn mouth eased back to just behind the mouth (flatten_lip): from its top edge up to this
+# share of its width, the ease fading to nothing there (below the nose), and this share past its corners.
+LIP_FLAT_ABOVE = 0.4
+LIP_FLAT_SIDES = 0.2
+
+
+def flatten_lip(obj):
+    """Ease the skin over a drawn mouth back to just behind it (MOUTH_SURFACE_GAP), in the basis and every key alike
+    (the keys' moves kept); returns the deepest ease (m). Leaves the mouth, and the face beside and below it, alone.
+
+    An anime face has no lip over a drawn mouth: the miko's upper lip stood 3.5 mm proud of the mouth's top edge and
+    5.1 mm above it, and from a little below (a webcam's view) it hid the mouth's top as she talked: "the mouth
+    clips with the lip" in Warudo. patch_in_front won't push a mouth out past such an overhang (MOUTH_OVERHANG).
+    """
+    mesh = obj.data
+    if MOUTH_GRID_ATTRIBUTE not in mesh.attributes or mesh.shape_keys is None:
+        return 0.0
+    grid = np.empty(len(mesh.vertices) * 3)
+    mesh.attributes[MOUTH_GRID_ATTRIBUTE].data.foreach_get("vector", grid)
+    patch = grid.reshape(-1, 3)[:, 2] > 0.5
+    if not patch.any():
+        return 0.0
+    rest = np.empty(len(mesh.vertices) * 3)
+    mesh.shape_keys.reference_key.data.foreach_get("co", rest)
+    rest = rest.reshape(-1, 3)
+    mouth = rest[patch]
+    left, right, top = mouth[:, 0].min(), mouth[:, 0].max(), mouth[:, 2].max()
+    width = max(right - left, 1e-6)
+    behind = float(mouth[:, 1].min()) + MOUTH_SURFACE_GAP  # the face lies behind the mouth (facing -Y)
+    x, y, z = rest[:, 0], rest[:, 1], rest[:, 2]
+    sides = np.clip(1.0 - np.maximum(np.maximum(left - x, x - right), 0.0) / (LIP_FLAT_SIDES * width), 0.0, 1.0)
+    above = np.clip(1.0 - (z - top) / (LIP_FLAT_ABOVE * width), 0.0, 1.0) * (z >= top)
+    near = ~patch & (np.abs(y - behind) < 0.5 * width)  # the face round the mouth, not hair or a hat in front of it
+    ease = np.where(near, np.maximum(behind - y, 0.0) * sides * above, 0.0)
+    if not (ease > 1e-6).any():
+        return 0.0
+    for key in mesh.shape_keys.key_blocks:
+        values = np.empty(len(key.data) * 3)
+        key.data.foreach_get("co", values)
+        moved = values.reshape(-1, 3)
+        moved[:, 1] += ease
+        key.data.foreach_set("co", moved.astype(np.float32).ravel())
+    coords = rest.copy()
+    coords[:, 1] += ease
+    mesh.vertices.foreach_set("co", coords.astype(np.float32).ravel())
+    mesh.update()
+    return float(ease.max())
+
+
 # Rounds of halving the move of overhanging skin that comes over the drawn mouth in a key (lip_off_mouth).
 LIP_TRIES = 6
 
