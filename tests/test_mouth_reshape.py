@@ -230,6 +230,23 @@ class TrackerShapesOnABigFreeMouth(TrackerShapesOnASmallFreeMouth):
         np.testing.assert_allclose(funnel[self.patch, 0], oh[self.patch, 0], atol=1e-6)
 
 
+class AnUpperLipOverTheMouth(unittest.TestCase):
+    """The catgirl's upper lip stands 10 mm in front of her drawn mouth; in a frown it came down into its
+    line and the mouth was pushed out in front of it, floating in profile."""
+
+    def test_the_mouth_stays_behind_an_overhang(self):
+        from mathutils import Vector
+        from mathutils.bvhtree import BVHTree
+        quad = lambda y: [(-0.01, y, -0.01), (0.01, y, -0.01), (0.01, y, 0.01), (-0.01, y, 0.01)]
+        surface = BVHTree.FromPolygons([Vector(v) for v in quad(0.0) + quad(-0.01)], [(0, 1, 2, 3), (4, 5, 6, 7)])
+        point = np.array([[0.0, -face_rig.MOUTH_SURFACE_GAP, 0.0]])
+        # skin behind the mouth at rest counts, the lip that stood 10 mm in front of it doesn't
+        kept = face_rig._in_front_of_face(point, surface, (1e-4, 1e-4), skip=(np.array([0.0, -0.01]), point[:, 1]))
+        self.assertAlmostEqual(kept[0, 1], -face_rig.MOUTH_SURFACE_GAP, places=6)
+        pushed = face_rig._in_front_of_face(point, surface, (1e-4, 1e-4))
+        self.assertAlmostEqual(pushed[0, 1], -0.01 - face_rig.MOUTH_SURFACE_GAP, places=6)
+
+
 class AnInsertThatIsNoEye(unittest.TestCase):
     """The lid blink is sized from the eye insert. A girl in glasses had a scrap of 4 x 5.5 mm found for it
     in an eye marked 39 x 31 mm: her blink moved 1.3 mm. Model B's inserts, a quarter of her marked eyes'

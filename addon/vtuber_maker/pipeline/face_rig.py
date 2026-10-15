@@ -103,6 +103,11 @@ MOUTH_COVER_GAP = 0.0004
 # (0.8 mm until 2026-10-08: between a closed mouth and an opening the patch cuts the face's curve, and
 # skin stood 0.12 mm through it at a third of "ee" on model D)
 MOUTH_SURFACE_GAP = 0.0012
+# Face that stood this far (m) in front of a point of the mouth at rest is an overhang (an upper lip), not
+# skin coming through it, and patch_in_front leaves it alone: the catgirl's upper lip, 10 mm in front of her
+# drawn mouth, came down 1.6 mm into its line in a frown and the mouth was pushed 10.6 mm out after it,
+# floating in profile. Skin coming through lay behind or level at rest (the princess's, 5 mm).
+MOUTH_OVERHANG = 0.003
 # Modelled mouths barely move their lips: the mouth-inside patch shows the opening.
 MODELLED_MOUTH_OPENING = 0.45
 # reshape_mouth: an open mouth hangs from the mouth line, its top MOUTH_TOP_LIFT mouth widths above
@@ -564,6 +569,12 @@ def patch_in_front(obj):
     if not patch.any():
         return 0
     polygons = [p.vertices[:] for p in mesh.polygons if not patch[list(p.vertices)].all()]
+    rest = np.empty(len(mesh.vertices) * 3)
+    mesh.shape_keys.reference_key.data.foreach_get("co", rest)
+    rest = rest.reshape(-1, 3)
+    # each polygon's depth at rest, and the mouth's own there
+    rest_depth = np.array([rest[list(p), 1].mean() for p in polygons])
+    mouth_rest = rest[patch, 1]
     changed = 0
     for key in mesh.shape_keys.key_blocks:
         values = np.empty(len(key.data) * 3)
@@ -572,7 +583,7 @@ def patch_in_front(obj):
         shape = moved[patch]
         cell = (np.ptp(shape[:, 0]) / MOUTH_COLUMNS, max(np.ptp(shape[:, 2]) / MOUTH_ROWS, 1e-4))
         surface = BVHTree.FromPolygons([Vector(v) for v in moved], polygons)
-        ahead = np.minimum(shape[:, 1], _in_front_of_face(shape, surface, cell)[:, 1])
+        ahead = np.minimum(shape[:, 1], _in_front_of_face(shape, surface, cell, skip=(rest_depth, mouth_rest))[:, 1])
         if (ahead < shape[:, 1] - 1e-7).any():
             shape[:, 1] = ahead
             moved[patch] = shape
@@ -584,13 +595,17 @@ def patch_in_front(obj):
     return changed
 
 
-def _in_front_of_face(points, surface, cell, samples=5):
-    """Like _onto_face, but in front of the frontmost face seen anywhere within a cell (x, z) round each point."""
+def _in_front_of_face(points, surface, cell, samples=5, skip=None):
+    """Like _onto_face, but in front of the frontmost face seen anywhere within a cell (x, z) round each point.
+
+    `skip`: (each polygon's depth at rest, each point's): a polygon over MOUTH_OVERHANG in front of the point
+    at rest isn't counted (see MOUTH_OVERHANG)."""
     result = points.copy()
     offsets = [(dx, dz) for dx in np.linspace(-cell[0], cell[0], samples) for dz in np.linspace(-cell[1], cell[1], samples)]
     for index, (x, y, z) in enumerate(points):
-        hits = [surface.ray_cast(Vector((x + dx, y - 0.03, z + dz)), Vector((0.0, 1.0, 0.0)), 0.06)[0] for dx, dz in offsets]
-        depths = [hit.y for hit in hits if hit is not None]
+        hits = [surface.ray_cast(Vector((x + dx, y - 0.03, z + dz)), Vector((0.0, 1.0, 0.0)), 0.06) for dx, dz in offsets]
+        depths = [hit[0].y for hit in hits if hit[0] is not None
+                  and (skip is None or skip[0][hit[2]] > skip[1][index] - MOUTH_OVERHANG)]
         if depths:
             result[index, 1] = min(depths) - MOUTH_SURFACE_GAP
     return result
