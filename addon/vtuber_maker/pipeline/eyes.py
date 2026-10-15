@@ -901,6 +901,39 @@ def _filled(values):
     return np.interp(np.arange(len(values)), np.nonzero(good)[0], values[good])
 
 
+def _frame_depth(flat, outside_eye, beyond_reach):
+    """A lid frame's depth: `flat` (in front of the disc), never in front of the face where the picture is no
+    eye (`outside_eye`), and just in front of the face, wherever it is, past the iris's reach (`beyond_reach`;
+    NaN where those don't apply)."""
+    depth = np.fmax(flat, outside_eye - FRAME_GAP)
+    beyond = np.isfinite(beyond_reach)
+    depth[beyond] = beyond_reach[beyond] - FRAME_GAP
+    return depth
+
+
+def _box_points(face, low, high):
+    """World (x, z) of every face-picture pixel centre in the box `low`..`high` (world x, z)."""
+    corners = face.pixel(np.array([low, high]))
+    (u0, v0), (u1, v1) = np.floor(corners.min(axis=0)).astype(int), np.ceil(corners.max(axis=0)).astype(int)
+    us, vs = np.meshgrid(np.arange(u0, u1 + 1), np.arange(v0, v1 + 1))
+    return face.world(np.stack([us.ravel() + 0.5, vs.ravel() + 0.5], axis=1))
+
+
+def _outside_reach(face, xz, centre, radii, shape, fill=False):
+    """A picture mask true at `xz`'s own pixels when they lie outside the ellipse `centre` (x, z), `radii`: what
+    _face_outside reads the face at past an iris's reach, and nowhere else. With `fill`, false at the pixels
+    inside the ellipse instead (and true everywhere else): the reach itself, inverted."""
+    xz = np.asarray(xz, float)
+    inside = np.ones(shape, bool)
+    out = (((xz - centre) / np.maximum(radii, 1e-6)) ** 2).sum(axis=1) > 1.0
+    if fill:
+        out = ~out
+    px = np.floor(face.pixel(xz[out])).astype(int)
+    on = (px[:, 0] >= 0) & (px[:, 0] < shape[1]) & (px[:, 1] >= 0) & (px[:, 1] < shape[0])
+    inside[px[on, 1], px[on, 0]] = False
+    return inside
+
+
 def _face_outside(surface, xz, face, inside):
     """World depth (y) of `surface` seen from the front at each (x, z) whose face-picture pixel isn't in the
     mask `inside` (the whole picture's); NaN at the others and where nothing is hit."""
@@ -2005,7 +2038,9 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
     frame_rows[..., 3][windows] = 0.0
     iris_slot = _material_like(mesh, IRIS_MATERIAL, new_image(IRIS_MATERIAL, iris_rows))
     cut_out(mesh.materials[iris_slot])
-    frame_slot = _material_like(mesh, LIDS_MATERIAL, new_image(LIDS_MATERIAL, frame_rows))
+    frame_image = new_image(LIDS_MATERIAL, frame_rows)
+    frame_slot = _material_like(mesh, LIDS_MATERIAL, frame_image)
+    reached = np.zeros(rows.shape[:2], bool)  # where an iris can go, to show the frame at (below)
     cut_out(mesh.materials[frame_slot])
     boxes = mesh_obj.get(face_rig.PAINTED_EYES_PROPERTY)
     for side, info in parts.items():
@@ -2024,15 +2059,23 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
         on_disc = lambda xz, c=centre, d=spread: np.clip(xz, c - d / 2, c + d / 2)  # noqa: E731
         forward = max(0.0, float(-info["curve"].off.min()))  # where the disc stands in front of its curve
         flat = lambda xz, curve=info["curve"], on=on_disc, f=forward: curve(on(np.asarray(xz, float))) - f - FRAME_GAP  # noqa: E731
-        info["frame_vertices"] = _add_grid(mesh_obj, np.array([low, high]), flat, face.uv, *FRAME_GRID, frame_slot,
+        # ... and where the picture is no eye, just in front of the face: flat over its box, the miko's stood up
+        # to 11 mm out of her face with the face's picture on it
+        skin = _skin_tree(mesh_obj, patch_slot)
+        # ... and past where the iris can ever go (its disc and its slide, round), just in front of the face, in front
+        # of it or behind: held flat over the whole box, the frame carried the face's picture on a plane, a square
+        # round each of the miko's eyes and a flat sheet through her face from the side in Warudo
+        hugging = lambda xz, f=flat, s=skin, c=centre, r=spread / 2 + reach: _frame_depth(  # noqa: E731
+            f(xz), _face_outside(s, xz, face, as_painted), _face_outside(s, xz, face, _outside_reach(face, xz, c, r, as_painted.shape)))
+        info["frame_vertices"] = _add_grid(mesh_obj, np.array([low, high]), hugging, face.uv, *FRAME_GRID, frame_slot,
                                             BONE_NAMES["head"], {LID_ATTRIBUTE: SIDE_IDS[side], face_rig.FIXED_ATTRIBUTE: 1})
+        reached |= ~_outside_reach(face, _box_points(face, low, high), centre, spread / 2 + reach, reached.shape, fill=True)
         # the white, on a surface of its own right behind the disc (see WHITE_ROUND)
         wide = (np.minimum(low, info["opened"][0] - WHITE_ROUND), np.maximum(high, info["opened"][1] + WHITE_ROUND))
         deep = lambda xz, curve=info["curve"], on=on_disc, d=deepest: curve(on(np.asarray(xz, float))) + d + 2 * BACKING_GAP  # noqa: E731
         # ... and outside the eye as painted, behind the face: the sheet is flat over a box round the opening,
         # and at the box's corners the face curves away in front of nothing: the miko's stood 12.5 mm out of her
         # face there, "a flat plane on the eyes" in Warudo
-        skin = _skin_tree(mesh_obj, patch_slot)
         behind = lambda xz, f=deep, s=skin: np.fmax(f(xz), _face_outside(s, xz, face, as_painted) + BACKING_GAP)  # noqa: E731
         info["socket_depth"] = _socket_depth(others, info["opened"], info["curve"], on_disc)
         backing = _add_grid(mesh_obj, np.array(wide), behind, face.uv, *FRAME_GRID, patch_slot,
@@ -2041,6 +2084,9 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
             _blink_as_painted(mesh_obj, info["frame_vertices"], tuple(boxes[side]), f"eyeBlink{side.title()}")
             _blink_as_painted(mesh_obj, backing, tuple(boxes[side]), f"eyeBlink{side.title()}")
         info["white_vertices"] = np.concatenate([info["white_vertices"], backing])
+    # ... and the frame shows only there: past it the face itself shows, the same picture on its own surface
+    frame_rows[..., 3][~reached] = 0.0
+    _store(frame_image, frame_rows)
     _slide_keys(mesh_obj, parts, lambda side, xz: parts[side]["curve"].moved(xz))
     mesh.update()
     crops = {name: crop_to_use(mesh, name) for name in (LIDS_MATERIAL, IRIS_MATERIAL)}
