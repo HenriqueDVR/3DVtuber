@@ -40,6 +40,8 @@ HIDDEN_RADIUS = 0.06
 BELOW_CROWN = 0.06
 HIDDEN_RADIUS_BELOW_CROWN = 0.08
 MAX_TIE_VERTS = 2000
+# Share of a tie's vertices nearer the hair than anything else (see the tie rule in main).
+TIE_IN_HAIR = 0.5
 
 
 def hair_color_share(mesh, image):
@@ -67,6 +69,17 @@ def segment_distance(points, head, tail):
     s = tail - head
     a = np.clip((points - head) @ s / (s @ s), 0.0, 1.0)
     return np.linalg.norm(points - (head + a[:, None] * s), axis=1)
+
+
+def in_the_hair(points, hair_tree, others):
+    """Share of `points` nearer the hair (a KDTree of it) than any of `others`; 1 with no others."""
+    if not len(others):
+        return 1.0
+    tree = KDTree(len(others))
+    for k, p in enumerate(others):
+        tree.insert(p, k)
+    tree.balance()
+    return float(np.mean([hair_tree.find(p)[2] < tree.find(p)[2] for p in points]))
 
 
 def main():
@@ -118,6 +131,11 @@ def main():
             continue
         body = np.mean([max(weights(i), key=weights(i).get) in BODY_BONES for i in members[:: max(1, len(members) // 20)]])
         if body < 0.5:
+            continue
+        # a tie sits in the hair, not on the clothes: the miko's red waist bow, 8-10 cm from her hair and
+        # 1-2 cm from her hakama, swung with her front locks and stood off her body (OC3's ties: all nearer
+        # the hair; the bow 0-8%)
+        if in_the_hair(verts[members], tree, verts[(hair_w <= 0.5) & (labels != part)]) < TIE_IN_HAIR:
             continue
         for i in members:
             _co, k, _d = tree.find(verts[i])
@@ -214,4 +232,5 @@ def export(arm, out_blend, out_vrm):
         print("exported", bpy.ops.export_scene.vrm(filepath=bpy.path.abspath(out_vrm), armature_object_name=arm.name))
 
 
-main()
+if __name__ == "__main__":
+    main()
