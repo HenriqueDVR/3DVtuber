@@ -487,11 +487,23 @@ class MovingIrisReading(unittest.TestCase):
         eyes._mirror_misread(reads)
         self.assertEqual(reads["left"][4], good)
 
-    def test_a_moving_iris_never_slides_past_its_narrow_side(self):
-        found = {"left": {"white_outer": 0.0053, "white_inner": 0.0029, "iris_size": (0.022, 0.024)},
-                 "right": {"white_outer": 0.0067, "white_inner": 0.0018, "iris_size": (0.021, 0.022)}}
+    def test_both_irises_read_as_wide_as_their_eyes_are_no_iris(self):
+        # the plain boy's: 43 mm in openings of 43; the eye step refuses, his own iris discs move instead
+        opening = np.zeros((40, 100), bool)
+        opening[10:30, 10:90] = True
+        wide = (50.0, 20.0, 39.0, 15.0)
+        reads = {side: (None, None, opening, opening.copy(), wide) for side in ("left", "right")}
+        self.assertTrue(eyes._mirror_misread(reads))
+        self.assertEqual(reads["left"][4], wide)
+        reads = {side: (None, None, opening, opening.copy(), (40.0, 20.0, 12.0, 15.0)) for side in ("left", "right")}
+        self.assertFalse(eyes._mirror_misread(reads))
+
+    def test_a_moving_iris_touching_its_corner_still_slides(self):
+        # the plain boy's: no white on the inner side, 2.5 mm out; under the lid overlay it still looks round
+        found = {"left": {"white_outer": 0.0025, "white_inner": 0.0, "iris_size": (0.043, 0.048)},
+                 "right": {"white_outer": 0.0027, "white_inner": 0.0, "iris_size": (0.044, 0.048)}}
         across, _up = eyes.iris_slide(found)
-        self.assertAlmostEqual(across, eyes.SIDE_ROOM_MOST * 0.0018, places=6)
+        self.assertAlmostEqual(across, eyes.SIDE_TRAVEL * 0.0013, places=6)
 
 
 if __name__ == "__main__":

@@ -492,13 +492,16 @@ def _mirror_misread(reads):
     """An iris read nearly as wide as its own opening (IRIS_TOO_WIDE) when the other eye's isn't takes the
     other's, mirrored about the two openings' middles (changes `reads`: {side: (eye, rgb, opening, iris,
     ellipse)}). The demon girl's left iris read 45 mm wide in an opening of 46, a strand of fringe across
-    it: no white beside it, and both irises slid 0.6 mm."""
+    it: no white beside it, and both irises slid 0.6 mm. Returns True when both read so wide: the plain boy's,
+    43 mm in openings of 43 (his own iris discs, 19 mm, are the eyes to move: --modelled)."""
     if len(reads) != 2:
-        return
+        return False
     def middle(opening):
         ys, xs = np.nonzero(opening)
         return (xs.min() + xs.max() + 1) / 2, (ys.min() + ys.max() + 1) / 2, xs.max() + 1 - xs.min()
     share = {side: 2 * r[4][2] / middle(r[2])[2] for side, r in reads.items()}
+    if min(share.values()) > IRIS_TOO_WIDE:
+        return True
     for bad, good in (("left", "right"), ("right", "left")):
         if share[bad] > IRIS_TOO_WIDE >= share[good]:
             eye, rgb, opening, _iris, _ellipse = reads[bad]
@@ -507,6 +510,7 @@ def _mirror_misread(reads):
             cx, cy, rx, ry = reads[good][4]
             ellipse = (bx - (cx - gx), by + (cy - gy), rx, ry)
             reads[bad] = (eye, rgb, opening, ellipse_mask(opening.shape, ellipse) & opening, ellipse)
+    return False
 
 
 def _fit_ellipse(points):
@@ -982,7 +986,7 @@ def add_moving_irises(mesh_obj, points, still_iris=False, travel=1.0, only=None,
         rgb = rows[y0:y1, x0:x1, :3].astype(np.float64)
         opening = find_opening(rgb, eye)
         reads[side] = (eye, rgb, opening, *find_iris(rgb, opening))
-    _mirror_misread(reads)
+    misread = _mirror_misread(reads)
     for side, (eye, rgb, opening, iris, ellipse) in reads.items():
         x0, y0, x1, y1 = eye.box
         see = window(opening)
@@ -1028,7 +1032,7 @@ def add_moving_irises(mesh_obj, points, still_iris=False, travel=1.0, only=None,
         _blink_with_inserts(mesh_obj, found)
     crops = {name: crop_to_use(mesh, name) for name in (LIDS_MATERIAL, IRIS_MATERIAL)}
     return {"eyes": found, "overlay_vertices": overlay, "window": windows, "see_through_polygons": opened,
-            "crops": crops}
+            "crops": crops, "misread": misread}
 
 
 def scale_blinks(mesh_obj, factor):
@@ -1173,9 +1177,11 @@ def iris_slide(found):
     smaller iris's height (see those).
     """
     rooms = [info[key] for info in found.values() for key in ("white_outer", "white_inner")]
-    # never over SIDE_ROOM_MOST of the narrowest room: from the mean the princess's iris, 1.8 mm from her
-    # inner corner, slid 2.3 mm and showed over the lids looking in
-    return (float(min(SIDE_TRAVEL * np.mean(rooms), SIDE_ROOM_MOST * np.min(rooms))),
+    # The mean, not capped by the narrowest room as a modelled iris is (modelled_slide): the lid overlay
+    # hides what passes under the corner. Capped (for the princess, 1.8 mm from her inner corner), the
+    # plain boy's and OC3's irises, touching theirs, slid 0 mm: eyeLookIn/Out moved nothing. An iris that
+    # shows over the lids is refused by the check and looks LESS far (add_eye_tracking.py).
+    return (float(SIDE_TRAVEL * np.mean(rooms)),
             float(UP_DOWN_TRAVEL * min(info["iris_size"][1] for info in found.values())))
 
 

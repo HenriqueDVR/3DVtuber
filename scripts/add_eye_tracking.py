@@ -116,9 +116,12 @@ def main():
             eyes.scale_blinks(obj, args.lid_travel)
         parts = built["eyes"]
         numbers, failures = eyes.check_irises(obj, built)
+        if built["misread"]:
+            # no retry can mend it: the iris read is the whole eye, so it looks round as the eye itself
+            failures = ["both irises read nearly as wide as their eyes: no iris to move here"] + failures
         travel, upright = args.travel, args.upright
         for _ in range(2):
-            if not failures:
+            if not failures or built["misread"]:
                 break
             if upright > 0 and all(("Up" in f or "Down" in f) for f in failures):
                 # an iris drawn as tall as the eye (the princess's) crosses a lid looking up or down only: it
