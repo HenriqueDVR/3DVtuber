@@ -267,8 +267,10 @@ def split_torn_seams(mesh_obj, armature_obj, verts=None):
     between two hair chains or two cloth chains: side by side over one head of hair or one
     cape they are no chain of each other, and the cut slit model D's hair and cape along every
     chain boundary (476 of its 628 cut edges), open whenever they swung. Springs beside each other
-    move together, and what is left between them stretches, as cloth does. Appendage chains are
-    still cut apart: a fork's two ends (model C's pair of tails) swing their own ways.
+    move together, and what is left between them stretches, as cloth does. Nor between two
+    appendage chains: cut along the line between a wing's two chains (a fork, as model C's pair of
+    tails is), the demon girl's wings tore open in Warudo; the two now share what lies between them
+    (cloth.APPENDAGE_FORK_BLEND) and it stretches.
     Nor between two fingers of one hand: the palm between their knuckles was slit on model D
     (60 edges, open in Warudo as the fingers moved).
     """
@@ -284,6 +286,8 @@ def split_torn_seams(mesh_obj, armature_obj, verts=None):
         if first < 0 or second < 0 or first == second:
             return False
         if strand(names[first]) and strand(names[first]) == strand(names[second]):
+            return False
+        if _APPENDAGE.match(names[first]) and _APPENDAGE.match(names[second]):
             return False
         # a hair or cloth chain is only cut from an arm: where a cape's top is on the hips or a thigh
         # the cut opened as the body bent (model B: 24 copies, 2.8 cm apart with the spine twisted,
@@ -339,6 +343,7 @@ def split_torn_seams(mesh_obj, armature_obj, verts=None):
 # The side-by-side chains hair.py and cloth.py lay over one head of hair or one cape.
 _STRAND_CHAIN = re.compile(r"(Hair|Cloth)\d+_\d+$")
 # Arm bones, fingers included: what a chain resting against it is still cut from.
+_APPENDAGE = re.compile(r"Appendage\d+_\d+$")
 _ARM = re.compile(r"Shoulder|Arm|Hand|Thumb|Index|Middle|Ring|Little")
 # The fingers of one hand: Left/Right, then the finger and its segment.
 _FINGER = re.compile(r"(Left|Right)(?:Thumb|Index|Middle|Ring|Little)[A-Z][a-z]+$")

@@ -425,6 +425,11 @@ APPENDAGE_FORK = 0.6
 # length: each vertex wholly on its own branch, the demon girl's wings (a chain along the top edge and one
 # along the bottom) sheared along that line when the springs moved the two apart, and tore in Warudo.
 APPENDAGE_FORK_BLEND = 0.25
+# Vertices of an appendage this close (m) share one mix of its chains: the demon girl's membranes meet her wings'
+# bones and claws without sharing vertices (179 pairs within 4 mm, joined only far round over the surface), each
+# side of such a meeting followed its own mix, and they came 1 cm apart in a mild sway, torn in Warudo.
+APPENDAGE_JOIN = 0.004
+APPENDAGE_JOIN_HOPS = 8
 # Small pieces riding on an appendage (see attach_riders): size as a share of the height, and how
 # far (m) their median vertex may lie from it. Model C's feather and patch decorations float 1.1 to
 # 2.9 cm off her wings and tails (a 2 cm cut on half their vertices missed most, and they flew off
@@ -518,8 +523,49 @@ def build_appendage_chain(mesh_obj, armature, joints, members, index, bone=None)
             # the blend from the bone at the root goes by the vertex's own branch
             new_weights[int(vertex)] = (weights, min(float(at) / APPENDAGE_ROOT_BLEND, 1.0) if own or root is None else root)
     _add_bones(armature, chains)
-    _apply(mesh_obj, new_weights)
+    _apply(mesh_obj, _shared_where_near(mesh_obj, verts, new_weights, APPENDAGE_JOIN * height / 1.6))
     return [c.names for c in chains]
+
+
+def _shared_where_near(mesh_obj, verts, new_weights, reach, hops=APPENDAGE_JOIN_HOPS):
+    """`new_weights` ({vertex: (chain weights, chain share)}) with each vertex that lies within `reach` of others it is
+    joined to only far round over the surface (more than `hops` edges) given the mean of its own chain weights and
+    theirs: pieces of a surface that touch without sharing vertices move as one; the rest of it is left alone."""
+    from mathutils.kdtree import KDTree
+    ids = list(new_weights)
+    tree = KDTree(len(ids))
+    for k, vertex in enumerate(ids):
+        tree.insert(verts[vertex], k)
+    tree.balance()
+    edges = np.empty(len(mesh_obj.data.edges) * 2, dtype=np.int64)
+    mesh_obj.data.edges.foreach_get("vertices", edges)
+    neighbours = [[] for _ in range(len(verts))]
+    for a, b in edges.reshape(-1, 2):
+        neighbours[a].append(b)
+        neighbours[b].append(a)
+
+    def joined(vertex):
+        seen, frontier = {vertex}, [vertex]
+        for _ in range(hops):
+            frontier = [w for u in frontier for w in neighbours[u] if w not in seen and not seen.add(w)]
+        return seen
+
+    shared = dict(new_weights)
+    for vertex in ids:
+        near = [ids[k] for _co, k, _d in tree.find_range(verts[vertex], reach)]
+        if len(near) < 2:
+            continue
+        close = joined(vertex)
+        meeting = [other for other in near if other not in close]
+        if not meeting:
+            continue
+        group = [vertex] + meeting
+        mix = {}
+        for other in group:
+            for name, weight in new_weights[other][0].items():
+                mix[name] = mix.get(name, 0.0) + weight / len(group)
+        shared[vertex] = (mix, new_weights[vertex][1])
+    return shared
 
 
 def attach_riders(mesh_obj, carriers, skip, anchors=None):

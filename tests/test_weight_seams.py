@@ -152,6 +152,9 @@ class ChainsAreNotTornFromWhatTheyHangOn(unittest.TestCase):
             top.head, top.tail, top.parent = (x, .1, .8), (x, .1, .6), hips
             low = data.edit_bones.new(f"{chain}_1")
             low.head, low.tail, low.parent = top.tail, (x, .1, .4), top
+        for chain, end in (("Appendage0", (-.4, .15, 1.3)), ("Appendage1", (-.4, .15, .9))):  # a wing's two edges
+            bone = data.edit_bones.new(f"{chain}_0")
+            bone.head, bone.tail, bone.parent = (-.05, .1, 1.05), end, spine
         bpy.ops.object.mode_set(mode="OBJECT")
 
     def strip(self, left, right):
@@ -174,6 +177,11 @@ class ChainsAreNotTornFromWhatTheyHangOn(unittest.TestCase):
         obj = self.strip("Cloth0_0", "RightUpperLeg")
         self.assertEqual(loose.split_torn_seams(obj, self.arm), 0)
         self.assertEqual(len(obj.data.vertices), 18)
+
+    def test_a_wing_is_not_cut_between_its_two_chains(self):
+        # the demon girl's wings tore open along the line between their chains
+        obj = self.strip("Appendage0_0", "Appendage1_0")
+        self.assertEqual(loose.split_torn_seams(obj, self.arm), 0)
 
     def test_a_cape_is_still_cut_from_an_arm_resting_on_it(self):
         self.assertGreater(loose.split_torn_seams(self.strip("Cloth0_0", "LeftLowerArm"), self.arm), 0)
