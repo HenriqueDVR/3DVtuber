@@ -470,6 +470,30 @@ class FaceOverTheDisc(unittest.TestCase):
         self.assertEqual(self.classes(0.003), (False, False))   # behind: the disc shows anyway
 
 
+class TheLidEasedOffTheDisc(unittest.TestCase):
+    """The knight's upper lids stood in front of his discs with the top of his drawn irises mapped onto them: that
+    half stayed put as the disc looked aside. Lid geometry painted in the iris's colours goes behind the disc."""
+
+    def test_only_the_lid_painted_with_the_iris_goes_and_never_the_disc(self):
+        from types import SimpleNamespace
+        # two quads 5 mm in front of the disc over the upper half of a 40 px crop (1 px = 1 mm): left, right
+        verts = [(0.0, -0.005, 0.0), (0.02, -0.005, 0.0), (0.02, -0.005, 0.02), (0.0, -0.005, 0.02),
+                 (0.02, -0.005, 0.0), (0.04, -0.005, 0.0), (0.04, -0.005, 0.02), (0.02, -0.005, 0.02)]
+        quads = [(0, 1, 2, 3), (4, 5, 6, 7)]
+        scene = BVHTree.FromPolygons([Vector(v) for v in verts], quads)
+        face = SimpleNamespace(world=lambda pixels: np.asarray(pixels, float) * 0.001)
+        eye = SimpleNamespace(box=(0, 0, 40, 40))
+        yy, xx = np.mgrid[0:40, 0:40] + 0.5
+        rgb = np.full((40, 40, 3), 0.95)
+        circle = (20.0, 20.0, 10.0, 10.0)
+        rgb[eyes._in_oval(xx, yy, circle)] = (0.2, 0.3, 0.9)  # a blue iris
+        rgb[(yy < 20) & (xx < 20)] = (0.5, 0.5, 0.5)           # its upper left drawn grey: lid shading, not iris
+        over = yy < 20
+        curve = lambda places: np.zeros(len(places))  # noqa: E731 -- the disc at y = 0
+        moves = eyes._ease_off_disc(face, eye, rgb, circle, over, curve, scene, np.arange(2), np.array(quads), [5])
+        self.assertEqual(set(moves), {4, 6, 7})  # the right quad, but its vertex of the disc
+
+
 class TheWhiteTuckedBehindTheFace(unittest.TestCase):
     """The miko's eye-white sheet stood 12.5 mm out of her face past the eye she was drawn with."""
 

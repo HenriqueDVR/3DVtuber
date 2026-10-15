@@ -1885,7 +1885,7 @@ def modelled_slide(parts, travel=1.0):
             float(travel * UP_DOWN_TRAVEL * min(info["iris_size"][1] for info in parts.values())))
 
 
-def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, only=None):
+def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, only=None, _eased=0):
     """Slide each modelled iris in its socket on the eyeLook keys; None when the eyes aren't made that way.
 
     `shape` ("circle", "oval") and `bigger` are the user's word on the iris (see `shaped`), `travel` a
@@ -1924,6 +1924,7 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
     parts = {}
     read = {}
     ahead = {}
+    ease = {}  # vertex -> depth: lid geometry the drawing paints iris on, to go behind its disc (_ease_off_disc)
     for side, ids in found.items():
         eye = marked[side]
         x0, y0, x1, y1 = eye.box
@@ -1948,13 +1949,21 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
         # painted with the top of the iris, and painted white it was a white band between the
         # iris and the lashes, the iris cut off straight under it
         if drawn:
-            lid |= _overhang(face, eye, drawn, _disc_curve(rest[ids]), others)
+            over = _overhang(face, eye, drawn, _disc_curve(rest[ids]), others)
+            lid |= over
+            if _eased < EASE_PASSES:
+                ease.update(_ease_off_disc(face, eye, rgb, drawn, over, _disc_curve(rest[ids]), others, kept, tris, ids))
         window &= ~lid
         known &= ~lid
         windows[y0:y1, x0:x1] &= ~lid
         read[side] = (rgb, outline, window, known, drawn, opening, lid)
         if level.sum() > LEVEL_PIXELS:
             ahead[side] = int(level.sum())
+    if ease:
+        # the lid the drawing paints the top of an iris on goes behind its disc, and the eye is read again: the
+        # disc now carries the whole drawn iris and moves it as one
+        _move_back(mesh_obj, ease)
+        return add_modelled_irises(mesh_obj, points, shape, bigger, travel, only, _eased=_eased + 1)
     if any(known.sum() < 8 * IRIS_RINGS for _rgb, _outline, _window, known, *_ in read.values()):
         return None  # too little of a disc shows between the lids to paint an iris from; nothing is changed yet
     # both irises are one size, the smaller read: lashes running into one make it read bigger
@@ -2301,6 +2310,81 @@ def _behind(face, eye, circle, curve, scene):
         hit = scene.ray_cast(Vector((x, -10.0, z)), Vector((0.0, 1.0, 0.0)), 20.0)[0]
         behind[py, px] = hit is not None and hit.y >= depth - RIM_FRONT
     return behind
+
+
+# Lid geometry standing in front of a modelled iris disc where the drawing paints iris on it goes this far (m)
+# behind the disc (_ease_off_disc): the knight's upper lids stood 4.7 mm (up to 25) in front of his discs with the
+# top half of his drawn irises front-mapped onto them, and as the discs looked aside that half stayed put on the
+# lid, "the texture iris that doesn't move" in Warudo. Every character with modelled irises had some (the catgirl's,
+# the fox girl's, the plain boy's: 74 to 100% of the overhang over the iris drawn in its colours).
+EASE_BEHIND = 2 * BACKING_GAP
+# ... a pass for each layer of the lid in front (its front, then its back, uncovered by the first)
+EASE_PASSES = 4
+
+
+def _ease_off_disc(face, eye, rgb, circle, over, curve, scene_others, kept, tris, ids):
+    """{vertex: depth} for the lid geometry (seen from the front at `over`'s pixels, inside the drawn `circle`, where
+    the drawing is in the iris's own colours) to go EASE_BEHIND behind the disc's `curve`; the disc (`ids`) excluded."""
+    x0, y0 = eye.box[:2]
+    yy, xx = np.mgrid[0:rgb.shape[0], 0:rgb.shape[1]] + 0.5
+    inside = _in_oval(xx, yy, circle)
+    shown = inside & ~over & (yy > circle[1])  # the iris below its middle, which the disc shows
+    if not shown.any():
+        return {}
+    hue = _hue(rgb)
+    saturation, _value = _saturation_value(rgb)
+    iris_hue = _circular_median(hue[shown])
+    irisish = (np.abs((hue - iris_hue + 0.5) % 1.0 - 0.5) < CARRY_HUE) & (saturation > CARRY_SATURATION)
+    ys, xs = np.nonzero(over & inside & irisish)
+    disc = set(int(i) for i in ids)
+    moves = {}
+    for x, z in face.world(np.stack([xs + x0 + 0.5, ys + y0 + 0.5], axis=1)):
+        hit = scene_others.ray_cast(Vector((x, -10.0, z)), Vector((0.0, 1.0, 0.0)), 20.0)
+        if hit[0] is None:
+            continue
+        for vertex in tris[kept[hit[2]]]:
+            if int(vertex) not in disc:
+                moves[int(vertex)] = None
+    if not moves:
+        return {}
+    return {vertex: curve for vertex in moves}
+
+
+def _move_back(mesh_obj, ease):
+    """Move each vertex of `ease` ({vertex: the disc curve it lies over}) EASE_BEHIND behind that curve where it stands
+    in front of it, in the basis and every shape key alike (the keys' moves kept)."""
+    mesh = mesh_obj.data
+    rest = meshdata.world_vertices(mesh_obj)
+    # with the copies of each vertex at its place (texture seams split them): moved alone they tore apart (the
+    # catgirl's lids, 3 places)
+    _, place = np.unique(np.round(rest / 1e-5).astype(np.int64), axis=0, return_inverse=True)
+    place = place.ravel()
+    face_only = head_only(mesh_obj)  # the face itself: never hair in front of the eye (the catgirl's bangs tore)
+    chosen = {int(i) for i in ease if face_only[int(i)]}
+    by_place = {}
+    for vertex in chosen:
+        by_place.setdefault(int(place[vertex]), ease[vertex])
+    ease = {int(v): by_place[int(place[v])] for v in np.flatnonzero(np.isin(place, list(by_place)) & face_only)}
+    if not ease:
+        return
+    index = np.array(sorted(ease), dtype=np.int64)
+    target = np.array([float(ease[int(i)](rest[[int(i)]][:, [0, 2]])[0]) for i in index]) + EASE_BEHIND
+    shift = np.maximum(target - rest[index, 1], 0.0)
+    matrix = np.array(mesh_obj.matrix_world)
+    local_shift = np.linalg.inv(matrix[:3, :3]) @ np.array([0.0, 1.0, 0.0])
+    keys = mesh.shape_keys.key_blocks if mesh.shape_keys else []
+    for key in keys:
+        co = np.empty(len(key.data) * 3)
+        key.data.foreach_get("co", co)
+        co = co.reshape(-1, 3)
+        co[index] += shift[:, None] * local_shift
+        key.data.foreach_set("co", co.astype(np.float32).ravel())
+    co = np.empty(len(mesh.vertices) * 3)
+    mesh.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    co[index] += shift[:, None] * local_shift
+    mesh.vertices.foreach_set("co", co.astype(np.float32).ravel())
+    mesh.update()
 
 
 def _overhang(face, eye, circle, curve, scene):
