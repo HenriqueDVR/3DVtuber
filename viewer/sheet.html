@@ -67,12 +67,20 @@ const TURN_POSES = { "head turn": ["head", [0, 1, 0], 0.4], "head turn right": [
 const FACE = { at: "head", span: 0.3, lift: 0.07, face: true };
 const FACE_FITS = 0.95;  // of the tile's half width: eyes and mouth inside this are framed well enough
 const BODY = { at: "hips", span: 1.9, lift: 0.0 };
+const LOOK_EXAGGERATED = 3;
+const LOOKS = ["lookLeft", "lookRight", "lookUp", "lookDown"];
 const SHEETS = {
   face: [
     ["rest", { ...FACE }], ["blink 0.5", { ...FACE, set: { blink: 0.5 } }], ["blink 1", { ...FACE, set: { blink: 1 } }],
     ["blinkLeft 1", { ...FACE, set: { blinkLeft: 1 } }],
     ["look left", { ...FACE, look: [40, 0] }], ["look right", { ...FACE, look: [-40, 0] }],
     ["look up", { ...FACE, look: [0, 30] }], ["look down", { ...FACE, look: [0, -30] }],
+    // the same looks with the eyes' own shapes driven LOOK_EXAGGERATED times as far: a test only, never what
+    // an app shows. The princess's irises slide 1.2 mm; at its real size a look was hard to tell from rest
+    [`look left ×${LOOK_EXAGGERATED}, exaggerated test`, { ...FACE, look: [40, 0], exaggerate: LOOK_EXAGGERATED }],
+    [`look right ×${LOOK_EXAGGERATED}, exaggerated test`, { ...FACE, look: [-40, 0], exaggerate: LOOK_EXAGGERATED }],
+    [`look up ×${LOOK_EXAGGERATED}, exaggerated test`, { ...FACE, look: [0, 30], exaggerate: LOOK_EXAGGERATED }],
+    [`look down ×${LOOK_EXAGGERATED}, exaggerated test`, { ...FACE, look: [0, -30], exaggerate: LOOK_EXAGGERATED }],
     ["blink 0.5, look down", { ...FACE, set: { blink: 0.5 }, look: [0, -30] }], ["blink 1, from her left", { ...FACE, set: { blink: 1 }, from: [40, 0] }],
     ["blink 1, from below", { ...FACE, set: { blink: 1 }, from: [0, -25] }], ["rest, from her right", { ...FACE, from: [-40, 0] }],
     ["aa", { ...FACE, set: { aa: 1 } }], ["ih", { ...FACE, set: { ih: 1 } }], ["ou", { ...FACE, set: { ou: 1 } }],
@@ -215,8 +223,26 @@ function shoot(shot) {
       vrm.update(1 / 60);
     }
   }
+  if (shot.exaggerate) exaggerateLooks(shot.exaggerate);
   if (!shot.hold) aim(shot);
   renderer.render(scene, camera);
+}
+
+// The look expressions' morph targets, each once, driven `times` as far as the look put them: shape keys
+// are linear, so the eyes travel `times` their distance on the same path
+function exaggerateLooks(times) {
+  const done = new Set();
+  for (const name of LOOKS) {
+    const expression = vrm.expressionManager?.getExpression(name);
+    for (const bind of expression?.binds ?? expression?._binds ?? []) {
+      for (const mesh of bind.index == null ? [] : bind.primitives ?? []) {
+        const key = `${mesh.uuid}:${bind.index}`;
+        if (done.has(key) || !mesh.morphTargetInfluences) continue;
+        done.add(key);
+        mesh.morphTargetInfluences[bind.index] *= times;
+      }
+    }
+  }
 }
 
 async function sheet(name, shots, post) {
