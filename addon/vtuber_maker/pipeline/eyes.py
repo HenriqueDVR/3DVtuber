@@ -951,6 +951,84 @@ def _face_outside(surface, xz, face, inside):
     return depth
 
 
+def _past_face(surface, face, low, high, shape):
+    """A picture mask true at the pixels of the box `low`..`high` (world x, z) where `surface`, seen from the front,
+    is not there and does not enclose them (a socket's hole does): past the face's own outline."""
+    xz = _box_points(face, low, high)
+    px = np.floor(face.pixel(xz)).astype(int)
+    on = (px[:, 0] >= 0) & (px[:, 0] < shape[1]) & (px[:, 1] >= 0) & (px[:, 1] < shape[0])
+    xz, px = xz[on], px[on]
+    if not len(px):
+        return np.zeros(shape, bool)
+    (u0, v0), (u1, v1) = px.min(axis=0), px.max(axis=0)
+    there = np.zeros((v1 - v0 + 1, u1 - u0 + 1), bool)
+    hit = np.isfinite(_face_outside(surface, xz, face, np.zeros(shape, bool)))
+    there[px[hit, 1] - v0, px[hit, 0] - u0] = True
+    past = np.zeros(shape, bool)
+    past[v0:v1 + 1, u0:u1 + 1] = ~_fill_holes(there)
+    return past
+
+
+def _tuck_past_face(mesh_obj, vertices, past, scene, face):
+    """Move each of `vertices` whose face-picture pixel is in `past` BACKING_GAP behind what `scene` shows from
+    the front there (where that is behind it), in the basis and every shape key alike."""
+    mesh = mesh_obj.data
+    rest = meshdata.world_vertices(mesh_obj)
+    vertices = np.asarray(vertices, np.int64)
+    px = np.floor(face.pixel(rest[vertices][:, [0, 2]])).astype(int)
+    h, w = past.shape
+    on = (px[:, 0] >= 0) & (px[:, 0] < w) & (px[:, 1] >= 0) & (px[:, 1] < h)
+    chosen = np.zeros(len(vertices), bool)
+    chosen[on] = past[px[on, 1], px[on, 0]]
+    if not chosen.any():
+        return
+    depth = _behind_from(scene, rest[vertices[chosen]][:, [0, 2]], rest[vertices[chosen], 1]) + BACKING_GAP
+    shift = np.nan_to_num(np.maximum(depth - rest[vertices[chosen], 1], 0.0))
+    index = vertices[chosen]
+    local = np.outer(shift, np.linalg.inv(np.array(mesh_obj.matrix_world)[:3, :3]) @ np.array([0.0, 1.0, 0.0]))
+    for key in _keys(mesh):
+        key_co = _key_co(key)
+        key_co[index] += local
+        key.data.foreach_set("co", key_co.ravel())
+    co = np.empty(len(mesh.vertices) * 3)
+    mesh.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    co[index] += local
+    mesh.vertices.foreach_set("co", co.ravel())
+    mesh.update()
+
+
+def _outside_mask(face, xz, inside):
+    """Whether each (x, z)'s face-picture pixel is outside the mask `inside` (off the picture counts as outside)."""
+    px = np.floor(face.pixel(np.asarray(xz, float))).astype(int)
+    h, w = inside.shape
+    on = (px[:, 0] >= 0) & (px[:, 0] < w) & (px[:, 1] >= 0) & (px[:, 1] < h)
+    out = np.ones(len(px), bool)
+    out[on] = ~inside[px[on, 1], px[on, 0]]
+    return out
+
+
+def _behind_from(scene, xz, depth):
+    """World depth (y) of the first surface of `scene` behind each (x, z) at `depth`; NaN where there is none."""
+    found = np.full(len(depth), np.nan)
+    for index, ((x, z), y) in enumerate(zip(np.asarray(xz, float), depth)):
+        hit = scene.ray_cast(Vector((x, y, z)), Vector((0.0, 1.0, 0.0)), 20.0)[0]
+        if hit is not None:
+            found[index] = hit.y
+    return found
+
+
+def _tucked_behind(depth, face_depth, scene, xz, outside):
+    """A sheet's depth: `depth`, BACKING_GAP behind the face (`face_depth`) where that is further back, and where
+    no face was found at an `outside` place, BACKING_GAP behind the first surface of `scene` behind `depth`: the
+    first thing in front there was the miko's bangs, in front of the eye."""
+    tucked = np.fmax(depth, face_depth + BACKING_GAP)
+    lost = np.isnan(face_depth) & outside
+    if lost.any():
+        tucked[lost] = np.fmax(depth[lost], _behind_from(scene, np.asarray(xz, float)[lost], depth[lost]) + BACKING_GAP)
+    return tucked
+
+
 def _skin_tree(mesh_obj, slot):
     """A BVH of the face patch's own polygons (material `slot`) in world space, the eye layers left out: hair
     in front of the eyes (the miko's bangs) is no face to tuck behind."""
@@ -2087,7 +2165,16 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
         # ... and outside the eye as painted, behind the face: the sheet is flat over a box round the opening,
         # and at the box's corners the face curves away in front of nothing: the miko's stood 12.5 mm out of her
         # face there, "a flat plane on the eyes" in Warudo
-        behind = lambda xz, f=deep, s=skin: np.fmax(f(xz), _face_outside(s, xz, face, as_painted) + BACKING_GAP)  # noqa: E731
+        # ... and past the face patch's edge, behind whatever is there: there the sheet found no face, stayed flat, and
+        # showed the face's picture as a straight-edged skin panel before the miko's side hair from 40 degrees
+        # (the white painted past the face's own outline too: the miko's far outer corner, side hair 55 mm behind it)
+        past = _past_face(skin, face, *wide, as_painted.shape)
+        painted = as_painted & ~past
+        # ... and the disc's still copy too: the miko's discs reach past her face's outline, and the copy showed the
+        # face's picture there, a straight-edged skin panel before her side hair from 40 degrees
+        _tuck_past_face(mesh_obj, info["white_vertices"], past, others, face)
+        behind = lambda xz, f=deep, s=skin, m=painted: _tucked_behind(  # noqa: E731
+            f(xz), _face_outside(s, xz, face, m), others, xz, _outside_mask(face, xz, m))
         info["socket_depth"] = _socket_depth(others, info["opened"], info["curve"], on_disc)
         backing = _add_grid(mesh_obj, np.array(wide), behind, face.uv, *FRAME_GRID, patch_slot,
                             BONE_NAMES["head"], {WHITE_ATTRIBUTE: SIDE_IDS[side], face_rig.FIXED_ATTRIBUTE: 1})

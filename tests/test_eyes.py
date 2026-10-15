@@ -470,6 +470,42 @@ class FaceOverTheDisc(unittest.TestCase):
         self.assertEqual(self.classes(0.003), (False, False))   # behind: the disc shows anyway
 
 
+class TheWhitePastTheFace(unittest.TestCase):
+    """The miko's eye white was painted past her face's outline, and the sheet and the disc's copy stood flat there,
+    a skin panel before her side hair from 40 degrees; her bangs were the first thing in front."""
+
+    class Picture:  # 100 x 100 px over x, z in -0.05 .. 0.05
+        def pixel(self, xz):
+            return (np.asarray(xz, float) + 0.05) * 1000.0
+
+        def world(self, pixels):
+            return np.asarray(pixels, float) / 1000.0 - 0.05
+
+    def test_past_the_face_but_not_a_hole_in_it(self):
+        # a face from x = -0.03 to 0.02 with a socket hole round the middle
+        quads = [((-0.03, -0.03), (0.02, -0.005)), ((-0.03, 0.005), (0.02, 0.03)),
+                 ((-0.03, -0.005), (-0.005, 0.005)), ((0.005, -0.005), (0.02, 0.005))]
+        verts, faces = [], []
+        for (x0, z0), (x1, z1) in quads:
+            faces.append(tuple(range(len(verts), len(verts) + 4)))
+            verts += [(x0, 0.0, z0), (x1, 0.0, z0), (x1, 0.0, z1), (x0, 0.0, z1)]
+        face_tree = BVHTree.FromPolygons([Vector(v) for v in verts], faces)
+        past = eyes._past_face(face_tree, self.Picture(), np.array([-0.04, -0.04]), np.array([0.04, 0.04]), (100, 100))
+        at = lambda x, z: bool(past[int((z + 0.05) * 1000), int((x + 0.05) * 1000)])  # noqa: E731
+        self.assertTrue(at(0.03, 0.0))    # past the face's edge
+        self.assertFalse(at(0.0, 0.0))    # the socket's hole, which the face encloses
+        self.assertFalse(at(-0.01, 0.02)) # the face itself
+
+    def test_tucked_behind_what_lies_behind_not_the_bangs_in_front(self):
+        quads = [(0, 1, 2, 3), (4, 5, 6, 7)]  # bangs 30 mm in front, side hair 20 mm behind
+        verts = [Vector(v) for y in (-0.03, 0.02) for v in ((-0.05, y, -0.05), (0.05, y, -0.05), (0.05, y, 0.05), (-0.05, y, 0.05))]
+        scene = BVHTree.FromPolygons(verts, quads)
+        depth = eyes._tucked_behind(np.array([0.0, 0.0]), np.array([np.nan, 0.004]), scene, [(0.0, 0.0), (0.01, 0.0)],
+                                    np.array([True, True]))
+        self.assertAlmostEqual(depth[0], 0.02 + eyes.BACKING_GAP, places=6)
+        self.assertAlmostEqual(depth[1], 0.004 + eyes.BACKING_GAP, places=6)
+
+
 class TheLidEasedOffTheDisc(unittest.TestCase):
     """The knight's upper lids stood in front of his discs with the top of his drawn irises mapped onto them: that
     half stayed put as the disc looked aside. Lid geometry painted in the iris's colours goes behind the disc."""
