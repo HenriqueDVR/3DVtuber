@@ -446,6 +446,22 @@ class Engine(unittest.TestCase):
         self.assertEqual(engine.NAMES.index("chest"), engine.NAMES.index("tpose") + 1)
         self.assertIn("chest", engine.SOFT)
 
+    def test_an_iris_the_finished_file_shows_a_socket_through_falls_back_to_the_discs(self):
+        # the fox girl's fresh build: the moving iris passed, the drawn file showed the inside of her head
+        project = self.project({"options": {}, "triangles": 40000, "parts": {"eye_inserts": True}})
+        self.assertEqual(project.options()["eyes"], "iris")
+        project.state["steps"]["vrm_check"] = {"status": "done", "report": {"seen": {"failed": ["102.5 mm2 seen deep"]}}}
+        self.assertTrue(project._iris_seen_through())
+        project._seen_retry = True  # once only
+        self.assertFalse(project._iris_seen_through())
+        project._seen_retry = False
+        project.state["steps"]["vrm_check"]["report"]["seen"] = {"failed": []}
+        self.assertFalse(project._iris_seen_through())
+        # nor an iris the user chose, nor a model with no discs to fall back to
+        project.state["steps"]["vrm_check"]["report"]["seen"] = {"failed": ["102.5 mm2 seen deep"]}
+        self.assertFalse(self.project({"options": {}, "triangles": 40000}, eyes="iris")._iris_seen_through())
+        self.assertFalse(self.project({"options": {}, "triangles": 40000, "parts": {"eye_inserts": False}})._iris_seen_through())
+
     def test_a_refused_automatic_iris_slides_instead(self):
         project = self.project({"options": {}, "triangles": 40000, "parts": {"eye_inserts": True}})
         self.assertEqual(project.options()["eyes"], "iris")

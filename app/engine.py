@@ -257,6 +257,8 @@ EYES_FALLBACK = {
     "iris": ("the sliding patch an earlier build fell back to was refused, so the moving iris is tried again"),
     "blink": ("every way of moving the eyes was refused, so they only blink: the whole marked eye closes, "
               "and they don't look around"),
+    "seen": ("the finished file showed the inside of the head through the eyes from the side (the eye white lies deep "
+             "in its socket), so the model's own iris discs slide instead and the eyes were built again"),
 }
 # What the page offers when the eye step refuses the very mode its own advice names (errors.KNOWN: "set
 # eyes to slide"): a tester's fox girl failed with `eyes: slide` and was told to set eyes to slide.
@@ -889,7 +891,27 @@ class Project:
             newest = self.latest()
             if newest is not None and not CANCEL.is_set() and str(newest) != self._portraits_from() and "portraits" not in (ahead or ()):
                 self.portraits(newest, on_event=emit, locked=True)
+        if "vrm_check" in NAMES[first:last + 1] and self._iris_seen_through():
+            # the moving iris over a socket the exported file shows the inside of the head through: the fox
+            # girl's, from a fresh build (102 mm2 seen through, her own build on her discs showing none). The
+            # eye step can't tell (the depth beside the iris parts her from no good build); the drawn file
+            # can. Her discs carry the white on a surface of their own: built again from the eyes, once
+            self.state["eyes_fallback"] = "modelled"
+            self._save_state()
+            emit({"step": "eyes", "status": "warning", "reason": EYES_FALLBACK["seen"]})
+            self._seen_retry = True
+            try:
+                return self.run(start="eyes", stop=stop, on_event=on_event)
+            finally:
+                self._seen_retry = False
         return self.status()
+
+    def _iris_seen_through(self):
+        """Whether the build's exported file showed something deep through a hole (inside.py) while the eyes
+        were the moving iris chosen by the build itself, on a model with iris discs to fall back to."""
+        seen = (self.state["steps"].get("vrm_check", {}).get("report") or {}).get("seen") or {}
+        return (bool(seen.get("failed")) and not getattr(self, "_seen_retry", False) and self.data["options"]["eyes"] is None
+                and self.options()["eyes"] == "iris" and bool((self.survey() or {}).get("parts", {}).get("eye_inserts")))
 
     @contextlib.contextmanager
     def _kept_blender(self, folder):
