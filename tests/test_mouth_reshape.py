@@ -279,6 +279,30 @@ class ALipComingDownOverTheMouth(unittest.TestCase):
         np.testing.assert_allclose(moved[4:8], np.array(verts[4:8]), atol=1e-7)  # the mouth stays
 
 
+class AnUpperLipEasedBehindTheMouth(unittest.TestCase):
+    """The miko's upper lip stood 3.5 mm proud of her drawn mouth's top edge: from a little below it hid the mouth."""
+
+    def test_the_lip_over_the_mouth_ends_behind_it_and_the_nose_is_left(self):
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        quad = lambda x0, x1, z0, z1, y: [(x0, y, z0), (x1, y, z0), (x1, y, z1), (x0, y, z1)]
+        verts = quad(-0.01, 0.01, -0.002, 0.002, 0.0)          # the drawn mouth, 2 cm wide
+        verts += quad(-0.01, 0.01, 0.0025, 0.003, -0.0035)     # the lip just over it, standing out
+        verts += quad(-0.01, 0.01, 0.02, 0.021, -0.008)        # the nose, well above
+        mesh = bpy.data.meshes.new("face")
+        mesh.from_pydata(verts, [], [(0, 1, 2, 3), (4, 5, 6, 7), (8, 9, 10, 11)])
+        obj = bpy.data.objects.new("face", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        grid = np.zeros((12, 3))
+        grid[:4, 2] = 1.0
+        mesh.attributes.new(face_rig.MOUTH_GRID_ATTRIBUTE, "FLOAT_VECTOR", "POINT").data.foreach_set("vector", grid.ravel())
+        obj.shape_key_add(name="Basis")
+        self.assertGreater(face_rig.flatten_lip(obj), 0.0)
+        y = np.array([v.co.y for v in mesh.vertices])
+        self.assertTrue((y[4:8] > 0.0).all(), "the lip still stands in front of the mouth")
+        np.testing.assert_allclose(y[8:], -0.008)  # the nose
+        np.testing.assert_allclose(y[:4], 0.0)     # the mouth
+
+
 class AnInsertThatIsNoEye(unittest.TestCase):
     """The lid blink is sized from the eye insert. A girl in glasses had a scrap of 4 x 5.5 mm found for it
     in an eye marked 39 x 31 mm: her blink moved 1.3 mm. Model B's inserts, a quarter of her marked eyes'
