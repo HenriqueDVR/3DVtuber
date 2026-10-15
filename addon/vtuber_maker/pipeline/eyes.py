@@ -1168,7 +1168,9 @@ def add_moving_irises(mesh_obj, points, still_iris=False, travel=1.0, only=None,
     lid_slot = _material_like(mesh, LIDS_MATERIAL, new_image(LIDS_MATERIAL, lids))
     iris_slot = _material_like(mesh, IRIS_MATERIAL, new_image(IRIS_MATERIAL, iris_rows))
     cut_out(mesh.materials[lid_slot])
-    cut_out(mesh.materials[iris_slot])
+    # blended, its softened edge drawn soft: cut out at 0.5 the edge stepped with every screen pixel, the demon girl's
+    # irises "torn and hard" in Warudo. Drawn after the opaque white and behind the cut-out lids, nothing sorts wrong
+    cut_out(mesh.materials[iris_slot], blend=True)
 
     across, up = iris_slide(found)
     slide = (travel * across, travel * upright * up)
