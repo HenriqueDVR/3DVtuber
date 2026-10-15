@@ -29,6 +29,20 @@ from vtuber_maker.pipeline import eyes, face_points, face_rig, meshdata, vrm_exp
 # The look-at input angle (degrees) at which the look expressions reach full weight, as VRoid exports.
 LOOK_INPUT = 90.0
 RANGE_NAMES = ("horizontal_outer", "horizontal_inner", "vertical_up", "vertical_down")
+# A moving iris blinks with the face step's lid blink, sized from the eye inserts; one that closes under this
+# share of the opening's height gives way to the painted squeeze blink, as modelled irises have: the demon
+# girl's moved 2.8 mm in openings 24 mm tall and her eyes stayed open in "blink" (OC3's, good in Warudo:
+# 7.3 of 28.8).
+BLINK_LEAST = 0.2
+
+
+def lid_travel(obj):
+    """How far (m) the eyeBlink keys move anything at most, the smaller of the two eyes'."""
+    keys = obj.data.shape_keys.key_blocks
+    basis = np.array([v.co for v in keys[0].data])
+    travel = [np.linalg.norm(np.array([v.co for v in keys[name].data]) - basis, axis=1).max()
+              for name in ("eyeBlinkLeft", "eyeBlinkRight") if name in keys]
+    return float(min(travel)) if travel else 0.0
 
 
 def main():
@@ -110,8 +124,22 @@ def main():
         numbers, failures = eyes.check_modelled(obj, built, points)
         report_modelled(built, numbers)
     else:
+        lids = lid_travel(obj)
         built = eyes.add_moving_irises(obj, points, still_iris=args.still_iris, travel=args.travel, only=args.only,
                                        upright=args.upright)
+        tallest = min(info["opening_size"][1] for info in built["eyes"].values())
+        squeeze = lids < BLINK_LEAST * tallest
+        if squeeze:
+            print(f"the lids blink {1000 * lids:.1f} mm in openings {1000 * tallest:.1f} mm tall: the whole eye squeezes instead")
+            bpy.ops.wm.revert_mainfile()
+            arm = next(o for o in bpy.data.objects if o.type == "ARMATURE")
+            obj = next(o for o in bpy.data.objects if o.type == "MESH" and o.parent == arm)
+            mesh = obj.data
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import add_face_tracking
+            add_face_tracking.FaceShapes(obj, painted_eyes=True).add_blink("", face_rig.PAINTED_BLINK)
+            built = eyes.add_moving_irises(obj, points, still_iris=args.still_iris, travel=args.travel, only=args.only,
+                                           upright=args.upright)
         if args.lid_travel != 1.0:
             eyes.scale_blinks(obj, args.lid_travel)
         parts = built["eyes"]
@@ -139,6 +167,8 @@ def main():
             arm = next(o for o in bpy.data.objects if o.type == "ARMATURE")
             obj = next(o for o in bpy.data.objects if o.type == "MESH" and o.parent == arm)
             mesh = obj.data
+            if squeeze:
+                add_face_tracking.FaceShapes(obj, painted_eyes=True).add_blink("", face_rig.PAINTED_BLINK)
             built = eyes.add_moving_irises(obj, points, still_iris=args.still_iris, travel=travel, only=args.only,
                                            upright=upright)
             if args.lid_travel != 1.0:
@@ -289,4 +319,5 @@ def compare(before, after):
           f"{(difference > 0.1).mean():.2%}")
 
 
-main()
+if __name__ == "__main__":
+    main()
