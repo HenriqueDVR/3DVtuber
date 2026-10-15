@@ -1335,8 +1335,8 @@ def _add_lid_overlay(mesh_obj, face, found, slot, reach):
                    if isinstance(old, bmesh.types.BMVert) and new.index >= len(verts))
     bm.to_mesh(mesh)
     bm.free()
-    new_indices = np.array([n for n, _ in pairs])
-    old_indices = np.array([o for _, o in pairs])
+    new_indices = np.array([n for n, _ in pairs], dtype=np.int64)
+    old_indices = np.array([o for _, o in pairs], dtype=np.int64)  # (none round the nerd girl's one shown eye)
 
     offset_world = np.zeros((len(old_indices), 3))
     offset_world[:, 1] = -OVERLAY_GAP * full[old_indices]
@@ -2058,7 +2058,9 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
         # past the disc the fitted curve runs away: the frame stays at the depth of the disc's nearest edge
         on_disc = lambda xz, c=centre, d=spread: np.clip(xz, c - d / 2, c + d / 2)  # noqa: E731
         forward = max(0.0, float(-info["curve"].off.min()))  # where the disc stands in front of its curve
-        flat = lambda xz, curve=info["curve"], on=on_disc, f=forward: curve(on(np.asarray(xz, float))) - f - FRAME_GAP  # noqa: E731
+        # ... on the disc's own curve as far as the disc slides (where it goes when it looks: _slide_keys), held only past that
+        on_reach = lambda xz, c=centre, d=spread / 2 + np.array(slide): np.clip(xz, c - d, c + d)  # noqa: E731
+        flat = lambda xz, curve=info["curve"], on=on_reach, f=forward: curve(on(np.asarray(xz, float))) - f - FRAME_GAP  # noqa: E731
         # ... and where the picture is no eye, just in front of the face: flat over its box, the miko's stood up
         # to 11 mm out of her face with the face's picture on it
         skin = _skin_tree(mesh_obj, patch_slot)
