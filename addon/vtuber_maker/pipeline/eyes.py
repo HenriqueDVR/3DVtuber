@@ -81,6 +81,9 @@ SIDE_TRAVEL = 0.55
 # and the iris showed small in a lot of white. Grown, looking ahead the eye is the drawing itself; a
 # ring of the white round it moves with the iris, over the white.
 IRIS_MARGIN = 1.6
+# The moving iris's outline: rounds of 3 x 3 blur that clean the pixel mask's shape, and that soften its alpha.
+EDGE_CLEAN = 2
+EDGE_SOFT = 1
 # Pixels of an iris drawn on the face level with its disc (from LEVEL_REACH (m) in front of it to RIM_FRONT
 # behind) past which the disc takes them and is brought LEVEL_AHEAD in front of that face; under it the two
 # fought and the face won. Brought 1 mm with only the face within 0.5 mm taken, the disc covered face just in
@@ -589,8 +592,23 @@ def iris_layer(rgb, see_through, iris, ellipse):
     if unset.any():
         layer[..., :3] = face_points.fill_from_border(layer[..., :3], unset, passes=4 * IRIS_SMOOTH, domain=disc)
     layer[..., :3] = _smooth(layer[..., :3], hidden, IRIS_SMOOTH, disc)
-    layer[..., 3] = disc
+    # The disc's outline smoothed and its alpha softened by a pixel, the colour carried past it: as a
+    # pixel mask cut at 0.5 the demon girl's iris edge read torn and hard in Warudo; the cut-out of a
+    # softened alpha, read between texels, is a smooth line, and nothing is blended (sorting stays as it was)
+    clean = _blur(disc, EDGE_CLEAN) > 0.5
+    ring = _dilate(clean, EDGE_SOFT + 1) & ~disc
+    layer[..., :3] = _smooth(layer[..., :3], ring, EDGE_SOFT + 2, disc)
+    layer[..., 3] = _blur(clean, EDGE_SOFT)
+    disc |= clean
     return layer, _dilate(disc & see_through, 2) & _dilate(see_through, 2)
+
+
+def _blur(mask, passes):
+    """`mask` (bool or float) as floats, box-blurred over `passes` rounds of its 3 x 3 neighbourhood."""
+    out = np.asarray(mask, dtype=np.float32)
+    for _ in range(passes):
+        out = sum(np.roll(np.roll(out, dy, 0), dx, 1) for dy in (-1, 0, 1) for dx in (-1, 0, 1)) / 9.0
+    return out
 
 
 def _hue(rgb):
@@ -608,14 +626,15 @@ def _circular_median(hues):
     return float(np.arctan2(np.median(np.sin(angle)), np.median(np.cos(angle))) / (2 * np.pi)) % 1.0
 
 
-def paint_out(rgb, see_through, hole):
+def paint_out(rgb, see_through, hole, iris_hue=None):
     """The crop with the whole eye white, `hole` (under the iris) included, one neutral white.
 
     The white is the brightest of the eye's own (WHITE_TONE), without its tint: model A's whites are
     painted blue-grey, with a pale blue patch at one side, and any of that carried into the fill
     read as a grey or blue eye. Only dark lines (under WHITE_LINE of the typical brightness) are
     kept. The edge blends into the painting round it over WHITE_SMOOTH passes, so there is no seam
-    against the lids.
+    against the lids. With `iris_hue` (turns), a dark pixel of the iris's own colour is no line but iris
+    drawn past the circle read: the demon girl's (22 mm drawn, 15 read) left purple streaks in her white.
     """
     rgb = np.array(rgb, dtype=np.float32)
     saturation, value = _saturation_value(rgb)
@@ -624,6 +643,8 @@ def paint_out(rgb, see_through, hole):
     known = rest & (saturation < IRIS_SATURATION) & (value > WHITE_BRIGHT * typical)
     tone = float(np.percentile(value[known if known.any() else rest], WHITE_TONE))
     whiten = hole | rest & (value >= WHITE_LINE * typical)
+    if iris_hue is not None:
+        whiten |= rest & (np.abs((_hue(rgb) - iris_hue + 0.5) % 1.0 - 0.5) < CARRY_HUE) & (saturation > CARRY_SATURATION)
     rgb[whiten] = (tone * white_shading(see_through | hole))[whiten]
     return _smooth(rgb, whiten & _dilate(~whiten, WHITE_SMOOTH), WHITE_SMOOTH, np.ones_like(whiten))
 
@@ -991,7 +1012,7 @@ def add_moving_irises(mesh_obj, points, still_iris=False, travel=1.0, only=None,
         x0, y0, x1, y1 = eye.box
         see = window(opening)
         layer, hole = iris_layer(rgb, see, iris, ellipse)
-        rows[y0:y1, x0:x1, :3] = paint_out(rgb, see, hole)
+        rows[y0:y1, x0:x1, :3] = paint_out(rgb, see, hole, _circular_median(_hue(rgb)[iris & see]) if (iris & see).any() else None)
         lids[y0:y1, x0:x1, 3][see] = 0.0
         iris_rows[y0:y1, x0:x1] = layer
         windows[y0:y1, x0:x1] |= see
