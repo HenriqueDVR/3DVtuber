@@ -207,5 +207,74 @@ class BangsOverTheForehead(unittest.TestCase):
         self.assertTrue(self.armature.data.bones[self.chains[0][0]].get(hair.FRONT_HUNG))
 
 
+class ATuftBesideTheHead(unittest.TestCase):
+    """The plain boy's spiky side tufts, within the front's angle but level with the middle of his head: by
+    angle alone they hung from the front's line on chains and read stretched in Warudo."""
+
+    def test_it_stays_on_the_head(self):
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        verts, faces = _sheet(0.04, 0.06, 1.47, 1.6, -0.03, 3, 14, 0)
+        data = bpy.data.meshes.new("hair")
+        data.from_pydata(verts.tolist(), [], faces.tolist())
+        mesh = bpy.data.objects.new("hair", data)
+        bpy.context.scene.collection.objects.link(mesh)
+        joints = {key: np.array(p, float) for key, p in (("hips", (0, 0, 0.9)), ("head", (0, 0, 1.4)))}
+        armature_data = bpy.data.armatures.new("Armature")
+        armature = bpy.data.objects.new("Armature", armature_data)
+        bpy.context.scene.collection.objects.link(armature)
+        rig.make_active(armature)
+        bpy.ops.object.mode_set(mode="EDIT")
+        for key in ("hips", "head"):
+            bone = armature_data.edit_bones.new(rig.BONE_NAMES[key])
+            bone.head, bone.tail = joints[key].tolist(), (joints[key] + [0, 0, 0.1]).tolist()
+        bpy.ops.object.mode_set(mode="OBJECT")
+        mesh.vertex_groups.new(name=rig.BONE_NAMES["head"]).add(list(range(len(verts))), 1.0, "REPLACE")
+        features = {"left_eye": np.array([0.03, -0.1, 1.5]), "right_eye": np.array([-0.03, -0.1, 1.5])}
+        self.assertEqual(hair.build_hair_bones(mesh, armature, joints, features, np.ones(len(verts), dtype=bool)), [])
+
+
+class BangsJoinedToLongLocks(unittest.TestCase):
+    """The miko's fringe is one surface with the long locks hanging past her chin either side of her face:
+    grouped with them by angle it lay in their roots' hand-over, 60% on the head, and never swung."""
+
+    @classmethod
+    def setUpClass(cls):
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        verts, faces = _sheet(-0.08, 0.08, 1.0, 1.6, -0.12, 17, 31, 0)
+        middle = verts[faces].mean(axis=1)
+        faces = faces[~((np.abs(middle[:, 0]) < 0.045) & (middle[:, 2] < 1.44))]  # the face's window
+        used = np.unique(faces)
+        verts, faces = verts[used], np.searchsorted(used, faces)
+        data = bpy.data.meshes.new("hair")
+        data.from_pydata(verts.tolist(), [], faces.tolist())
+        cls.mesh = bpy.data.objects.new("hair", data)
+        bpy.context.scene.collection.objects.link(cls.mesh)
+        joints = {key: np.array(p, float) for key, p in (("hips", (0, 0, 0.9)), ("head", (0, 0, 1.4)))}
+        armature_data = bpy.data.armatures.new("Armature")
+        cls.armature = bpy.data.objects.new("Armature", armature_data)
+        bpy.context.scene.collection.objects.link(cls.armature)
+        rig.make_active(cls.armature)
+        bpy.ops.object.mode_set(mode="EDIT")
+        for key in ("hips", "head"):
+            bone = armature_data.edit_bones.new(rig.BONE_NAMES[key])
+            bone.head, bone.tail = joints[key].tolist(), (joints[key] + [0, 0, 0.1]).tolist()
+        bpy.ops.object.mode_set(mode="OBJECT")
+        cls.mesh.vertex_groups.new(name=rig.BONE_NAMES["head"]).add(list(range(len(verts))), 1.0, "REPLACE")
+        features = {"left_eye": np.array([0.03, -0.1, 1.5]), "right_eye": np.array([-0.03, -0.1, 1.5]),
+                    "eye_size": np.array([0.02, 0.01])}
+        cls.chains = hair.build_hair_bones(cls.mesh, cls.armature, joints, features, np.ones(len(verts), dtype=bool))
+        cls.verts = verts
+
+    def test_the_fringe_swings_on_a_short_chain_of_its_own(self):
+        bones = self.armature.data.bones
+        short = [c for c in self.chains if min(bones[n].tail_local.z for n in c) > 1.4]
+        self.assertTrue(short, "no chain ends above the jaw")
+        fringe = np.flatnonzero((np.abs(self.verts[:, 0]) < 0.03) & (self.verts[:, 2] < 1.5))
+        names = {g.index: g.name for g in self.mesh.vertex_groups}
+        own = {n for c in short for n in c}
+        on_bangs = [sum(g.weight for g in self.mesh.data.vertices[int(i)].groups if names[g.group] in own) for i in fringe]
+        self.assertGreater(float(np.mean(on_bangs)), 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,10 @@ HANGS_BELOW_CENTER = 0.35
 FRONT_ANGLE = math.radians(60)
 FRONT_HUNG = "front_hung"
 FRONT_HANGS_ABOVE = 0.35
+# ... and in front means no deeper than this (head radii) behind the eyes too: by angle alone the plain boy's
+# spiky side tufts, level with the middle of his head, hung from there on three chains and read stretched in
+# Warudo (none before), and the layer of hair under the miko's fringe ran her bangs' chains back into her head
+FRONT_DEPTH = 0.4
 MIN_CHAIN_LENGTH = 0.4
 # Fraction of a chain's length over which weight hands over from the head bone.
 ROOT_BLEND = 0.12
@@ -65,7 +69,7 @@ def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None, off_a
         hair = np.nonzero(hair_mask)[0]
     else:
         hair = _hair_vertices(mesh_obj, verts, features["hair_color"], head)
-    in_front = np.abs(head.angle(verts)) < FRONT_ANGLE
+    in_front = (np.abs(head.angle(verts)) < FRONT_ANGLE) & (verts[:, 1] < head.center[1] - (1.0 - FRONT_DEPTH) * head.radius)
     hang_line = np.where(in_front, head.center[2] + FRONT_HANGS_ABOVE * head.radius,
                          head.center[2] - HANGS_BELOW_CENTER * head.radius)
     hanging = np.zeros(len(verts), dtype=bool)
@@ -83,6 +87,12 @@ def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None, off_a
     welded_hanging[weld[hanging]] = True
     within = welded_hanging[a] & welded_hanging[b]
     labels = _component_labels(len(verts), a[within], b[within])[weld]
+    # bangs: hanging hair across the face (between the eyes' outer corners) above the jaw is a strand of
+    # its own, as VRoid's bangs have chains of their own. One surface with the long front locks, the miko's
+    # fringe was grouped with them by angle alone and lay in their root's hand-over: 60% on the head, still
+    # in Warudo
+    bangs = _bangs(verts, head, features, hanging & in_front, float(joints["head"][2]))
+    labels = np.where(bangs, labels + labels.max() + 1, labels)
 
     chains, strands = [], []
     for label in np.unique(labels[hanging]):
@@ -124,6 +134,14 @@ def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None, off_a
                 armature.data.bones[chain.names[0]][FRONT_HUNG] = True
         _reweight(mesh_obj, verts, head, strands, np.flatnonzero(hanging & ~covered))
     return [chain.names for chain in chains]
+
+
+def _bangs(verts, head, features, front, jaw_z):
+    """Of the `front` vertices, those across the face (within the eyes' outer corners) above `jaw_z` (the head
+    joint's height): what hangs lower in front is a lock over the chest."""
+    eyes = np.array([features["left_eye"], features["right_eye"]], dtype=float)
+    span = np.ptp(eyes[:, 0]) / 2 + float(np.asarray(features.get("eye_size", (0.0, 0.0)))[0]) / 2
+    return front & (np.abs(verts[:, 0] - head.center[0]) < span) & (verts[:, 2] > jaw_z)
 
 
 def _on_the_head(mesh_obj, members):
