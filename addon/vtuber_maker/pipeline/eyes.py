@@ -901,6 +901,40 @@ def _filled(values):
     return np.interp(np.arange(len(values)), np.nonzero(good)[0], values[good])
 
 
+def _face_outside(surface, xz, face, inside):
+    """World depth (y) of `surface` seen from the front at each (x, z) whose face-picture pixel isn't in the
+    mask `inside` (the whole picture's); NaN at the others and where nothing is hit."""
+    xz = np.asarray(xz, float)
+    depth = np.full(len(xz), np.nan)
+    px = np.floor(face.pixel(xz)).astype(int)
+    h, w = inside.shape
+    on = (px[:, 0] >= 0) & (px[:, 0] < w) & (px[:, 1] >= 0) & (px[:, 1] < h)
+    within = np.zeros(len(xz), bool)
+    within[on] = inside[px[on, 1], px[on, 0]]
+    for index in np.flatnonzero(~within):
+        hit = surface.ray_cast(Vector((xz[index, 0], -10.0, xz[index, 1])), Vector((0.0, 1.0, 0.0)), 20.0)[0]
+        if hit is not None:
+            depth[index] = hit.y
+    return depth
+
+
+def _skin_tree(mesh_obj, slot):
+    """A BVH of the face patch's own polygons (material `slot`) in world space, the eye layers left out: hair
+    in front of the eyes (the miko's bangs) is no face to tuck behind."""
+    mesh = mesh_obj.data
+    tris = meshdata.triangles(mesh)
+    polygon_of = np.empty(len(mesh.loop_triangles), np.int64)
+    mesh.loop_triangles.foreach_get("polygon_index", polygon_of)
+    materials = np.empty(len(mesh.polygons), np.int64)
+    mesh.polygons.foreach_get("material_index", materials)
+    layered = np.zeros(len(mesh.vertices), bool)
+    for name in (WHITE_ATTRIBUTE, LID_ATTRIBUTE, IRIS_ATTRIBUTE):
+        if name in mesh.attributes:
+            layered |= get_int(mesh, name) > 0
+    keep = (materials[polygon_of] == slot) & ~layered[tris].any(axis=1)
+    return BVHTree.FromPolygons([Vector(v) for v in meshdata.world_vertices(mesh_obj)], tris[keep].tolist())
+
+
 def _add_grid(mesh_obj, corners_xz, depth_of, uv_of, columns, rows_, slot, group, marks):
     """Add a grid of quads spanning `corners_xz` ((x0, z0), (x1, z1)) at world depth depth_of(xz).
 
@@ -1841,6 +1875,7 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
     rows = image_rows(face.image)
     iris_rows = np.zeros_like(rows)
     windows = np.zeros(rows.shape[:2], bool)
+    as_painted = np.zeros(rows.shape[:2], bool)  # each eye's white and iris as painted on the face picture
     rest = meshdata.world_vertices(mesh_obj)
     marked = marked_eyes(points, face.size)
     size = face.metres_per_pixel
@@ -1928,7 +1963,11 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
         hole = ((_dilate(known, OUTLINE_REACH) & round_iris | _behind(face, eye, painted_circle, curve, others))
                 & _dilate(window, OUTLINE_REACH)) & ~lid & ~covered
         saturation, value = _saturation_value(rgb)
-        near = _dilate(eye.marked, max(2, int(OPENING_REACH * eye.height)))
+        # the eye's own white: within the opening read off the drawing (and a few pixels round its edge), not
+        # within reach of the marks: the miko's pale pink lower lid and the skin at her outer corner lie
+        # inside the marks, pale enough to pass for white, and were painted it, a flat white plane past her
+        # drawn eye in Warudo
+        near = _dilate(opening, OUTLINE_REACH)
         bright = near & ~hole & (saturation < IRIS_SATURATION)
         white = bright & (value > WHITE_LINE * np.percentile(value[bright], WHITE_TONE)) if bright.any() else bright
         # ... and the white that always showed is evened with it: the generator's own white kept the
@@ -1938,6 +1977,7 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
         # what shows there must show the picture: some of the face round a disc is still on the
         # model's own texture, with the generator's own paint of the iris's rim (a dark notch stayed)
         hy, hx = np.nonzero(hole | whitened)
+        as_painted[y0:y1, x0:x1] |= _dilate(hole | whitened, OUTLINE_REACH)
         opened = face.world([[hx.min() + x0, hy.min() + y0], [hx.max() + 1 + x0, hy.max() + 1 + y0]])
         under = set()
         for x, z in face.world(np.stack([hx + x0 + 0.5, hy + y0 + 0.5], axis=1)[::WINDOW_STEP * 2]):
@@ -1988,7 +2028,12 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
                                             BONE_NAMES["head"], {LID_ATTRIBUTE: SIDE_IDS[side], face_rig.FIXED_ATTRIBUTE: 1})
         # the white, on a surface of its own right behind the disc (see WHITE_ROUND)
         wide = (np.minimum(low, info["opened"][0] - WHITE_ROUND), np.maximum(high, info["opened"][1] + WHITE_ROUND))
-        behind = lambda xz, curve=info["curve"], on=on_disc, d=deepest: curve(on(np.asarray(xz, float))) + d + 2 * BACKING_GAP  # noqa: E731
+        deep = lambda xz, curve=info["curve"], on=on_disc, d=deepest: curve(on(np.asarray(xz, float))) + d + 2 * BACKING_GAP  # noqa: E731
+        # ... and outside the eye as painted, behind the face: the sheet is flat over a box round the opening,
+        # and at the box's corners the face curves away in front of nothing: the miko's stood 12.5 mm out of her
+        # face there, "a flat plane on the eyes" in Warudo
+        skin = _skin_tree(mesh_obj, patch_slot)
+        behind = lambda xz, f=deep, s=skin: np.fmax(f(xz), _face_outside(s, xz, face, as_painted) + BACKING_GAP)  # noqa: E731
         info["socket_depth"] = _socket_depth(others, info["opened"], info["curve"], on_disc)
         backing = _add_grid(mesh_obj, np.array(wide), behind, face.uv, *FRAME_GRID, patch_slot,
                             BONE_NAMES["head"], {WHITE_ATTRIBUTE: SIDE_IDS[side], face_rig.FIXED_ATTRIBUTE: 1})

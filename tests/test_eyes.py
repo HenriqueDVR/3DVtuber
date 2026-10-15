@@ -470,6 +470,26 @@ class FaceOverTheDisc(unittest.TestCase):
         self.assertEqual(self.classes(0.003), (False, False))   # behind: the disc shows anyway
 
 
+class TheWhiteTuckedBehindTheFace(unittest.TestCase):
+    """The miko's eye-white sheet stood 12.5 mm out of her face past the eye she was drawn with."""
+
+    def test_only_outside_the_painted_eye_is_the_face_read(self):
+        from mathutils import Vector
+        from mathutils.bvhtree import BVHTree
+
+        class Picture:  # 100 x 100 px over x, z in -0.05 .. 0.05
+            def pixel(self, xz):
+                return (np.asarray(xz) + 0.05) * 1000.0
+
+        face = BVHTree.FromPolygons([Vector(v) for v in ((-0.1, 0.02, -0.1), (0.1, 0.02, -0.1), (0.1, 0.02, 0.1),
+                                                          (-0.1, 0.02, 0.1))], [(0, 1, 2, 3)])
+        inside = np.zeros((100, 100), bool)
+        inside[40:60, 40:60] = True  # the painted eye round the middle
+        depth = eyes._face_outside(face, [(0.0, 0.0), (0.03, 0.03)], Picture(), inside)
+        self.assertTrue(np.isnan(depth[0]))
+        self.assertAlmostEqual(depth[1], 0.02, places=6)
+
+
 class MovingIrisReading(unittest.TestCase):
     def test_an_iris_read_as_wide_as_its_eye_takes_the_other_mirrored(self):
         # the demon girl's left iris read 45 mm wide in an opening of 46 (a strand of fringe across it)
