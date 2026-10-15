@@ -61,6 +61,11 @@ JAW_VOWEL = 1.0         # share of the "aa" vowel mixed into jawOpen
 # Painted eyes (face points given to the build) close from both sides instead, by
 # face_rig.squeeze_shut, face_rig.PAINTED_BLINK of the way by default.
 CLOSE_LINE = 0.4
+# An eye insert whose box is under this share of the marked eye's isn't the eye, and the blink is sized
+# from the marks. Between a scrap of 1.7% and model B's inserts at 13% (27 x 13 mm in eyes marked
+# 58 x 48: her blink, made from them, is the one seen and kept); model A's are 58%. An insert between
+# the two that is no eye either is not caught.
+SCRAP_INSERT = 0.05
 # Surfaces within this depth (m) of the front of the painted eye blink with it.
 PAINT_DEPTH = 0.05
 
@@ -105,6 +110,12 @@ def main():
         render(obj, shapes, args.renders, args.blink_tries)
 
 
+def is_scrap(insert, marked):
+    """Whether an eye insert (its vertices) is too small to be the eye marked (x0, z0, x1, z1): see SCRAP_INSERT."""
+    x0, z0, x1, z1 = marked
+    return bool(np.ptp(insert[:, 0]) * np.ptp(insert[:, 2]) < SCRAP_INSERT * abs((x1 - x0) * (z1 - z0)))
+
+
 class FaceShapes:
     def __init__(self, obj, painted_eyes=False):
         """`painted_eyes`: blink as painted eyes do even with eye inserts (see add_eye_tracking.py --modelled)."""
@@ -135,9 +146,18 @@ class FaceShapes:
         # ... unless the eye step asks: where the inserts are the irises alone and slide themselves
         # (eyes.add_modelled_irises), the lid blink, sized from the insert, closed only the middle
         # of each eye (the plain boy's, over his 21 mm iris, the lash line's two ends left up)
+        marked = painted
         if (inserts > 0).any() and not painted_eyes:
             painted = None
         self.painted = painted is not None
+        if not self.painted and marked is not None:
+            # ... and where an insert is a scrap of the eye, the lids close over the eye that was marked: a
+            # girl in glasses, her eye one surface with her face, had a piece of 4 x 5.5 mm found for the
+            # insert in an eye marked 39 x 31 mm, and her blink moved 21 vertices 1.3 mm
+            for side, (x0, z0, x1, z1) in marked.items():
+                insert = self.eyes.get(side)
+                if insert is not None and len(insert) and is_scrap(insert, (x0, z0, x1, z1)):
+                    self.eyes[side] = np.array([[x0, 0.0, z0], [x1, 0.0, z1]])
         if painted is not None:
             # the painted eyes, where face points put them: the inserts can sit elsewhere
             self.eyes = {side: np.array([[x0, 0.0, z0], [x1, 0.0, z1]]) for side, (x0, z0, x1, z1) in painted.items()}
@@ -278,7 +298,7 @@ class FaceShapes:
         for side in ("Left", "Right"):
             sign = 1 if side == "Left" else -1
             self.add(f"mouth{side}", self.bump(self.mouth, 1.6 * w, [sign * SIDE_SHIFT * w, 0, 0]))
-        print("added mouth shapes")
+        print("added mouth shapes; the patch brought in front of the face in", face_rig.patch_in_front(self.obj), "of them")
 
     def add_mouth_from_vowels(self):
         """ARKit mouth shapes that move only the mouth patch, for faces too coarse to bend round it.
@@ -329,7 +349,8 @@ class FaceShapes:
                 points[:, 0] += sign * FREE_SLIDE * w
                 return points
             self.add(f"mouth{side}", on_patch(slide))
-        print("added mouth shapes that move only the mouth")
+        print("added mouth shapes that move only the mouth; the patch brought in front of the face in",
+              face_rig.patch_in_front(self.obj), "of them")
 
     def add_blink(self, suffix, amount):
         if self.painted:

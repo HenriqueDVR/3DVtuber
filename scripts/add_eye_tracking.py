@@ -41,6 +41,9 @@ def main():
     ap.add_argument("--modelled", action="store_true",
                     help="the irises are modelled discs in their sockets: slide the discs themselves, each with a picture of "
                          "its own (the app tries this when the moving iris is refused)")
+    ap.add_argument("--blink-only", action="store_true",
+                    help="no looking: the marked eyes blink as painted eyes do (the app's last try when every way of "
+                         "moving them is refused)")
     ap.add_argument("--still-iris", action="store_true",
                     help="moving iris: in a blink the lids slide down over a still iris (default: the iris squeezes with the eye)")
     ap.add_argument("--lid-travel", type=float, default=1.0,
@@ -48,6 +51,8 @@ def main():
     ap.add_argument("--iris-shape", choices=("circle", "oval"), help="with --modelled: the iris's shape, instead of the one read off the drawing")
     ap.add_argument("--iris-size", type=float, default=1.0, help="with --modelled: the iris this many times the size read (no wider than its disc)")
     ap.add_argument("--travel", type=float, default=1.0, help="how far the eyes look, as a factor on what the build works out")
+    ap.add_argument("--upright", type=float, default=1.0,
+                    help="moving iris: how far the eyes look up and down, as a factor (0: sideways only)")
     ap.add_argument("--blink", type=float, default=1.0, help="how far the eyes close, as a factor on the blink the build made")
     ap.add_argument("--only", choices=("left", "right"),
                     help="the character's other eye is covered (hair, an eyepatch): it is left as it is, with no blink")
@@ -66,6 +71,20 @@ def main():
     if mesh.shape_keys is None:
         raise SystemExit("no shape keys: run scripts/add_face_tracking.py first")
     points = face_points.load(args.face)
+    if args.blink_only:
+        # the blink alone, as the modelled irises' is made: the face step's lid blink is sized from the
+        # inserts and, never replaced, moved the demon girl's lids 2.8 mm (the princess's 6.2) once
+        # every way of moving her eyes was refused: no blink in Warudo
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import add_face_tracking
+        add_face_tracking.FaceShapes(obj, painted_eyes=True).add_blink("", face_rig.PAINTED_BLINK * args.blink)
+        if args.only:
+            covered = "right" if args.only == "left" else "left"
+            print(f"the {covered} eye is covered: left as it is, {len(eyes.still_blink(obj, covered))} blink keys emptied")
+        bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath(args.out_blend), copy=True)
+        vrm_export.export(Path(bpy.path.abspath(args.out_vrm)), arm)
+        print("wrote", args.out_blend, "and", args.out_vrm, "(blink only, no looking)")
+        return
     if renders:
         render_views(obj, points, renders, {"before": {}})
 
@@ -91,11 +110,38 @@ def main():
         numbers, failures = eyes.check_modelled(obj, built, points)
         report_modelled(built, numbers)
     else:
-        built = eyes.add_moving_irises(obj, points, still_iris=args.still_iris, travel=args.travel, only=args.only)
+        built = eyes.add_moving_irises(obj, points, still_iris=args.still_iris, travel=args.travel, only=args.only,
+                                       upright=args.upright)
         if args.lid_travel != 1.0:
             eyes.scale_blinks(obj, args.lid_travel)
         parts = built["eyes"]
         numbers, failures = eyes.check_irises(obj, built)
+        travel, upright = args.travel, args.upright
+        for _ in range(2):
+            if not failures:
+                break
+            if upright > 0 and all(("Up" in f or "Down" in f) for f in failures):
+                # an iris drawn as tall as the eye (the princess's) crosses a lid looking up or down only: it
+                # looks sideways alone, the face's lids hide the rest
+                print(f"the moving iris showed over the lids only looking up or down ({len(failures)} looks): it moves sideways alone")
+                upright = 0.0
+            elif max(_share_of(f) for f in failures) <= SMALL_REFUSAL:
+                # a few points more than the check allows (the demon girl's fringe over her left iris looking
+                # out, 7 of 395): the iris looks less far rather than not at all
+                print(f"the moving iris was refused by a few points ({len(failures)} looks): it looks {LESS:.0%} as far")
+                travel *= LESS
+            else:
+                break
+            bpy.ops.wm.revert_mainfile()
+            arm = next(o for o in bpy.data.objects if o.type == "ARMATURE")
+            obj = next(o for o in bpy.data.objects if o.type == "MESH" and o.parent == arm)
+            mesh = obj.data
+            built = eyes.add_moving_irises(obj, points, still_iris=args.still_iris, travel=travel, only=args.only,
+                                           upright=upright)
+            if args.lid_travel != 1.0:
+                eyes.scale_blinks(obj, args.lid_travel)
+            parts = built["eyes"]
+            numbers, failures = eyes.check_irises(obj, built)
         report_irises(built, numbers)
     if args.only:
         covered = "right" if args.only == "left" else "left"
@@ -141,6 +187,18 @@ def report_modelled(built, numbers):
           f"round them moved onto the face patch; "
           f"checked {numbers['points']} iris points over every look and blink: most showing outside the eye in one look "
           f"{numbers['outside']}, fewest showing at all {numbers['shown_least']}")
+
+
+# A moving iris refused by no more than this share of its points in any look is tried again looking LESS as far.
+SMALL_REFUSAL = 0.03
+LESS = 0.7
+
+
+def _share_of(failure):
+    """The share of points a check's failure line names ("... 7 of 395 points"); 1 when it names none."""
+    import re
+    found = re.search(r"(\d+) of (\d+) points", failure)
+    return int(found.group(1)) / int(found.group(2)) if found else 1.0
 
 
 def report_irises(built, numbers):

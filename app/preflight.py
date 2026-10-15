@@ -533,7 +533,7 @@ def _eyes(c):
     if c.project.improving:
         return
     chosen = c.data["options"].get("eyes")
-    if chosen in ("iris", "modelled", "slide") and not (c.data.get("face") and c.marks_eyes):
+    if chosen in engine.EYE_MODES and not (c.data.get("face") and c.marks_eyes):
         yield _line(WARN, "VM-EYES-UNMARKED", at="build")
     fell = c.state.get("eyes_fallback")
     ran = c.steps.get("eyes", {}).get("finished") or (c.steps.get("eyes", {}).get("last_failure") or {}).get("finished")
@@ -573,12 +573,10 @@ def _again(c):
 
 
 def _eyes_have_another_way(c):
-    """engine.Project._eyes_fall_back's own rule: an automatic iris, disc or remembered patch that
-    is refused leaves another way to try; painted eyes that slide from the start leave none."""
+    """engine.Project._eyes_fall_back's own rule: an automatic way of moving the eyes that is refused
+    leaves another to try, the blink alone last (engine.EYE_MODES)."""
     now = c.options["eyes"]
-    if c.data["options"].get("eyes") is not None or now not in ("iris", "modelled", "slide"):
-        return False
-    return not (now == "slide" and c.state.get("eyes_fallback") != "slide")
+    return c.data["options"].get("eyes") is None and now in engine.EYE_MODES[:-1]
 
 
 def _unchanged(c, failure):

@@ -223,6 +223,10 @@ CHECKS = {"movement", "springs"}
 # Chest bounce too: a chest it can't find leaves the avatar without the bounce.
 # And the finger guides: hands they can't read (a tester's game model, gloves with trims: "found 2
 # digits standing out from the hand, need 5") keep the fingers the step before gave them.
+# The ways the eye step moves eyes, tried in this order when the build chose for itself; the blink alone
+# last, so a character with marked eyes always blinks (the demon girl's lids moved 2.8 mm once all three
+# were refused, which read as none in Warudo).
+EYE_MODES = ("iris", "modelled", "slide", "blink")
 SOFT = {"face_tracking", "chest", "eyes", "mouth", "finger_guides"}
 # Steps that make what a finished .vrm already has, with what of the file's stays instead: a
 # character whose source is a .vrm (manifest.improves) is taken in as it is and these don't run.
@@ -251,6 +255,8 @@ EYES_FALLBACK = {
     "slide": ("the moving iris was refused and the model's own iris discs couldn't be used either, "
               "so the eyes slide as a painted patch instead"),
     "iris": ("the sliding patch an earlier build fell back to was refused, so the moving iris is tried again"),
+    "blink": ("every way of moving the eyes was refused, so they only blink: the whole marked eye closes, "
+              "and they don't look around"),
 }
 # What the page offers when the eye step refuses the very mode its own advice names (errors.KNOWN: "set
 # eyes to slide"): a tester's fox girl failed with `eyes: slide` and was told to set eyes to slide.
@@ -397,9 +403,11 @@ class Project:
         if options["eyes"] is None:
             # with face points, eyes move by default: modelled eyes as irises, painted ones as patches
             options["eyes"] = ("iris" if survey.get("parts", {}).get("eye_inserts") else "slide") if self.data.get("face") else "none"
-            # an iris the eye step refused (taller than the opening: model A's T-pose FBX) slides instead
-            if options["eyes"] == "iris" and self.state.get("eyes_fallback"):
-                options["eyes"] = self.state["eyes_fallback"]
+            # an iris the eye step refused (taller than the opening: model A's T-pose FBX) slides instead;
+            # whatever was refused, the eyes at least blink (EYE_MODES, last)
+            fallback = self.state.get("eyes_fallback")
+            if fallback in EYE_MODES and EYE_MODES.index(fallback) > EYE_MODES.index(options["eyes"]):
+                options["eyes"] = fallback
         if self.data.get("face") and not marks_eyes(_read_json(manifest.path_of(self.data, "face"), None)):
             # only the mouth is marked: there are no eyes to move or to close
             options["eyes"] = "hidden"
@@ -588,11 +596,14 @@ class Project:
         ships = self.ships()
         if ships:
             done = lambda name: steps.get(name, {}).get("status") == "done"  # noqa: E731
-            in_file, to_see = shipping_problems(ships, {"tpose": done("tpose"), "eyes": done("eyes"),
+            in_file, to_see = shipping_problems(ships, {"tpose": done("tpose"), "eyes": done("eyes") and self.options()["eyes"] != "blink",
                                                         "blink": (done("face_tracking") or done("eyes"))
                                                         and self.options()["eyes"] != "hidden"})
             issues += [("build", f"exported file: {line}") for line in in_file]
             looks += [("face", line) for line in to_see]
+            if done("eyes") and self.options()["eyes"] == "blink":
+                looks.append(("face", "the eyes blink but don't look around: every way of moving them was refused "
+                                      "(the Face page's eye marks, or the eyes option, may let one through)"))
             # a .vrm taken in must come out with everything it had
             issues += [("build", f"exported file: {line}") for line in lost(self.source_holds(), ships)]
         # the loose step measures itself and undoes a tidy-up that tore the rig: the avatar is safe,
@@ -1184,7 +1195,8 @@ class Project:
         if name == "survey":
             # the marked eyes say which pieces are the eyes (by size the fox girl's ears were, and her face was hair)
             return ["preflight.py", source, "--json", stem.with_suffix(".json"), "--height", o["height"],
-                    *(["--face", face] if face else [])], []
+                    *(["--face", face] if face else []),
+                    *(["--rig", manifest.path_of(data, "rig")] if data.get("rig") and not self.keeping else [])], []
         if name == "build" and self.keeping:
             # the height as the manifest has it: `o` reads it back from this step's own report
             return ["import_rigged.py", source, vrm, "--blend", blend, "--name", self.name, "--author", data.get("author") or "Unknown",
@@ -1207,6 +1219,8 @@ class Project:
                 args += ["--mouth-colour", o["mouth_colour"]]
             if not o["hair_hits_body"]:
                 args.append("--hair-head-only")
+            if not o["sleeve_springs"]:
+                args.append("--no-sleeve-springs")
             return args, NO_EXPORT
         if name == "movement":
             reference = manifest.path_of(data, "reference") or source
@@ -1268,7 +1282,9 @@ class Project:
             args += ["--height", o["height"], "--amount", o["chest_amount"]]
         if name == "eyes":
             args += ["--face", face]
-            if o["eyes"] == "slide":
+            if o["eyes"] == "blink":
+                args.append("--blink-only")
+            elif o["eyes"] == "slide":
                 args += ["--slide", *o["slide"]]
             elif o["eyes"] == "modelled":
                 args.append("--modelled")
@@ -1329,17 +1345,20 @@ class Project:
         (remembered in the state, so later builds of the same model slide straight away)."""
         refused = name == "eyes" and (error.known or {}).get("code") == "VM-EYES-REFUSED"
         now = self.options()["eyes"]
-        if not refused or self.data["options"]["eyes"] is not None or now not in ("iris", "modelled", "slide"):
+        if not refused or self.data["options"]["eyes"] is not None or now not in EYE_MODES[:-1]:
             return False
         if now == "slide" and self.state.get("eyes_fallback") != "slide":
-            return False  # painted eyes, which slide from the start: there is nothing else to try
+            # painted eyes, which slide from the start: the blink alone is left (the chibi's, refused)
+            self.state["eyes_fallback"] = "blink"
+            self._save_state()
+            return True
         # the established moving iris first (model A's builds, seen good in Warudo, keep it); then the
         # model's own iris discs, where it has them (the plain boy, the catgirl); the painted patch last.
         # A patch remembered from an older build and refused now (the fox girl's, from before her discs
         # could slide) leaves the two before it to try: the build stayed without eyes for good
         tried = self.__dict__.setdefault("_eyes_tried", set())
         tried.add(now)
-        left = [mode for mode in ("iris", "modelled", "slide") if mode not in tried]
+        left = [mode for mode in EYE_MODES if mode not in tried]
         if not left:
             return False
         if left[0] == "iris":

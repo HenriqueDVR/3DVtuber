@@ -434,6 +434,66 @@ class SqueezeShut(unittest.TestCase):
         self.assertEqual(move[3], 0.0)  # far to the side
 
 
+class ModelledSlide(unittest.TestCase):
+    def test_an_iris_off_centre_stays_in_its_socket(self):
+        # the miko's: 6.3 mm beside her right iris inward, 16.5 out; from the mean it slid 6.1 mm and left it
+        parts = {"left": {"white_beside": (0.0093, 0.0121), "iris_size": (0.0197, 0.0197)},
+                 "right": {"white_beside": (0.0063, 0.0165), "iris_size": (0.0197, 0.0197)}}
+        across, up = eyes.modelled_slide(parts)
+        self.assertAlmostEqual(across, eyes.SIDE_ROOM_MOST * 0.0063, places=6)
+        self.assertAlmostEqual(up, eyes.UP_DOWN_TRAVEL * 0.0197, places=6)
+        # centred irises slide as before
+        even = {side: {"white_beside": (0.01, 0.01), "iris_size": (0.02, 0.02)} for side in ("left", "right")}
+        self.assertAlmostEqual(eyes.modelled_slide(even)[0], eyes.SIDE_TRAVEL * 0.01, places=6)
+
+
+class FaceOverTheDisc(unittest.TestCase):
+    """Where the face stands against a modelled iris's disc: in front (it keeps its drawing), about level
+    (the disc takes the drawing and comes in front of it: the miko's pink lower iris on her lower lid)."""
+
+    def classes(self, face_y):
+        from types import SimpleNamespace
+        from mathutils import Vector
+        from mathutils.bvhtree import BVHTree
+        plane = BVHTree.FromPolygons([Vector(v) for v in ((-1, face_y, -1), (1, face_y, -1), (1, face_y, 1), (-1, face_y, 1))], [(0, 1, 2, 3)])
+        face = SimpleNamespace(world=lambda pixels: np.asarray(pixels, float) * 0.001)
+        eye = SimpleNamespace(box=(0, 0, 4, 4))
+        curve = lambda places: np.zeros(len(places))  # noqa: E731 -- the disc at y = 0
+        near = np.ones((4, 4), bool)
+        return (bool(eyes._in_front(face, eye, near, curve, plane).all()),
+                bool(eyes._in_front(face, eye, near, curve, plane, level=True).all()))
+
+    def test_in_front_level_and_behind(self):
+        self.assertEqual(self.classes(-0.003), (True, False))   # well in front: the face's own
+        self.assertEqual(self.classes(-0.0007), (True, True))   # just in front: the disc takes it, and comes forward
+        self.assertEqual(self.classes(0.0002), (False, True))   # level, a little behind
+        self.assertEqual(self.classes(0.003), (False, False))   # behind: the disc shows anyway
+
+
+class MovingIrisReading(unittest.TestCase):
+    def test_an_iris_read_as_wide_as_its_eye_takes_the_other_mirrored(self):
+        # the demon girl's left iris read 45 mm wide in an opening of 46 (a strand of fringe across it)
+        opening = np.zeros((40, 100), bool)
+        opening[10:30, 10:90] = True
+        good = (40.0, 20.0, 12.0, 15.0)  # 8 px left of its opening's middle (50, 20)
+        reads = {"left": (None, None, opening, opening.copy(), (50.0, 20.0, 39.0, 15.0)),
+                 "right": (None, None, opening, opening.copy(), good)}
+        eyes._mirror_misread(reads)
+        self.assertEqual(reads["right"][4], good)
+        self.assertEqual(reads["left"][4], (60.0, 20.0, 12.0, 15.0))
+        self.assertLess(reads["left"][3].sum(), opening.sum())
+        # both read plausibly: nothing changes
+        reads = {side: (None, None, opening, opening.copy(), good) for side in ("left", "right")}
+        eyes._mirror_misread(reads)
+        self.assertEqual(reads["left"][4], good)
+
+    def test_a_moving_iris_never_slides_past_its_narrow_side(self):
+        found = {"left": {"white_outer": 0.0053, "white_inner": 0.0029, "iris_size": (0.022, 0.024)},
+                 "right": {"white_outer": 0.0067, "white_inner": 0.0018, "iris_size": (0.021, 0.022)}}
+        across, _up = eyes.iris_slide(found)
+        self.assertAlmostEqual(across, eyes.SIDE_ROOM_MOST * 0.0018, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()
 

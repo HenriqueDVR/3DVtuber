@@ -450,7 +450,7 @@ class Engine(unittest.TestCase):
         project = self.project({"options": {}, "triangles": 40000, "parts": {"eye_inserts": True}})
         self.assertEqual(project.options()["eyes"], "iris")
         refused = engine.StepFailed("eyes: iris over the lids", errors.describe("VM-EYES-REFUSED"))
-        # first the model's own iris discs, then the painted patch, then nothing more
+        # first the model's own iris discs, then the painted patch, then the blink alone, then nothing more
         self.assertTrue(project._eyes_fall_back("eyes", refused))
         self.assertEqual(project.options()["eyes"], "modelled")
         args, _ = project._arguments("eyes", self.root / "11_eyes", None)
@@ -459,9 +459,13 @@ class Engine(unittest.TestCase):
         self.assertEqual(project.options()["eyes"], "slide")
         args, _ = project._arguments("eyes", self.root / "11_eyes", None)
         self.assertIn("--slide", [str(a) for a in args])
+        self.assertTrue(project._eyes_fall_back("eyes", refused))
+        self.assertEqual(project.options()["eyes"], "blink")
+        args, _ = project._arguments("eyes", self.root / "11_eyes", None)
+        self.assertIn("--blink-only", [str(a) for a in args])
         self.assertFalse(project._eyes_fall_back("eyes", refused))
         # kept for the next build of the same model
-        self.assertEqual(Project(self.path, blender="blender").options()["eyes"], "slide")
+        self.assertEqual(Project(self.path, blender="blender").options()["eyes"], "blink")
         # an iris the user chose stays an iris, and other failures aren't retried
         chosen = self.project({"options": {}, "triangles": 40000}, eyes="iris")
         self.assertFalse(chosen._eyes_fall_back("eyes", refused))
@@ -478,11 +482,17 @@ class Engine(unittest.TestCase):
         self.assertEqual(project.options()["eyes"], "iris")
         self.assertTrue(project._eyes_fall_back("eyes", refused))
         self.assertEqual(project.options()["eyes"], "modelled")
+        self.assertTrue(project._eyes_fall_back("eyes", refused))
+        self.assertEqual(project.options()["eyes"], "blink")
         self.assertFalse(project._eyes_fall_back("eyes", refused))
-        # painted eyes slide from the start: a refusal there has nothing before it to go back to
+        # painted eyes slide from the start: a refusal there leaves the blink alone (the chibi's lids
+        # had only the face step's blink, sized from her inserts)
         painted = self.project({"options": {}, "triangles": 40000, "parts": {}}, eyes=None)
         painted.data["face"] = "face.json"
+        painted.state.pop("eyes_fallback", None)  # (the same state file as the project above: a model of its own)
         self.assertEqual(painted.options()["eyes"], "slide")
+        self.assertTrue(painted._eyes_fall_back("eyes", refused))
+        self.assertEqual(painted.options()["eyes"], "blink")
         self.assertFalse(painted._eyes_fall_back("eyes", refused))
 
     def test_a_refused_patch_is_not_told_to_slide(self):
@@ -3199,6 +3209,13 @@ class Paint(unittest.TestCase):
         self.assertEqual(cli._frame({"size": [0.6, 0.4, 1.84], "joints": {"head": [0, 0, 1.347]}}, 1.6)[0], 0.767)
         self.assertEqual(cli._frame(None, 1.6), (None, 1.0))
 
+    def test_a_chibi_head_gets_a_view_its_size(self):
+        # the chibi girl, 2.5 heads: an adult-sized view cut her eyes at its edges and left out her mouth
+        chibi = {"size": [0.9, 0.5, 1.6], "eyes": [0, -0.32, 1.178], "head": {"height": 0.58}}
+        self.assertEqual(cli._frame(chibi, 1.6), (0.716, 2.522))
+        grown = dict(chibi, head={"height": 0.25})
+        self.assertEqual(cli._frame(grown, 1.6)[1], 1.0)
+
     def test_the_face_patch_has_only_the_views_drawn_that_something_reads(self):
         # render_views.py draws 34 views with their depths, for re-texturing by hand. Drawn so for every new
         # character, 25 of them and 33 depths were read by nothing: half of the face patch's seconds
@@ -5244,8 +5261,11 @@ class Preflight(unittest.TestCase):
         # left on automatic, the build tries the other ways by itself ...
         project = self.failed(self.project(eyes=None), "eyes", "VM-EYES-REFUSED")
         self.assertEqual(self.found(project), {})
-        # ... unless the eyes are painted and slide from the start: there is nothing else to try
+        # ... painted eyes too, which slide from the start: the blink alone is left to try
         project = self.failed(self.project({"parts": {"read": True, "eye_inserts": False}}, eyes=None), "eyes", "VM-EYES-REFUSED")
+        self.assertEqual(self.found(project), {})
+        # ... and once the blink alone failed too there is nothing else
+        project.state["eyes_fallback"] = "blink"
         self.assertIn("VM-EYES-REFUSED", self.found(project))
         # a step that stopped the chain, the same: arms the survey couldn't find stay unfound
         project = self.failed(self.project(), "build", "VM-ARMS-AT-SIDES", soft=False)

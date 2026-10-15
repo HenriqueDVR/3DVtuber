@@ -74,6 +74,23 @@ SAMPLE_STEP = 0.001
 # average over both sides of both eyes: an iris near one corner still slides the same both ways,
 # and the lids hide what passes under the corner); up and down, this share of its own height.
 SIDE_TRAVEL = 0.55
+# A modelled iris's picture is the drawing within this many times the circle read off it, about its
+# middle: the circle is read from the iris's saturated or dark part, and an iris drawn dark above and
+# pale pink below (the miko's), or with a catchlight on its rim, or a darker band over it (the
+# knight's), was read a third too small; everything of the drawing past the circle was painted white,
+# and the iris showed small in a lot of white. Grown, looking ahead the eye is the drawing itself; a
+# ring of the white round it moves with the iris, over the white.
+IRIS_MARGIN = 1.6
+# Pixels of an iris drawn on the face level with its disc (from LEVEL_REACH (m) in front of it to RIM_FRONT
+# behind) past which the disc takes them and is brought LEVEL_AHEAD in front of that face; under it the two
+# fought and the face won. Brought 1 mm with only the face within 0.5 mm taken, the disc covered face just in
+# front of it with made-up ring colours (pale): the miko's iris showed a third narrower than drawn.
+LEVEL_PIXELS = 50
+LEVEL_REACH = 0.001
+LEVEL_AHEAD = 0.0015
+# ... and a modelled iris never more than this of the room on its narrower side: from the mean, the
+# miko's right iris (6.3 mm beside it inward, 16.5 out) slid 6.1 mm and left its socket in Warudo
+SIDE_ROOM_MOST = 0.7
 UP_DOWN_TRAVEL = 0.1
 IRIS_GRID = 16
 # The iris layer reaches this share of the iris's height past the window, above and below: what
@@ -90,7 +107,11 @@ MIN_CLEARANCE = 0.0001
 # The share of an iris's points in one look that may show wrongly before the check fails. A
 # blink and a look at once add two moves model B's round face can't follow exactly: up to
 # BLINK_STRAY of a sliding patch may dip into it for the moment the eye is shut (4.3% measured).
-STRAY = 0.01
+# (1% until 2026-10-15: the princess's iris and the demon girl's were refused for 5 and 4 points of 370
+# and 351, where the window's edge meets the lids' polygons)
+STRAY = 0.015
+# An iris read wider than this share of its own opening is a misread (_mirror_misread).
+IRIS_TOO_WIDE = 0.85
 BLINK_STRAY = 0.05
 PATCH_CLEARANCE = 0.0004
 # Sliding eyes: a patch this many columns and rows, laid this far in front of the face (m), sliding
@@ -465,6 +486,27 @@ def find_iris(rgb, opening):
     if not (0.6 * width < 2 * rx < 1.5 * width and 0.3 * width < ry < 1.5 * width):
         return iris, fallback
     return iris, fit
+
+
+def _mirror_misread(reads):
+    """An iris read nearly as wide as its own opening (IRIS_TOO_WIDE) when the other eye's isn't takes the
+    other's, mirrored about the two openings' middles (changes `reads`: {side: (eye, rgb, opening, iris,
+    ellipse)}). The demon girl's left iris read 45 mm wide in an opening of 46, a strand of fringe across
+    it: no white beside it, and both irises slid 0.6 mm."""
+    if len(reads) != 2:
+        return
+    def middle(opening):
+        ys, xs = np.nonzero(opening)
+        return (xs.min() + xs.max() + 1) / 2, (ys.min() + ys.max() + 1) / 2, xs.max() + 1 - xs.min()
+    share = {side: 2 * r[4][2] / middle(r[2])[2] for side, r in reads.items()}
+    for bad, good in (("left", "right"), ("right", "left")):
+        if share[bad] > IRIS_TOO_WIDE >= share[good]:
+            eye, rgb, opening, _iris, _ellipse = reads[bad]
+            gx, gy, _gw = middle(reads[good][2])
+            bx, by, _bw = middle(opening)
+            cx, cy, rx, ry = reads[good][4]
+            ellipse = (bx - (cx - gx), by + (cy - gy), rx, ry)
+            reads[bad] = (eye, rgb, opening, ellipse_mask(opening.shape, ellipse) & opening, ellipse)
 
 
 def _fit_ellipse(points):
@@ -914,7 +956,7 @@ def track_surface(face, pixels):
     return (lambda points: terms(points) @ coeffs + shift), float(np.std(residual[use]))
 
 
-def add_moving_irises(mesh_obj, points, still_iris=False, travel=1.0, only=None):
+def add_moving_irises(mesh_obj, points, still_iris=False, travel=1.0, only=None, upright=1.0):
     """Give each marked eye an iris that slides on eyeLook keys, the face under it painted out, lids in front.
 
     Assumes a finished, skinned mesh with a face patch, the character facing -Y, and face points
@@ -934,13 +976,16 @@ def add_moving_irises(mesh_obj, points, still_iris=False, travel=1.0, only=None)
     lids = rows.copy()
     iris_rows = np.zeros_like(rows)
     windows = np.zeros(rows.shape[:2], bool)
-    found = {}
+    found, reads = {}, {}
     for side, eye in shown_eyes(points, face.size, only).items():
         x0, y0, x1, y1 = eye.box
         rgb = rows[y0:y1, x0:x1, :3].astype(np.float64)
         opening = find_opening(rgb, eye)
+        reads[side] = (eye, rgb, opening, *find_iris(rgb, opening))
+    _mirror_misread(reads)
+    for side, (eye, rgb, opening, iris, ellipse) in reads.items():
+        x0, y0, x1, y1 = eye.box
         see = window(opening)
-        iris, ellipse = find_iris(rgb, opening)
         layer, hole = iris_layer(rgb, see, iris, ellipse)
         rows[y0:y1, x0:x1, :3] = paint_out(rgb, see, hole)
         lids[y0:y1, x0:x1, 3][see] = 0.0
@@ -955,7 +1000,8 @@ def add_moving_irises(mesh_obj, points, still_iris=False, travel=1.0, only=None)
     cut_out(mesh.materials[lid_slot])
     cut_out(mesh.materials[iris_slot])
 
-    slide = tuple(travel * reach for reach in iris_slide(found))
+    across, up = iris_slide(found)
+    slide = (travel * across, travel * upright * up)
     for info in found.values():
         info["track"], info["track_spread"] = track_surface(face, info["window_pixels"])
         info["slide"] = slide
@@ -1126,8 +1172,11 @@ def iris_slide(found):
     Sideways, SIDE_TRAVEL of the white beside the irises; up and down, UP_DOWN_TRAVEL of the
     smaller iris's height (see those).
     """
-    white = np.mean([info[key] for info in found.values() for key in ("white_outer", "white_inner")])
-    return (float(SIDE_TRAVEL * white), float(UP_DOWN_TRAVEL * min(info["iris_size"][1] for info in found.values())))
+    rooms = [info[key] for info in found.values() for key in ("white_outer", "white_inner")]
+    # never over SIDE_ROOM_MOST of the narrowest room: from the mean the princess's iris, 1.8 mm from her
+    # inner corner, slid 2.3 mm and showed over the lids looking in
+    return (float(min(SIDE_TRAVEL * np.mean(rooms), SIDE_ROOM_MOST * np.min(rooms))),
+            float(UP_DOWN_TRAVEL * min(info["iris_size"][1] for info in found.values())))
 
 
 def _add_lid_overlay(mesh_obj, face, found, slot, reach):
@@ -1287,6 +1336,7 @@ def check_irises(mesh_obj, built):
             shown = alpha_at(iris_alpha, sample_uv) > 0.5
             # with this eye's lids where they rest, the window is where it was found
             lids_rest = blink is None or np.abs(_key_co(keys[blink])[ids] - basis[ids]).max() < 1e-7
+            sunk_ahead = 0
             for look in looks:
                 co = basis[ids].copy()
                 for direction in look:
@@ -1326,6 +1376,11 @@ def check_irises(mesh_obj, built):
                 shown_count += len(samples)
                 worst["over_lids"] = max(worst["over_lids"], over_lids)
                 worst["sunk"] = max(worst["sunk"], sunk)
+                # what the face covers looking ahead covers the drawing itself (a strand of the demon girl's,
+                # the princess's lashes: 5 points of 370 each): a look is held to what it hides besides
+                if not look:
+                    sunk_ahead = sunk
+                sunk = max(sunk - sunk_ahead, 0)
                 # a point or two where a window's edge pixel meets a polygon's edge isn't a flaw
                 if over_lids > STRAY * len(samples):
                     failures.append(f"iris shows over the lids, {where}: {over_lids} of {len(samples)} points")
@@ -1675,6 +1730,7 @@ def check_sliding(mesh_obj, built):
             height, width = alpha.shape
             px = np.clip(np.stack([sample_uv[:, 0] * width, (1 - sample_uv[:, 1]) * height], axis=1).astype(int), 0, (width - 1, height - 1))
             painted = alpha[px[:, 1], px[:, 0]] > 0.5
+            hidden_ahead = 0
             for look in looks:
                 names = [f"eyeLook{d}{side.title()}" for d in look]
                 if blink is not None and blink.endswith(side.title()):
@@ -1690,6 +1746,11 @@ def check_sliding(mesh_obj, built):
                     if hit is not None and point[1] - CLEAR_CAP < hit.y < point[1]:
                         hidden += 1
                 checked += len(samples)
+                # what the face covers looking ahead covers the painting itself (the chibi's right eye, a
+                # sixth of it under her face at rest): a look is held to what it hides besides
+                if not look:
+                    hidden_ahead = hidden
+                hidden = max(hidden - hidden_ahead, 0)
                 worst = max(worst, hidden)
                 if hidden > (STRAY if blink is None else BLINK_STRAY) * len(samples):
                     where = side + " eye looking " + ("+".join(look) or "ahead") + (" with " + blink if blink else "")
@@ -1719,6 +1780,15 @@ def modelled_irises(mesh_obj, points, only=None):
             return {}
         found[side] = ids
     return found
+
+
+def modelled_slide(parts, travel=1.0):
+    """(sideways, up and down) a modelled iris slides, m: SIDE_TRAVEL of the mean room beside the irises,
+    never over SIDE_ROOM_MOST of the narrowest; UP_DOWN_TRAVEL of their height. `parts`: {side: {"white_beside":
+    (room one side, the other), "iris_size": (w, h)}}."""
+    beside = [info["white_beside"] for info in parts.values()]
+    return (float(travel * min(SIDE_TRAVEL * np.mean(beside), SIDE_ROOM_MOST * np.min(beside))),
+            float(travel * UP_DOWN_TRAVEL * min(info["iris_size"][1] for info in parts.values())))
 
 
 def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, only=None):
@@ -1758,6 +1828,7 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
     repainted = 0
     parts = {}
     read = {}
+    ahead = {}
     for side, ids in found.items():
         eye = marked[side]
         x0, y0, x1, y1 = eye.box
@@ -1770,6 +1841,10 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
         window = eye_window(rgb, eye, opening)
         windows[y0:y1, x0:x1] |= window
         known = outline & window & _seen(face, eye, outline, scene, own)
+        # where the face lies level with the disc the iris is drawn on the face (the miko's pale pink
+        # lower half, on her lower lid): the disc takes that too, and is brought in front of it (LEVEL_AHEAD)
+        level = _in_front(face, eye, outline & window & ~known, _disc_curve(rest[ids]), others, level=True)
+        known |= level
         drawn = shaped(drawn_circle(rgb, outline, known), shape, bigger)
         # the iris goes under the upper lid, as it was drawn: the lash line stays on the frame across
         # it (see under_lid), and what was painted there is no part of the iris's own picture
@@ -1783,6 +1858,8 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
         known &= ~lid
         windows[y0:y1, x0:x1] &= ~lid
         read[side] = (rgb, outline, window, known, drawn, opening, lid)
+        if level.sum() > LEVEL_PIXELS:
+            ahead[side] = int(level.sum())
     if any(known.sum() < 8 * IRIS_RINGS for _rgb, _outline, _window, known, *_ in read.values()):
         return None  # too little of a disc shows between the lids to paint an iris from; nothing is changed yet
     # both irises are one size, the smaller read: lashes running into one make it read bigger
@@ -1794,7 +1871,12 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
         eye = marked[side]
         x0, y0, x1, y1 = eye.box
         rgb, outline, window, known, drawn, opening, lid = read[side]
-        layer, circle = complete_iris(rgb, outline, known, circles.get(side))
+        read_circle = circles.get(side)
+        # the picture and what is painted out of the face: the drawing round the circle too (IRIS_MARGIN);
+        # what the iris is measured by (room beside it, its size): the circle as read
+        grown = None if read_circle is None else (*read_circle[:2], IRIS_MARGIN * read_circle[2], IRIS_MARGIN * read_circle[3])
+        layer, painted_circle = complete_iris(rgb, outline, known, grown)
+        circle = painted_circle if read_circle is None else (*painted_circle[:2], read_circle[2], read_circle[3])
         painted = layer[..., 3] > 0
         iris_rows[y0:y1, x0:x1][painted] = layer[painted]
         # the face's picture without the iris, from the white beside it and nothing else
@@ -1811,9 +1893,13 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
         # (only what was drawn in the iris's colours there, tried: the soft edge of its outline
         # stayed as a ghost of it; the ring this left looking ahead was the fill's tone, see whiten)
         yy, xx = np.mgrid[0:y1 - y0, 0:x1 - x0] + 0.5
-        round_iris = _in_oval(xx, yy, circle, more=OUTLINE_REACH)
-        hole = ((_dilate(known, OUTLINE_REACH) & round_iris | _behind(face, eye, circle, curve, others))
-                & _dilate(window, OUTLINE_REACH)) & ~lid
+        round_iris = _in_oval(xx, yy, painted_circle, more=OUTLINE_REACH)
+        # ... and never where the face stands in front of the disc: the disc never shows there, and
+        # what was drawn there stays. The miko's iris is drawn on to her lower lid, a pale pink bowl down
+        # to her lower lashes: painted white with them, her iris showed as its dark top in a lot of white
+        covered = _in_front(face, eye, _dilate(outline, 2 * OUTLINE_REACH) & ~known, curve, others)
+        hole = ((_dilate(known, OUTLINE_REACH) & round_iris | _behind(face, eye, painted_circle, curve, others))
+                & _dilate(window, OUTLINE_REACH)) & ~lid & ~covered
         saturation, value = _saturation_value(rgb)
         near = _dilate(eye.marked, max(2, int(OPENING_REACH * eye.height)))
         bright = near & ~hole & (saturation < IRIS_SATURATION)
@@ -1821,7 +1907,7 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
         # ... and the white that always showed is evened with it: the generator's own white kept the
         # iris's rim just past the hole (dark arcs on the plain boy's as he looked aside), its shading
         # and strokes (grey and pink bands on the catgirl's)
-        rows[y0:y1, x0:x1, :3], whitened = even_white(whiten(rgb, hole, white), opening, hole, white, lid)
+        rows[y0:y1, x0:x1, :3], whitened = even_white(whiten(rgb, hole, white), opening, hole, white, lid | covered)
         # what shows there must show the picture: some of the face round a disc is still on the
         # model's own texture, with the generator's own paint of the iris's rim (a dark notch stayed)
         hy, hx = np.nonzero(hole | whitened)
@@ -1841,8 +1927,11 @@ def add_modelled_irises(mesh_obj, points, shape=None, bigger=1.0, travel=1.0, on
                        "disc_size": (float(np.ptp(rest[ids, 0])), float(np.ptp(rest[ids, 2]))), "shown_px": int(known.sum()),
                        "opened": (opened.min(axis=0), opened.max(axis=0)),
                        "outline_px": int(outline.sum()), "opening_size": (float(eye.width * size), float(eye.height * size))}
-    slide = (float(travel * SIDE_TRAVEL * np.mean([info["white_beside"] for info in parts.values()])),
-             float(travel * UP_DOWN_TRAVEL * min(info["iris_size"][1] for info in parts.values())))
+    slide = modelled_slide(parts, travel)
+    for side in ahead:
+        # in front of the face it was level with, so the drawing it now carries is what shows
+        _bring_forward(mesh_obj, found[side], LEVEL_AHEAD)
+        rest[found[side], 1] -= LEVEL_AHEAD
 
     _store(face.image, rows)
     frame_rows = rows.copy()
@@ -2111,6 +2200,35 @@ def _overhang(face, eye, circle, curve, scene):
     # picture covers the teeth
     even = _smooth(over[..., None].astype(np.float32), np.ones_like(over), 2 * OUTLINE_REACH, np.ones_like(over))[..., 0]
     return _dilate(even > 0.5, 2) & (yy < cy)
+
+
+def _in_front(face, eye, near, curve, scene, level=False):
+    """The pixels of `near` (a mask of `eye`'s crop) where `scene` (the mesh without the discs), seen from
+    the front, stands in front of the disc's `curve` (by RIM_FRONT, `level` False) or about level with it
+    (LEVEL_REACH in front to RIM_FRONT behind, `level` True): the face over the disc, or as far forward."""
+    x0, y0 = eye.box[:2]
+    over = np.zeros_like(near)
+    ys, xs = np.nonzero(near)
+    places = face.world(np.stack([xs + x0 + 0.5, ys + y0 + 0.5], axis=1))
+    for (x, z), depth, py, px in zip(places, curve(places), ys, xs):
+        hit = scene.ray_cast(Vector((x, -10.0, z)), Vector((0.0, 1.0, 0.0)), 20.0)[0]
+        over[py, px] = hit is not None and (depth - LEVEL_REACH <= hit.y <= depth + RIM_FRONT if level else hit.y < depth - RIM_FRONT)
+    return over
+
+
+def _bring_forward(mesh_obj, ids, amount):
+    """Move vertices `ids` `amount` (m) toward the front (-Y) in the basis and every shape key."""
+    mesh = mesh_obj.data
+    step = np.array(mesh_obj.matrix_world.inverted().to_3x3() @ Vector((0.0, -amount, 0.0)))
+    keys = mesh.shape_keys.key_blocks if mesh.shape_keys else []
+    for block in [*keys, None]:
+        data = mesh.vertices if block is None else block.data
+        co = np.empty(len(data) * 3)
+        data.foreach_get("co", co)
+        co = co.reshape(-1, 3)
+        co[ids] += step
+        data.foreach_set("co", co.ravel())
+    mesh.update()
 
 
 def whiten(rgb, hole, white):
