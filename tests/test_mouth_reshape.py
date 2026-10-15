@@ -197,6 +197,21 @@ class TrackerShapesOnASmallFreeMouth(MouthFixture, unittest.TestCase):
         self.assertLess(pucker[~self.patch, 1].min(), -1e-4)
         self.assertLess(pucker[self.patch, 1].min(), -1e-4)
 
+    def test_no_shape_puts_skin_in_front_of_the_mouth(self):
+        # smiles and frowns moved skin and patch by one bump: skin stood 5 mm through the princess's mouth
+        from mathutils import Vector
+        from mathutils.bvhtree import BVHTree
+        mesh = bpy.data.objects["face"].data
+        polygons = [p.vertices[:] for p in mesh.polygons if not self.patch[list(p.vertices)].all()]
+        for key in self.keys:
+            with self.subTest(key=key.name):
+                points = co(key)
+                face = BVHTree.FromPolygons([Vector(v) for v in points], polygons)
+                for x, y, z in points[self.patch]:
+                    hit = face.ray_cast(Vector((x, y - 0.03, z)), Vector((0.0, 1.0, 0.0)), 0.06)[0]
+                    if hit is not None:
+                        self.assertLessEqual(y, hit.y - face_rig.MOUTH_SURFACE_GAP + 1e-6)
+
 
 class TrackerShapesOnABigFreeMouth(TrackerShapesOnASmallFreeMouth):
     """Drawn big (--scale 1.3, as model A's), the openings never narrow the closed line to nothing:
@@ -213,6 +228,31 @@ class TrackerShapesOnABigFreeMouth(TrackerShapesOnASmallFreeMouth):
         np.testing.assert_allclose(pucker[self.patch, 2], 0.7 * ou[self.patch, 2], atol=1e-6)
         funnel, oh = co(self.keys["mouthFunnel"]) - basis, co(self.keys["oh"]) - basis
         np.testing.assert_allclose(funnel[self.patch, 0], oh[self.patch, 0], atol=1e-6)
+
+
+class AnInsertThatIsNoEye(unittest.TestCase):
+    """The lid blink is sized from the eye insert. A girl in glasses had a scrap of 4 x 5.5 mm found for it
+    in an eye marked 39 x 31 mm: her blink moved 1.3 mm. Model B's inserts, a quarter of her marked eyes'
+    height, make the blink that was seen and kept."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import add_face_tracking
+        cls.tracking = add_face_tracking
+
+    @staticmethod
+    def box(width, height):
+        return np.array([[0.0, 0.0, 0.0], [width, 0.0, height]])
+
+    def test_a_scrap_gives_way_to_the_marks(self):
+        self.assertTrue(self.tracking.is_scrap(self.box(.0039, .0055), (.0229, 1.3902, .0624, 1.4214)))
+
+    def test_a_small_eye_insert_does_not(self):
+        self.assertFalse(self.tracking.is_scrap(self.box(.0274, .0133), (.0308, 1.3024, .0887, 1.3507)))
+
+    def test_nor_an_insert_as_tall_as_the_eye(self):
+        self.assertFalse(self.tracking.is_scrap(self.box(.0234, .0305), (.0173, 1.37, .0581, 1.3999)))
 
 
 if __name__ == "__main__":

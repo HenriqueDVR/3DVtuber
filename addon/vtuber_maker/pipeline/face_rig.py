@@ -545,6 +545,45 @@ def _front_onto_patch(obj, box, au, av, step=0.0002):
     return len(found)
 
 
+def patch_in_front(obj):
+    """Bring the mouth patch forward in every shape key wherever the face, as that key moves it, comes
+    within MOUTH_SURFACE_GAP of it; returns how many keys changed. Never moves it back.
+
+    reshape_mouth lays the vowels so; the shapes add_face_tracking.py builds on them (smiles, frowns,
+    pucker, jaw) move skin and patch by one bump each, the skin under the patch's corners more than
+    the patch, and skin stood up to 5 mm through the drawn mouth on the princess (seen in Warudo on
+    the miko, the princess and the chibi). The closed mouth lies at the gap itself, so keys mixed by
+    tracking keep it too, as far as the deltas add.
+    """
+    mesh = obj.data
+    if MOUTH_GRID_ATTRIBUTE not in mesh.attributes or mesh.shape_keys is None:
+        return 0
+    grid = np.empty(len(mesh.vertices) * 3)
+    mesh.attributes[MOUTH_GRID_ATTRIBUTE].data.foreach_get("vector", grid)
+    patch = grid.reshape(-1, 3)[:, 2] > 0.5
+    if not patch.any():
+        return 0
+    polygons = [p.vertices[:] for p in mesh.polygons if not patch[list(p.vertices)].all()]
+    changed = 0
+    for key in mesh.shape_keys.key_blocks:
+        values = np.empty(len(key.data) * 3)
+        key.data.foreach_get("co", values)
+        moved = values.reshape(-1, 3)
+        shape = moved[patch]
+        cell = (np.ptp(shape[:, 0]) / MOUTH_COLUMNS, max(np.ptp(shape[:, 2]) / MOUTH_ROWS, 1e-4))
+        surface = BVHTree.FromPolygons([Vector(v) for v in moved], polygons)
+        ahead = np.minimum(shape[:, 1], _in_front_of_face(shape, surface, cell)[:, 1])
+        if (ahead < shape[:, 1] - 1e-7).any():
+            shape[:, 1] = ahead
+            moved[patch] = shape
+            key.data.foreach_set("co", moved.astype(np.float32).ravel())
+            changed += 1
+            if key == mesh.shape_keys.reference_key:
+                mesh.vertices.foreach_set("co", moved.astype(np.float32).ravel())
+    mesh.update()
+    return changed
+
+
 def _in_front_of_face(points, surface, cell, samples=5):
     """Like _onto_face, but in front of the frontmost face seen anywhere within a cell (x, z) round each point."""
     result = points.copy()
