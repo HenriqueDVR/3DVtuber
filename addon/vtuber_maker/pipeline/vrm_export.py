@@ -178,7 +178,7 @@ def bind_spring_bones(armature, design):
     spring_bone = armature.data.vrm_addon_extension.spring_bone1
     body = spring_bone.add_collider_group()
     body.vrm_name = "Body"
-    uuids = {}
+    uuids, grouped = {}, {}
     for shape in design.colliders:
         collider = spring_bone.add_collider(context, armature)
         collider.node.bone_name = shape.bone
@@ -191,6 +191,13 @@ def bind_spring_bones(armature, design):
             collider.shape.capsule.offset = _in_bone_space(armature, shape.bone, shape.offset)
             collider.shape.capsule.tail = _in_bone_space(armature, shape.bone, shape.tail)
             collider.shape.capsule.radius = shape.radius
+        if getattr(shape, "group", None) is not None:
+            # a group of its own, for the chains that name it (hair_physics: the skirt's, for sleeves)
+            if shape.group not in grouped:
+                grouped[shape.group] = spring_bone.add_collider_group()
+                grouped[shape.group].vrm_name = shape.group
+            grouped[shape.group].add_collider().collider_uuid = collider.uuid
+            continue
         body.add_collider().collider_uuid = collider.uuid
         uuids.setdefault(shape.bone, []).append(collider.uuid)
 
@@ -219,6 +226,9 @@ def bind_spring_bones(armature, design):
             joint.hit_radius = chain.hit_radius
         only = getattr(chain, "collides_with", None)
         spring.add_collider_group().collider_group_uuid = (body if only is None else partial[only]).uuid
+        for name in getattr(chain, "groups", ()):
+            if name in grouped:
+                spring.add_collider_group().collider_group_uuid = grouped[name].uuid
 
 
 def use_toon_shading(mesh_obj):

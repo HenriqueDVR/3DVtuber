@@ -44,6 +44,8 @@ def parse_args():
     parser.add_argument("--hat-tip", action="store_true", help="with --rigid-head: a spring chain for a pointed hat's tip")
     parser.add_argument("--hair-head-only", action="store_true",
                         help="hair springs collide with the head alone, not the body (hair lying on the shoulders)")
+    parser.add_argument("--no-sleeve-springs", action="store_true",
+                        help="sleeves hanging deep under the arms stay on the arms, with no chains")
     parser.add_argument("--free-mouth", action="store_true",
                         help="with --face: paint the drawn mouth out and make the mouth its own shape, "
                              "so face tracking can slide and curl it")
@@ -96,6 +98,7 @@ def main():
         rig_path=manifest.path_of(data, "rig") if data else None,
         skinning=args.skinning,
         hair_hits_body=not args.hair_head_only,
+        sleeve_springs=not args.no_sleeve_springs,
     )
     if args.blend:
         bpy.ops.wm.save_as_mainfile(filepath=str(args.blend.resolve()))

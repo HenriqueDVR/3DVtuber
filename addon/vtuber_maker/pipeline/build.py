@@ -1,15 +1,23 @@
 """The whole pipeline: an imported image-to-3D character in, a VRM avatar file out."""
 
+import os
+
 import numpy as np
 
 from . import (adopt, cloth, face, face_points, face_rig, face_texture, hair, hair_physics, landmarks, loose, meshdata,
                normalize, parts, rig, roles, template_skin, vrm_export)
 
 
+# The neck blended into the face's picture with it (blend_patch_seam): what lies within NECK_BLEND_REACH of
+# the height of the neck's bones, from NECK_BLEND_BELOW of it under the neck joint up to the head joint.
+NECK_BLEND_REACH = 0.045
+NECK_BLEND_BELOW = 0.03
+
+
 def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=None, face_points_path=None, keep_eyes=False,
                  joints_override=None, rigid_head=False, cloth_physics=False, hat_tip=False, mouth_color=None,
                  free_mouth=False, pieces=None, pieces_reference=None, rig_path=None, skinning="heat",
-                 hair_hits_body=True):
+                 hair_hits_body=True, sleeve_springs=True):
     """Rig the character, add face expressions and hair physics, and export VRM 1.0.
 
     `objects` are the freshly imported objects. Returns a report of what was found.
@@ -54,7 +62,11 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
     joints.update(override)
     # the eye inserts are the pair where the eyes were marked, when they were
     eyes_at = face_points.eye_places(mesh, points)
-    found = parts.find(mesh, joints, eyes_at=eyes_at)
+    # experiment, off by default: a file that came in parts (Tripo's segmentation) keeps them as pieces
+    file_parts = adopt.parts_on(mesh, adopted[1]) if adopted is not None and os.environ.get("OC2VRM_PARTS") == "1" else None
+    if os.environ.get("OC2VRM_PARTS_FILE"):  # ... or those of another file of the same model
+        file_parts = adopt.parts_on(mesh, adopt.parts_of(os.environ["OC2VRM_PARTS_FILE"], height))
+    found = parts.find(mesh, joints, eyes_at=eyes_at, file_parts=file_parts)
     pieces = pieces or []
     notes = []
     # found on the source as it came in, before any step adds or cuts vertices
@@ -64,6 +76,12 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
             named = roles.find(mesh, pieces, ref)
     elif pieces:
         named = roles.find(mesh, pieces)
+    if not any(piece["role"] in ("appendage", "swing_cloth") for piece in pieces):
+        # wings, a tail, a cape, as the listing suggests them: named, they swing as the user's would
+        for role, mask in roles.found_behind(mesh, joints, found, height, tails=not cloth_physics):
+            name = f"found {role} {len(pieces)}"
+            pieces, named = [*pieces, {"name": name, "role": role}], {**named, name: mask}
+            notes.append(f"a {'cape' if role == 'swing_cloth' else 'wing or tail'} found on the back ({int(mask.sum())} vertices) swings")
     if pieces and eyes_at is not None:
         pieces = _off_the_face(pieces, named, found, notes)
     if pieces:
@@ -90,9 +108,20 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
         # ... which a head called solid for its hat is not (a tester's pirate: his hat came out in flat
         # light brown blocks, with the front view's trim drawn again on its crown)
         solid = bool(rigid_head) and face_texture.extend_if_solid(mesh, found.face_area)
-        face_texture.blend_patch_seam(mesh, found.face_area, smooth=solid)
+        # ... and the neck under it, when the face's piece stops at the neck joint (a body of one surface):
+        # the princess's own texture paints her neck salmon, the face's picture pale, and the change
+        # showed down the side of her neck. Smooth never: that is for a solid head
+        verts = meshdata.world_vertices(mesh)
+        a, b = (np.asarray(joints[k], dtype=float) for k in ("neck", "head"))
+        a = a - np.array([0.0, 0.0, NECK_BLEND_BELOW * height])
+        along = np.clip((verts - a) @ (b - a) / max(float((b - a) @ (b - a)), 1e-12), 0.0, 1.0)
+        neck = np.linalg.norm(verts - (a + along[:, None] * (b - a)), axis=1) < NECK_BLEND_REACH * height
+        neck = neck[:len(found.face_area)] & ~found.hair
+        face_texture.blend_patch_seam(mesh, found.face_area if solid else found.face_area | neck, smooth=solid)
         if not rigid_head:
-            face_texture.clean_head_top(mesh, found.face_area)
+            # not what the user calls hair: under a hood the head's top is the hood, its typical colour
+            # the hood's, and the hair's shadowed top under the rim was repainted mint down the hairline
+            face_texture.clean_head_top(mesh, found.face_area & ~found.hair)
     if mouth_color is not None:
         features = dict(features, mouth_color=features["skin_color"] if mouth_color == "skin" else mouth_color)
     if not modelled_face:
@@ -192,6 +221,11 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
                                                 detect=cloth_physics)
     else:
         cloth_chains = []
+    # sleeves hanging deep under the arms (a furisode's): chains on the arms, or they stand out as wings
+    keep_off = np.zeros(count, dtype=bool) if head_mask is None else roles.pad(head_mask, count).copy()
+    for piece in pieces:
+        keep_off |= roles.pad(named[piece["name"]], count)
+    sleeve_chains = cloth.build_sleeve_chains(mesh, armature, joints, skip=keep_off) if sleeve_springs else []
     # wings, tails, big ears: off the limbs onto the core bone they grow from, on a spring chain
     appendage_chains = []
     for piece in pieces:
@@ -200,7 +234,7 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
                                                             len(appendage_chains), piece.get("bone"))
     # small pieces stuck onto anything a spring swings (ribbons on a twin-tail, feathers on a wing)
     # swing with it; check_springs.py found model C's twin-tail ribbons left in the air
-    spring_bones = {name for kind in (chains, cloth_chains, tip_chains, appendage_chains) for names in kind for name in names}
+    spring_bones = {name for kind in (chains, cloth_chains, tip_chains, appendage_chains, sleeve_chains) for names in kind for name in names}
     if spring_bones:
         listed = np.zeros(count, dtype=bool)
         for piece in pieces:
@@ -214,7 +248,8 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
     vrm_export.configure(armature, name=name, author=author)
     vrm_export.bind_expressions(armature, mesh)
     vrm_export.bind_spring_bones(armature, hair_physics.design(mesh, armature, chains, joints, cloth_chains, tip_chains,
-                                                               appendage_chains, hair_hits_body=hair_hits_body))
+                                                               appendage_chains, hair_hits_body=hair_hits_body,
+                                                               sleeve_chains=sleeve_chains))
     vrm_export.use_toon_shading(mesh)
     vrm_export.export(filepath, armature)
     return {
@@ -227,6 +262,7 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
         "cloth_chains": len(cloth_chains),
         "hat_tip": bool(tip_chains),
         "appendage_chains": len(appendage_chains),
+        "sleeve_chains": len(sleeve_chains),
         "mouth_estimated": bool(features["mouth_estimated"]),
         "eye_inserts": modelled_face,
         "face_points": bool(points),

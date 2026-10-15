@@ -28,6 +28,7 @@ class Chain:
         names=(),
         tip_stiffness=None,
         collides_with=None,
+        groups=(),
     ):
         self.points = np.asarray(points, dtype=float)
         self.parent = parent
@@ -40,13 +41,17 @@ class Chain:
         self.tip_stiffness = stiffness if tip_stiffness is None else tip_stiffness
         # the bones whose colliders push this chain; None: every collider
         self.collides_with = None if collides_with is None else tuple(collides_with)
+        # colliders of these groups push it too (a Collider's `group`): the skirt's, for hanging sleeves
+        self.groups = tuple(groups)
 
 
 class Collider:
     """A sphere, or a capsule when tail is given, attached to a body bone. Positions are rest pose."""
 
-    def __init__(self, bone, radius, offset, tail=None):
+    def __init__(self, bone, radius, offset, tail=None, group=None):
         self.bone = bone
+        # None: the body's, every chain's (as `collides_with` allows); else only chains naming it in `groups`
+        self.group = group
         self.radius = radius
         self.offset = np.asarray(offset, dtype=float)
         self.tail = None if tail is None else np.asarray(tail, dtype=float)
@@ -150,7 +155,8 @@ class _ChainState:
         head = rotation @ chain.points[0] + parent[:3, 3]
         positions, rotations = [head], []
         if self.mine is None:
-            self.mine = np.array([chain.collides_with is None or collider.bone in chain.collides_with
+            self.mine = np.array([collider.group in chain.groups if collider.group is not None else
+                                  chain.collides_with is None or collider.bone in chain.collides_with
                                   for collider in colliders], dtype=bool)
         for j, length in enumerate(self.lengths):
             axis = rotation @ self.rest_directions[j]

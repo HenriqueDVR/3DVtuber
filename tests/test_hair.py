@@ -169,5 +169,43 @@ class StrayHairBits(unittest.TestCase):
             self.assertEqual(self.groups_of(index), {rig.BONE_NAMES["hips"]: 1.0})
 
 
+class BangsOverTheForehead(unittest.TestCase):
+    """A fringe ending at the brows swings; the same strand behind the head stays on it."""
+
+    @classmethod
+    def setUpClass(cls):
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        # head joint 1.4, top 1.6: radius 0.1, centre 1.5; in front the hair hangs from 1.535, behind from 1.465
+        front, front_faces = _sheet(-0.02, 0.02, 1.44, 1.6, -0.12, 3, 17, 0)
+        back, back_faces = _sheet(-0.02, 0.02, 1.44, 1.6, 0.12, 3, 17, len(front))
+        verts = np.vstack([front, back])
+        data = bpy.data.meshes.new("hair")
+        data.from_pydata(verts.tolist(), [], np.vstack([front_faces, back_faces]).tolist())
+        cls.mesh = bpy.data.objects.new("hair", data)
+        bpy.context.scene.collection.objects.link(cls.mesh)
+        joints = {key: np.array(p, float) for key, p in (("hips", (0, 0, 0.9)), ("head", (0, 0, 1.4)))}
+        armature_data = bpy.data.armatures.new("Armature")
+        cls.armature = bpy.data.objects.new("Armature", armature_data)
+        bpy.context.scene.collection.objects.link(cls.armature)
+        rig.make_active(cls.armature)
+        bpy.ops.object.mode_set(mode="EDIT")
+        for key in ("hips", "head"):
+            bone = armature_data.edit_bones.new(rig.BONE_NAMES[key])
+            bone.head, bone.tail = joints[key].tolist(), (joints[key] + [0, 0, 0.1]).tolist()
+        bpy.ops.object.mode_set(mode="OBJECT")
+        cls.mesh.vertex_groups.new(name=rig.BONE_NAMES["head"]).add(list(range(len(verts))), 1.0, "REPLACE")
+        features = {"left_eye": np.array([0.03, -0.1, 1.5]), "right_eye": np.array([-0.03, -0.1, 1.5])}
+        cls.chains = hair.build_hair_bones(cls.mesh, cls.armature, joints, features, np.ones(len(verts), dtype=bool))
+
+    def test_the_fringe_alone_gets_a_chain_from_above_the_brows(self):
+        self.assertEqual(len(self.chains), 1)
+        root = self.armature.data.bones[self.chains[0][0]].head_local
+        self.assertLess(root.y, 0)
+        self.assertAlmostEqual(root.z, 1.5 + hair.FRONT_HANGS_ABOVE * 0.1, delta=0.011)
+
+    def test_it_is_marked_to_spring_stiffer(self):
+        self.assertTrue(self.armature.data.bones[self.chains[0][0]].get(hair.FRONT_HUNG))
+
+
 if __name__ == "__main__":
     unittest.main()

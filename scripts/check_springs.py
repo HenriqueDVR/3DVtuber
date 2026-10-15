@@ -174,9 +174,13 @@ def shipped_design(arm):
     world = arm.matrix_world
     bones = arm.data.bones
     chains = []
-    bone_of = {c.uuid: c.node.bone_name for c in spring_bone.colliders}
+    # a group of its own (hair_physics.SKIRT_GROUP: only the sleeves meet the skirt's colliders) is that
+    # group's; the rest are the body's, read by bone as before
+    own = {g.uuid: g.vrm_name for g in spring_bone.collider_groups if g.vrm_name == hair_physics.SKIRT_GROUP}
+    group_of = {c.collider_uuid: own[g.uuid] for g in spring_bone.collider_groups if g.uuid in own for c in g.colliders}
+    bone_of = {c.uuid: c.node.bone_name for c in spring_bone.colliders if c.uuid not in group_of}
     groups = {g.uuid: [bone_of[c.collider_uuid] for c in g.colliders if c.collider_uuid in bone_of]
-              for g in spring_bone.collider_groups}
+              for g in spring_bone.collider_groups if g.uuid not in own}
     for spring in spring_bone.springs:
         names = [j.node.bone_name for j in spring.joints if j.node.bone_name in bones]
         if not names:
@@ -186,18 +190,21 @@ def shipped_design(arm):
         chains.append(spring_sim.Chain(np.array([list(p) for p in points]), bones[names[0]].parent.name,
                                        joints[0].stiffness, joints[0].gravity_power, joints[0].drag_force,
                                        joints[0].hit_radius, names=names, tip_stiffness=joints[-1].stiffness,
-                                       collides_with=_collides_with(spring, groups, len(bone_of))))
+                                       collides_with=_collides_with(spring, groups, len(bone_of)),
+                                       groups=[own[g.collider_group_uuid] for g in spring.collider_groups
+                                               if g.collider_group_uuid in own]))
     colliders = []
     for c in spring_bone.colliders:
         bone = c.node.bone_name
         if bone not in arm.pose.bones:
             continue
         frame = world @ arm.pose.bones[bone].matrix
+        group = group_of.get(c.uuid)
         if c.shape_type == "Sphere":
-            colliders.append(spring_sim.Collider(bone, c.shape.sphere.radius, list(frame @ c.shape.sphere.offset)))
+            colliders.append(spring_sim.Collider(bone, c.shape.sphere.radius, list(frame @ c.shape.sphere.offset), group=group))
         else:
             colliders.append(spring_sim.Collider(bone, c.shape.capsule.radius, list(frame @ c.shape.capsule.offset),
-                                                 list(frame @ c.shape.capsule.tail)))
+                                                 list(frame @ c.shape.capsule.tail), group=group))
     return hair_physics.SpringDesign(chains, colliders)
 
 

@@ -102,6 +102,9 @@ def build_cloth_chains(mesh_obj, armature, joints, skip=None, force=None, detect
                                      for key in ("upper_arm", "lower_arm", "hand")})
     labels = pieces(mesh_obj, verts)
     angle = np.arctan2(verts[:, 1] - centre[1], verts[:, 0] - centre[0])
+    world = armature.matrix_world
+    torso = [(BONE_NAMES[key], float((world @ armature.data.bones[BONE_NAMES[key]].head_local).z))
+             for key in ("hips", "spine", "chest", "upper_chest") if BONE_NAMES[key] in armature.data.bones]
 
     chains, strands = [], []
     for label in np.unique(labels[~skip]):
@@ -109,10 +112,16 @@ def build_cloth_chains(mesh_obj, armature, joints, skip=None, force=None, detect
         forced = bool(force[members].any())
         if not forced and not detect:
             continue
+        top, parent = root_z, BONE_NAMES["hips"]
+        if forced and verts[members, 2].min() > root_z - MIN_HANG * height:
+            # a cape on the shoulders that ends above the hips (the knight's, 1.40 to 0.94 m) hangs from
+            # its own top, on the torso bone there: from the hips down there was nothing of it to swing
+            top = float(verts[members, 2].max())
+            parent = max(((name, z) for name, z in torso if z <= top), key=lambda bone: bone[1], default=(parent, 0))[0]
         if not forced and (verts[members, 2].min() > knee_z or np.ptp(verts[members, 2]) < MIN_CLOTH_LENGTH * height
                 or np.median(leg_distance[members]) < OFF_LEGS * height or arm_share[members].mean() > MAX_ARM_SHARE):
             continue
-        hanging = np.nonzero(members & (verts[:, 2] < root_z) & (arm_share < VERTEX_ARM_SHARE))[0]
+        hanging = np.nonzero(members & (verts[:, 2] < top) & (arm_share < VERTEX_ARM_SHARE))[0]
         if len(hanging) < MIN_CHAIN_VERTICES:
             continue
         # what would swing must itself stand off the legs: a body that is one surface with its arms
@@ -138,19 +147,19 @@ def build_cloth_chains(mesh_obj, armature, joints, skip=None, force=None, detect
             start = low + k * width
             pick = (offsets >= start) & ((offsets < start + width) | (k == count - 1))
             points = verts[hanging[pick]]
-            if len(points) < MIN_CHAIN_VERTICES or root_z - points[:, 2].min() < MIN_HANG * height:
+            if len(points) < MIN_CHAIN_VERTICES or top - points[:, 2].min() < MIN_HANG * height:
                 continue
             index = len(chains) + len(piece_chains)
             names = [f"Cloth{index}_{b}" for b in range(BONES_PER_CHAIN)]
-            piece_chains.append(Chain(names, _hanging_positions(points, root_z), BONE_NAMES["hips"],
+            piece_chains.append(Chain(names, _hanging_positions(points, top), parent,
                                       _circular_mean(np.array([mid + start + width / 2])), width))
         if piece_chains:
             chains.extend(piece_chains)
-            strands.append((hanging, piece_chains))
+            strands.append((hanging, piece_chains, top))
 
     _add_bones(armature, chains)
     new_weights = {}
-    for hanging, piece_chains in strands:
+    for hanging, piece_chains, top in strands:
         for vertex in hanging:
             shares = [(c, 1.0 - abs(_angle_between(angle[vertex], c.angle)) / c.width) for c in piece_chains]
             shares = [(c, s) for c, s in shares if s > 0] or [
@@ -160,11 +169,100 @@ def build_cloth_chains(mesh_obj, armature, joints, skip=None, force=None, detect
             along = 0.0
             for c, s in shares:
                 tip_z = c.positions[-1][2]
-                along = min(max((root_z - verts[vertex, 2]) / max(root_z - tip_z, 1e-6), 0.0), 1.0)
+                along = min(max((top - verts[vertex, 2]) / max(top - tip_z, 1e-6), 0.0), 1.0)
                 _along_chain(chain_weights, c.names, along, s / total)
             new_weights[int(vertex)] = (chain_weights, min(along / ROOT_BLEND, 1.0))
     _apply(mesh_obj, new_weights)
     return [c.names for c in chains]
+
+
+# Hanging sleeves (a miko's furisode): arm-weighted surface further than SLEEVE_OFF of the height
+# from the arm's bones and hanging at least SLEEVE_HANG below the arm. On the arm alone they turned
+# with it, and with the arms down stood out sideways "like side wings" in Warudo (the miko's: 68 cm
+# deep, 1300 vertices a side). A chain every SLEEVE_SPAN along the arm, hanging from the flap's top:
+# at 0.08 (three or four a sleeve) they swung apart in strips, nothing holding one to the next.
+SLEEVE_OFF = 0.04
+SLEEVE_HANG = 0.15
+SLEEVE_SPAN = 0.16
+
+
+def build_sleeve_chains(mesh_obj, armature, joints, skip=None):
+    """Chains for sleeves hanging deep under the arms, on the upper or lower arm; returns their names.
+
+    Run after skinning, on a rig whose arms stand out (T- or A-pose). `skip` masks vertices never to
+    touch (hair, the head). A fitted sleeve, or a puffed one, hangs nowhere near SLEEVE_HANG: nothing.
+    """
+    verts = world_vertices(mesh_obj)
+    n = len(verts)
+    skip = np.zeros(n, dtype=bool) if skip is None else np.asarray(skip, dtype=bool)
+    height = float(np.ptp(verts[:, 2]))
+    j = {key: np.asarray(value, dtype=float) for key, value in joints.items()}
+    chains, strands = [], []
+    for side in ("left", "right"):
+        shoulder, elbow, hand = (j[f"{side}_{key}"] for key in ("upper_arm", "lower_arm", "hand"))
+        names = {BONE_NAMES[f"{side}_{key}"] for key in ("upper_arm", "lower_arm", "hand")}
+        share = _share(mesh_obj, n, names)
+        off = np.min([_segment_distance(verts, a, b) for a, b in ((shoulder, elbow), (elbow, hand))], axis=0)
+        axis = (hand - shoulder) / max(float(np.linalg.norm(hand - shoulder)), 1e-9)
+        t = (verts - shoulder) @ axis
+        arm_z = shoulder[2] + np.clip(t, 0, None) * axis[2]
+        flap = np.flatnonzero((share > 0.5) & ~skip & (off > SLEEVE_OFF * height) & (verts[:, 2] < arm_z)
+                              & (t > 0) & (t < float((hand - shoulder) @ axis)))
+        if len(flap) < MIN_CHAIN_VERTICES or float((arm_z[flap] - verts[flap, 2]).max()) < SLEEVE_HANG * height:
+            continue
+        low, high = float(t[flap].min()), float(t[flap].max())
+        count = max(1, math.ceil((high - low) / (SLEEVE_SPAN * height)))
+        width = max((high - low) / count, 1e-3)
+        elbow_t = float((elbow - shoulder) @ axis)
+        side_chains = []
+        for k in range(count):
+            mid = low + (k + 0.5) * width
+            pick = flap[np.abs(t[flap] - mid) <= width / 2]
+            points = verts[pick]
+            top = float(points[:, 2].max()) if len(points) else 0.0
+            if len(points) < MIN_CHAIN_VERTICES or top - points[:, 2].min() < SLEEVE_HANG * height:
+                continue
+            parent = BONE_NAMES[f"{side}_{'lower_arm' if mid > elbow_t else 'upper_arm'}"]
+            index = len(chains) + len(side_chains)
+            side_chains.append((Chain([f"Sleeve{index}_{b}" for b in range(BONES_PER_CHAIN)],
+                                      _hanging_positions(points, top), parent, mid, width), top))
+        chains += [chain for chain, _ in side_chains]
+        strands.append((flap, t, side_chains, names))
+    _add_bones(armature, chains)
+    for flap, t, side_chains, arm in strands:
+        for vertex in flap:
+            shares = [(c, top, 1.0 - abs(t[vertex] - c.angle) / c.width) for c, top in side_chains]
+            shares = [s for s in shares if s[2] > 0] or [min(((c, top, 1.0) for c, top in side_chains),
+                                                            key=lambda s: abs(t[vertex] - s[0].angle))]
+            total = sum(s for _, _, s in shares)
+            chain_weights, along = {}, 0.0
+            for c, top, s in shares:
+                along = min(max((top - verts[vertex, 2]) / max(top - c.positions[-1][2], 1e-6), 0.0), 1.0)
+                _along_chain(chain_weights, c.names, along, s / total)
+            _arm_onto_chain(mesh_obj, int(vertex), arm, chain_weights, min(along / ROOT_BLEND, 1.0))
+    return [c.names for c in chains]
+
+
+def _arm_onto_chain(mesh_obj, vertex, arm, chain_weights, share):
+    """Move `share` of the vertex's weight on the `arm` bones onto `chain_weights`; the rest stays.
+
+    Only the arm's: a flap's torso weight by the armpit, given to the chains too (as `_apply`
+    blends), tore the miko's kimono 6.1 cm from her side with the arms down.
+    """
+    groups = mesh_obj.vertex_groups
+    v = mesh_obj.data.vertices[vertex]
+    weights = {groups[g.group].name: g.weight for g in v.groups}
+    total = sum(weights.values()) or 1.0
+    moved = share * sum(w for name, w in weights.items() if name in arm) / total
+    combined = {name: w / total * (1 - share if name in arm else 1.0) for name, w in weights.items()}
+    for name, w in chain_weights.items():
+        combined[name] = combined.get(name, 0.0) + moved * w
+    strongest = sorted(combined.items(), key=lambda item: -item[1])[:MAX_INFLUENCES]
+    norm = sum(w for _, w in strongest) or 1.0
+    for g in list(v.groups):
+        groups[g.group].remove([vertex])
+    for name, w in strongest:
+        (groups.get(name) or groups.new(name=name)).add([vertex], w / norm, "REPLACE")
 
 
 def hang_from_torso(mesh_obj, armature, joints, skip=None, force=None):

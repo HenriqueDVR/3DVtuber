@@ -21,6 +21,22 @@ MATCH = 1e-4
 # vertices with at least half their neighbours in it join it, over REGION_PASSES rounds.
 REGION_HOLE = 0.25
 REGION_PASSES = 3
+# What grows out of the back (as scripts/list_pieces.py suggests it): its middle this share of the
+# height behind the body's, its longest side over BIG, all of it above the knees, and at least
+# BEHIND_SHARE of the vertices (the nerd girl's 130-vertex bits on her back are 0.26%; the demon
+# girl's wings and the knight's cape 5%). One spanning the body's middle wider than CAPE_WIDTH is a
+# cape (swinging cloth, several chains: 54 cm on the knight); else a wing or a tail (24 cm, raised).
+BEHIND = 0.06
+BIG = 0.12
+BEHIND_SHARE = 0.01
+CAPE_WIDTH = 0.2
+HEAD_REACH = 1.3
+# A tail inside another piece (the demon girl's grows out of her skirt): a stretch of it under the
+# hips, off the legs and behind, at least TAIL_LENGTH of the height long and at most TAIL_THICK
+# across (half its middle width, in 2 cm slices). Hers: 63 cm, 1.1 cm; the fox girl's fluffy tail
+# 10 cm, the miko's hakama 17 cm.
+TAIL_LENGTH = 0.25
+TAIL_THICK = 0.02
 
 
 @contextmanager
@@ -35,6 +51,75 @@ def reference(path, height=1.6):
     finally:
         for obj in list(set(bpy.data.objects) - old):
             bpy.data.objects.remove(obj, do_unlink=True)
+
+
+def found_behind(mesh_obj, joints, found, height, tails=True):
+    """[(role, mask)] for each separate piece that grows out of the back: "appendage" for a wing or
+    a tail, "swing_cloth" for a cape. For a build whose manifest names none: the listing suggested
+    them all along, and a default build left the knight's cape stiff and hung the demon girl's wings,
+    read as hair by their colour, from her head. The face, what sits on the head and hair that grows
+    from the head are not looked at: hair-coloured, her wings come no nearer the head's centre than 2.3
+    of its radius, hair 0.3 to 0.7 (HEAD_REACH). With `tails`, a thin tail inside another piece too
+    (_tails). Assumes the pipeline's frame (facing -Y) and `joints`.
+    """
+    verts = meshdata.world_vertices(mesh_obj)
+    labels = meshdata.pieces(mesh_obj, verts)
+    body = int(np.bincount(labels).argmax())
+    body_y = float(np.median(verts[labels == body, 1]))
+    knee_z = float((joints["left_lower_leg"][2] + joints["right_lower_leg"][2]) / 2)
+    neck_z, centre_x = float(joints["neck"][2]), float(joints["hips"][0])
+    hair, face = pad(found.hair, len(verts)), pad(found.face_area, len(verts))
+    from . import orient
+    base = np.asarray(joints["head"], dtype=float)
+    top = orient.head_top(verts, base[1]) or float(verts[:, 2].max())
+    radius = (top - base[2]) / 2
+    centre = np.array([base[0], np.median(verts[verts[:, 2] > base[2], 1]), (top + base[2]) / 2])
+    out = []
+    for label in np.unique(labels):
+        members = labels == label
+        if label == body or members.sum() < BEHIND_SHARE * len(verts):
+            continue
+        points = verts[members]
+        on_head = np.linalg.norm(points - centre, axis=1).min() < HEAD_REACH * radius
+        if ((hair[members].mean() > .5 and on_head) or face[members].any() or points[:, 2].mean() > neck_z
+                or np.median(points[:, 1]) <= body_y + BEHIND * height or np.ptp(points, axis=0).max() <= BIG * height
+                or points[:, 2].min() <= knee_z):
+            continue
+        cape = points[:, 0].min() < centre_x < points[:, 0].max() and np.ptp(points[:, 0]) > CAPE_WIDTH * height
+        out.append(("swing_cloth" if cape else "appendage", members))
+    if tails:
+        taken = np.zeros(len(verts), dtype=bool)
+        for _, mask in out:
+            taken |= mask
+        out += [("appendage", mask) for mask in _tails(mesh_obj, verts, joints, body_y, height, hair | face | taken)]
+    return out
+
+
+def _tails(mesh_obj, verts, joints, body_y, height, skip):
+    """Masks of thin tails hanging under the hips (see TAIL_LENGTH), whatever piece they are part of."""
+    from . import cloth
+    j = {key: np.asarray(value, dtype=float) for key, value in joints.items()}
+    legs = np.min([cloth._segment_distance(verts, j[f"{side}_{a}"], j[f"{side}_{b}"]) for side in ("left", "right")
+                   for a, b in (("upper_leg", "lower_leg"), ("lower_leg", "foot"))], axis=0)
+    below = np.flatnonzero((verts[:, 2] < j["hips"][2]) & ~skip)
+    if not len(below):
+        return []
+    stretch = cloth._connected_stretches(mesh_obj, verts, below)
+    out = []
+    for label in np.unique(stretch):
+        members = below[stretch == label]
+        points = verts[members]
+        if (len(members) < cloth.MIN_CHAIN_VERTICES or np.ptp(points[:, 2]) < TAIL_LENGTH * height
+                or np.median(legs[members]) < cloth.OFF_LEGS * height or np.median(points[:, 1]) <= body_y + BEHIND * height):
+            continue
+        across = [np.median(np.linalg.norm(q[:, :2] - q[:, :2].mean(axis=0), axis=1))
+                  for z in np.arange(points[:, 2].min(), points[:, 2].max(), 0.02)
+                  for q in [points[(points[:, 2] >= z) & (points[:, 2] < z + 0.02)]] if len(q) > 3]
+        if across and np.median(across) <= TAIL_THICK * height:
+            mask = np.zeros(len(verts), dtype=bool)
+            mask[members] = True
+            out.append(mask)
+    return out
 
 
 def find(mesh_obj, pieces, reference=None):

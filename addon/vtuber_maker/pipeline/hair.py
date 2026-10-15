@@ -27,6 +27,14 @@ MAX_INFLUENCES = 4
 # Fractions of the head radius.
 HEAD_REACH = 1.3
 HANGS_BELOW_CENTER = 0.35
+# In front of the face (within FRONT_ANGLE of straight ahead) hair hangs from this far above the head's
+# centre instead: bangs end at the brows, over the line above, and no build swung them (the demon girl's,
+# seen in Warudo: her temple locks; her fringe is the face's own surface). A
+# chain hung from it is marked FRONT_HUNG and springs twice as stiff (hair_physics): the synthetic
+# character's temple locks, 46 degrees round and 35 cm long, drooped 11 mm standing still, 5.9 so.
+FRONT_ANGLE = math.radians(60)
+FRONT_HUNG = "front_hung"
+FRONT_HANGS_ABOVE = 0.35
 MIN_CHAIN_LENGTH = 0.4
 # Fraction of a chain's length over which weight hands over from the head bone.
 ROOT_BLEND = 0.12
@@ -57,11 +65,13 @@ def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None, off_a
         hair = np.nonzero(hair_mask)[0]
     else:
         hair = _hair_vertices(mesh_obj, verts, features["hair_color"], head)
-    hang_line = head.center[2] - HANGS_BELOW_CENTER * head.radius
+    in_front = np.abs(head.angle(verts)) < FRONT_ANGLE
+    hang_line = np.where(in_front, head.center[2] + FRONT_HANGS_ABOVE * head.radius,
+                         head.center[2] - HANGS_BELOW_CENTER * head.radius)
     hanging = np.zeros(len(verts), dtype=bool)
-    hanging[hair[verts[hair, 2] < hang_line]] = True
+    hanging[hair[verts[hair, 2] < hang_line[hair]]] = True
     if off_arms:
-        _on_the_head(mesh_obj, hair[verts[hair, 2] >= hang_line])
+        _on_the_head(mesh_obj, hair[verts[hair, 2] >= hang_line[hair]])
 
     edges = np.empty(len(mesh_obj.data.edges) * 2, dtype=np.int64)
     mesh_obj.data.edges.foreach_get("vertices", edges)
@@ -99,15 +109,19 @@ def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None, off_a
         if strand_chains:
             strands.append((members, strand_chains))
 
+    covered = np.zeros(len(verts), dtype=bool)
+    for members, _ in strands:
+        covered[members] = True
+    if off_arms:
+        # hanging hair in no strand, still up on the head: the ring just under the hang line
+        # (model D: 188 vertices, up to 17% on the arms); _reweight then takes those by a strand.
+        # With no chain at all too: a fringe too short for one, under the line in front, kept the arms'
+        _on_the_head(mesh_obj, np.flatnonzero(hanging & ~covered & (verts[:, 2] > joints["head"][2])))
     if chains:
         _add_bones(armature, chains)
-        covered = np.zeros(len(verts), dtype=bool)
-        for members, _ in strands:
-            covered[members] = True
-        if off_arms:
-            # hanging hair in no strand, still up on the head: the ring just under the hang line
-            # (model D: 188 vertices, up to 17% on the arms); _reweight then takes those by a strand
-            _on_the_head(mesh_obj, np.flatnonzero(hanging & ~covered & (verts[:, 2] > joints["head"][2])))
+        for chain in chains:
+            if chain.root_z > head.center[2] - HANGS_BELOW_CENTER * head.radius:
+                armature.data.bones[chain.names[0]][FRONT_HUNG] = True
         _reweight(mesh_obj, verts, head, strands, np.flatnonzero(hanging & ~covered))
     return [chain.names for chain in chains]
 

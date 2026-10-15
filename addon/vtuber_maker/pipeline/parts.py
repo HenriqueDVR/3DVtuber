@@ -58,6 +58,11 @@ SHADED_SIZE = 0.05
 # crown is the brightest: 19 to 46% of each hair piece was near it (one ear alone was hair, 3% of
 # her head) and she had no hair chain at all; with the shades 76 to 93%, her eyebrows' piece 0.
 SHADE_FLOOR = 0.7
+# Hair read by its own colour: once some is found, a piece of at least SAME_HAIR_SIZE of the vertices
+# with HAIR_SHARE of it near the found hair's median colour is hair too. The chibi's crown is mostly
+# painted highlights (0.99, 0.72, 0.41), her hair (0.86, 0.46, 0.22): her back hair passed as shades
+# of the highlight (0.78), her bangs and front locks didn't (0.67) and never swung.
+SAME_HAIR_SIZE = 0.01
 SHADES_SHARE = 0.7
 SHADES_PLAIN = 0.15
 # A piece of the hair's colour that goes all the way round the body below the middle of the trunk is
@@ -118,9 +123,18 @@ class MeshParts(NamedTuple):
         return ~movable
 
 
-def split(verts, edges):
-    """Label each vertex with its connected part, joining vertices that share a position."""
+def split(verts, edges, parts=None):
+    """Label each vertex with its connected part, joining vertices that share a position.
+
+    `parts` (experiment, OC2VRM_PARTS): a part number per vertex from the file (adopt.parts_on); vertices
+    of different numbers aren't joined, so a border two parts share stays a border.
+    """
     keys = np.round(np.asarray(verts) / WELD_TOLERANCE).astype(np.int64)
+    if parts is not None:
+        parts = np.asarray(parts, dtype=np.int64)
+        keys = np.column_stack([keys, parts])
+        edges = np.asarray(edges)
+        edges = edges[parts[edges[:, 0]] == parts[edges[:, 1]]]  # nor does an edge from one part into the next
     _, weld = np.unique(keys, axis=0, return_inverse=True)
     weld = weld.ravel()
     a, b = weld[edges[:, 0]], weld[edges[:, 1]]
@@ -149,15 +163,16 @@ def _components(count, a, b):
         labels = updated
 
 
-def find(mesh_obj, joints, eyes_at=None):
+def find(mesh_obj, joints, eyes_at=None, file_parts=None):
     """Split the mesh into parts and pick out the hair, the eye and mouth inserts, and the face.
 
     `eyes_at` is where the eyes were marked, two world (x, z), when they were (face_points.eye_places).
+    `file_parts`: see split.
     """
     verts = world_vertices(mesh_obj)
     edges = np.empty(len(mesh_obj.data.edges) * 2, dtype=np.int64)
     mesh_obj.data.edges.foreach_get("vertices", edges)
-    labels = split(verts, edges.reshape(-1, 2))
+    labels = split(verts, edges.reshape(-1, 2), file_parts)
     ids = np.unique(labels)
 
     top = orient.head_top(verts, joints["head"][1]) or float(verts[:, 2].max())
@@ -206,6 +221,14 @@ def find(mesh_obj, joints, eyes_at=None):
     if worn:
         print(f"hair: {int(np.isin(labels, worn).sum())} vertices of the hair's colour go round the body: clothing, left off the hair")
         hair_parts = [p for p in hair_parts if p not in worn]
+    if hair_parts:
+        own = np.median(colors[np.isin(labels, hair_parts)], axis=0)
+        near = np.bincount(labels, weights=np.linalg.norm(colors - own, axis=1) < HAIR_COLOR_DISTANCE,
+                           minlength=labels.max() + 1) / np.maximum(size, 1)
+        more = [p for p in ids if p not in hair_parts and p not in excluded and p not in worn and high[p][2] > joints["head"][2]
+                and size[p] >= SAME_HAIR_SIZE * len(verts) and near[p] >= HAIR_SHARE
+                and not (low[p][2] < (joints["hips"][2] + joints["neck"][2]) / 2 and goes_round_body(verts[labels == p], joints))]
+        hair_parts += more
     hair = np.isin(labels, hair_parts)
     face_area = labels == face
     if face >= 0 and low[face][2] < joints["neck"][2] - head_height:

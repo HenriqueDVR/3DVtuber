@@ -13,6 +13,7 @@ export carries broken inverse bind matrices and every bone imports at NaN.
 """
 
 import re
+from pathlib import Path
 
 import bpy
 import numpy as np
@@ -227,6 +228,8 @@ def read(armature, meshes, path, height=1.6):
         offset = sum(len(v) for v in verts)
         verts.append(meshdata.world_vertices(m))
         tris.append(meshdata.triangles(m.data) + offset)
+    global FILE_PARTS
+    FILE_PARTS = np.repeat(np.arange(len(tris)), [len(t) for t in tris])  # per triangle; see parts_on
     verts, tris = np.concatenate(verts), np.concatenate(tris)
     order = sorted({lends[g.name] for m in meshes for g in m.vertex_groups if g.name in lends})
     column = {name: k for k, name in enumerate(order)}
@@ -255,6 +258,62 @@ def read(armature, meshes, path, height=1.6):
     shift = after.min(axis=0) - scale * verts.min(axis=0)
     bones = {k: (scale * h + shift, scale * t + shift, p) for k, (h, t, p) in raw.items()}
     return bones, (scale * verts + shift, tris), (weights, order)
+
+
+# Experiment (OC2VRM_PARTS=1, off by default): the mesh object each triangle of the rig's surface came
+# in, when the file came in parts (Tripo's segmentation). Set by `read`.
+FILE_PARTS = None
+
+
+def parts_on(mesh_obj, surface):
+    """A part number per vertex of `mesh_obj`: that of the rig's triangle nearest each polygon's centre.
+
+    None for a file of one mesh. Assumes the mesh and the rig's surface are the same model in the same
+    frame (as transfer_weights does), and that no vertex is shared by two parts (nothing welded yet).
+    """
+    if FILE_PARTS is None or FILE_PARTS.max() < 1:
+        return None
+    from mathutils.kdtree import KDTree
+    verts, tris = surface
+    centres = verts[tris].mean(axis=1)
+    tree = KDTree(len(centres))
+    for index, centre in enumerate(centres):
+        tree.insert(centre, index)
+    tree.balance()
+    own = meshdata.world_vertices(mesh_obj)
+    parts = np.full(len(own), -1, dtype=np.int64)
+    for poly in mesh_obj.data.polygons:
+        corners = list(poly.vertices)
+        parts[corners] = FILE_PARTS[tree.find(own[corners].mean(axis=0))[1]]
+    return parts
+
+
+def parts_of(path, height=1.6):
+    """Experiment (OC2VRM_PARTS_FILE): the same model segmented otherwise, read for its parts alone.
+
+    Returns its surface (vertices, triangles) in the normalized frame and sets FILE_PARTS, as `read`
+    does for the rig's file; nothing of it stays in the scene. Assumes the same pose as the model built.
+    """
+    global FILE_PARTS
+    before = set(bpy.data.objects)
+    normalize.import_model(Path(path))
+    meshes = [o for o in set(bpy.data.objects) - before if o.type == "MESH"]
+    try:
+        bpy.context.view_layer.update()
+        verts, tris = [], []
+        for m in meshes:
+            offset = sum(len(v) for v in verts)
+            verts.append(meshdata.world_vertices(m))
+            tris.append(meshdata.triangles(m.data) + offset)
+        FILE_PARTS = np.repeat(np.arange(len(tris)), [len(t) for t in tris])
+        verts, tris = np.concatenate(verts), np.concatenate(tris)
+        # scale and offset as normalize.prepare gives this model (see read)
+        after = meshdata.world_vertices(normalize.prepare(list(set(bpy.data.objects) - before), height=height))
+        scale = np.ptp(after[:, 2]) / np.ptp(verts[:, 2])
+        return scale * verts + (after.min(axis=0) - scale * verts.min(axis=0)), tris
+    finally:
+        for obj in list(set(bpy.data.objects) - before):
+            bpy.data.objects.remove(obj, do_unlink=True)
 
 
 def build_armature(bones, name="Armature"):

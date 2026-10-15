@@ -5,7 +5,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from . import body_volume, meshdata, spring_sim
+from . import body_volume, hair, meshdata, spring_sim
 from .rig import BONE_NAMES, CHEST_AT, SPINE_AT, UPPER_CHEST_AT
 
 # VRM 1.0 spring settings for hair. Stiffness 0-4, gravity power 0-2, drag 0-1, hit radius in metres.
@@ -17,6 +17,8 @@ HAIR_TIP_STIFFNESS = 0.5
 HAIR_GRAVITY_POWER = 0.1
 HAIR_DRAG_FORCE = 0.7
 HAIR_HIT_RADIUS = 0.012
+# Bangs and locks hung from above the brows (hair.FRONT_HUNG): this much stiffer than other hair.
+FRONT_STIFFER = 2.0
 # Hanging cloth (capes, coat tails): heavier and slower than hair, and thicker to collide.
 CLOTH_STIFFNESS = 1.0
 CLOTH_TIP_STIFFNESS = 0.4
@@ -38,6 +40,22 @@ APPENDAGE_TIP_STIFFNESS = 1.5
 APPENDAGE_GRAVITY_POWER = 0.0
 APPENDAGE_DRAG_FORCE = 0.8
 APPENDAGE_HIT_RADIUS = 0.03
+# Sleeves hanging under the arms (cloth.build_sleeve_chains): loose and heavy, so they fall along a
+# lowered arm and drape from a raised one. A spring's rest direction turns with the arm: stiff (2.0),
+# the miko's pointed into her body with the arms down and the skirt's colliders shoved them round
+# behind her; as cloth (1.0, gravity 0.3) they fell through her hakama in strips.
+SLEEVE_STIFFNESS = 0.4
+SLEEVE_TIP_STIFFNESS = 0.2
+SLEEVE_GRAVITY_POWER = 0.6
+SLEEVE_DRAG_FORCE = 0.7
+SLEEVE_HIT_RADIUS = 0.03
+# Sleeves hang beside a long skirt with the arms down; colliders fitted to the body (legs, hips) let
+# them through the miko's hakama. SKIRT_COLLIDERS capsules round everything that isn't arm, hair or
+# sleeve, from the knees to a little above the hips, in their own group: only sleeves meet them, the
+# skirt's own chains never (their joints lie on that very surface).
+SKIRT_COLLIDERS = 5
+SKIRT_GROUP = "Skirt"
+SKIRT_BAND = 0.02
 
 # Colliders sit a little inside the fitted body, so hair resting on it isn't pushed away.
 COLLIDER_SHRINK = 0.9
@@ -85,7 +103,8 @@ class ClippingReport(NamedTuple):
         )
 
 
-def design(mesh_obj, armature, chains, joints, cloth_chains=(), tip_chains=(), appendage_chains=(), hair_hits_body=True):
+def design(mesh_obj, armature, chains, joints, cloth_chains=(), tip_chains=(), appendage_chains=(), hair_hits_body=True,
+           sleeve_chains=()):
     """Spring chains for the hair, cloth, hat tip and appendage bone chains, plus colliders fitted to the body.
 
     Without `hair_hits_body` the hair's chains collide with the head alone. Hair that lies on the
@@ -101,24 +120,28 @@ def design(mesh_obj, armature, chains, joints, cloth_chains=(), tip_chains=(), a
         (tip_chains, TIP_STIFFNESS, TIP_TIP_STIFFNESS, TIP_GRAVITY_POWER, TIP_DRAG_FORCE, TIP_HIT_RADIUS),
         (appendage_chains, APPENDAGE_STIFFNESS, APPENDAGE_TIP_STIFFNESS, APPENDAGE_GRAVITY_POWER,
          APPENDAGE_DRAG_FORCE, APPENDAGE_HIT_RADIUS),
+        (sleeve_chains, SLEEVE_STIFFNESS, SLEEVE_TIP_STIFFNESS, SLEEVE_GRAVITY_POWER, SLEEVE_DRAG_FORCE, SLEEVE_HIT_RADIUS),
     )
+    spring_bones = {name for kind, *_ in kinds for names in kind for name in names}
     for kind, stiffness, tip_stiffness, gravity, drag, hit in kinds:
         for names in kind:
             points = [bones[names[0]].head_local] + [bones[name].tail_local for name in names]
+            stiffer = FRONT_STIFFER if kind is chains and bones[names[0]].get(hair.FRONT_HUNG) else 1.0
             springs.append(
                 spring_sim.Chain(
                     points=np.array([list(point) for point in points]),
                     parent=bones[names[0]].parent.name,
-                    stiffness=stiffness,
+                    stiffness=stiffness * stiffer,
                     gravity_power=gravity,
                     drag_force=drag,
                     hit_radius=hit,
                     names=names,
-                    tip_stiffness=tip_stiffness,
+                    tip_stiffness=tip_stiffness * stiffer,
                     collides_with=None if hair_hits_body or kind is not chains else (BONE_NAMES["head"],),
+                    groups=(SKIRT_GROUP,) if kind is sleeve_chains else (),
                 )
             )
-    hair_bones = {name for kind in (chains, cloth_chains, tip_chains, appendage_chains) for names in kind for name in names}
+    hair_bones = {name for kind in (chains, cloth_chains, tip_chains, appendage_chains, sleeve_chains) for names in kind for name in names}
     volume = body_volume.fit(mesh_obj, joints, hair_bones)
     colliders = _body_colliders(volume, joints)
     head = _head_collider(mesh_obj, joints, hair_bones)
@@ -126,6 +149,8 @@ def design(mesh_obj, armature, chains, joints, cloth_chains=(), tip_chains=(), a
         colliders[0] = head
     # a rig taken in as it came may have no upper chest (kept.py): its colliders ride the chest
     colliders = [c if c.bone in bones else spring_sim.Collider(BONE_NAMES["chest"], c.radius, c.offset, c.tail) for c in colliders]
+    if sleeve_chains:
+        colliders += _skirt_colliders(mesh_obj, joints, spring_bones)
     return SpringDesign(springs, _clear_of_resting_hair(colliders, springs))
 
 
@@ -152,10 +177,14 @@ def _clear_of_resting_hair(colliders, springs):
     """
     if not springs:
         return colliders
-    joints = np.vstack([chain.points[1:] for chain in springs])  # chain roots never collide
-    hit_radii = np.concatenate([np.full(len(chain.points) - 1, chain.hit_radius) for chain in springs])
     kept = []
     for collider in colliders:
+        # measured against the chains it pushes: the skirt's colliders against the sleeves alone
+        own = [chain for chain in springs if collider.group is None or collider.group in chain.groups]
+        if not own:
+            continue
+        joints = np.vstack([chain.points[1:] for chain in own])  # chain roots never collide
+        hit_radii = np.concatenate([np.full(len(chain.points) - 1, chain.hit_radius) for chain in own])
         start = collider.offset
         if collider.tail is None:
             distance = np.linalg.norm(joints - start, axis=1)
@@ -166,7 +195,7 @@ def _clear_of_resting_hair(colliders, springs):
         radius = max(MIN_FIT_SHARE * collider.radius,
                      min(collider.radius, float(np.min(distance - hit_radii)) - REST_CLEARANCE))
         if radius > REST_CLEARANCE:
-            kept.append(spring_sim.Collider(collider.bone, radius, collider.offset, collider.tail))
+            kept.append(spring_sim.Collider(collider.bone, radius, collider.offset, collider.tail, collider.group))
     return kept
 
 
@@ -201,6 +230,33 @@ def _body_colliders(volume, joints):
     for (start_key, _end_key), (start, end, radius) in zip(body_volume.LIMBS, volume.capsules):
         if radius > 0.0:
             colliders.append(spring_sim.Collider(BONE_NAMES[start_key], COLLIDER_SHRINK * radius, offset=start, tail=end))
+    return colliders
+
+
+def _skirt_colliders(mesh_obj, joints, spring_bones):
+    """Capsules (SKIRT_GROUP, on the hips) round the outside of what hangs below the waist: a skirt,
+    a hakama, the legs when there is neither. Across the body at each height, as the torso's are."""
+    j = {key: np.asarray(value, dtype=float) for key, value in joints.items()}
+    verts = meshdata.world_vertices(mesh_obj)
+    names = [group.name for group in mesh_obj.vertex_groups]
+    away = {name for name in names if name.startswith(("Left", "Right")) and not name.endswith(("UpperLeg", "LowerLeg", "Foot", "Toes"))}
+    away |= {name for name in spring_bones if not name.startswith("Cloth")} | {BONE_NAMES["head"], BONE_NAMES["neck"]}
+    keep = np.ones(len(verts), dtype=bool)
+    for vertex in mesh_obj.data.vertices:
+        if vertex.groups and names[max(vertex.groups, key=lambda g: g.weight).group] in away:
+            keep[vertex.index] = False
+    knee = float((j["left_lower_leg"][2] + j["right_lower_leg"][2]) / 2)
+    top = float(j["hips"][2] + 0.25 * (j["neck"][2] - j["hips"][2]))
+    colliders = []
+    for z in np.linspace(knee, top, SKIRT_COLLIDERS):
+        band = verts[keep & (np.abs(verts[:, 2] - z) < SKIRT_BAND)]
+        if len(band) < 30:
+            continue
+        (x0, y0), (x1, y1) = band[:, :2].min(axis=0), band[:, :2].max(axis=0)
+        cx, cy, rx, ry = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2, (y1 - y0) / 2
+        half = max(rx - ry, 0.0)
+        colliders.append(spring_sim.Collider(BONE_NAMES["hips"], ry, offset=np.array([cx - half, cy, z]),
+                                             tail=np.array([cx + half, cy, z]) if half > 1e-3 else None, group=SKIRT_GROUP))
     return colliders
 
 
