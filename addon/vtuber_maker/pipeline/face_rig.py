@@ -641,6 +641,22 @@ def flatten_lip(obj):
     coords[:, 1] += ease
     mesh.vertices.foreach_set("co", coords.astype(np.float32).ravel())
     mesh.update()
+    # what the ease brings round to face the front takes the face's own picture: the lip's underside, on the model's
+    # texture and on the hair-over copy, showed as a pale strip with the old lip line over her mouth (Warudo)
+    slot = mesh.materials.find(face_points.FACE_PATCH_MATERIAL)
+    if slot >= 0:
+        from . import eyes
+        eased = ease > 1e-6
+        # (any vertex moved: the copy of the picture the hair-over material has still holds the mouth as drawn), and
+        # whatever the lip uncovered, now first from the front round the mouth: its corners' ends stayed as flaps
+        polygons = {p.index for p in mesh.polygons if any(eased[v] for v in p.vertices)}
+        reach = LIP_FLAT_SIDES * width
+        xs, zs = np.meshgrid(np.linspace(left - reach, right + reach, 48),
+                             np.linspace(mouth[:, 2].min(), top + LIP_FLAT_ABOVE * width, 24))
+        seen = eyes._front_polygons(obj, np.stack([xs.ravel(), zs.ravel()], axis=1))
+        polygons |= {i for i in seen if not patch[list(mesh.polygons[i].vertices)].any()
+                     and near[list(mesh.polygons[i].vertices)].all()}
+        eyes._onto_patch(obj, eyes.FacePatch(obj), polygons, slot)
     return float(ease.max())
 
 

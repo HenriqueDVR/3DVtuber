@@ -13,6 +13,9 @@ the last digit on every good one.
 GEOMETRY = {"build", "hair", "loose", "fingers", "pieces", "eyes", "mouth"}
 # Steps that make or reshape shape keys
 KEYS = {"face_tracking", "eyes", "mouth"}
+# Steps that may move polygons between materials, adding and removing none: the skin eased back over a drawn mouth
+# takes the face's picture (face_rig.flatten_lip; the miko's lip underside showed as a strip over her mouth)
+REPAINTS = {"face_tracking"}
 # Steps that place or turn finger bones; none of them on an adopted rig, whose hands stay as modelled
 FINGERS = {"fingers", "finger_guides", "tpose"}
 
@@ -78,7 +81,8 @@ def _geometry(step, before, after):
         now = after.get("meshes", {}).get(mesh)
         if now is None:
             yield f"mesh {mesh} is gone"
-        elif (now["vertices"], now["polygons"], now["materials"]) != (was["vertices"], was["polygons"], was["materials"]):
+        elif ((now["vertices"], now["polygons"]) != (was["vertices"], was["polygons"])
+              or step not in REPAINTS and now["materials"] != was["materials"]):
             yield (f"{mesh} has {now['vertices']} vertices and {now['polygons']} polygons, "
                    f"was {was['vertices']} and {was['polygons']}")
 

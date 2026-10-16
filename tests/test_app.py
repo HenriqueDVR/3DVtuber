@@ -1281,6 +1281,11 @@ class Engine(unittest.TestCase):
         self.assertEqual(compare("eyes", good, cut)[0], [])
         self.assertEqual(compare("chest", good, self.fingerprint(spring_bones=59))[0], [])
         self.assertIn("51 spring bones, was 55", compare("eyes", good, self.fingerprint(spring_bones=51))[0])
+        # the face step gives skin it eased back over the mouth the face's picture (the miko's lip), nothing else does
+        repainted = self.fingerprint(meshes__Body__materials={"skin": 52348, "mouth": 70})
+        self.assertEqual(compare("face_tracking", good, repainted)[0], [])
+        self.assertTrue(compare("chest", good, repainted)[0])
+        self.assertTrue(compare("face_tracking", good, cut)[0])
 
     def test_a_step_that_cuts_nothing_may_not_open_the_surface(self):
         # one copy of a seam's vertices moved and not its twin: 92 border edges more across model A's lower back
