@@ -4026,6 +4026,94 @@ class Inside(unittest.TestCase):
         self.assertEqual((shallow.get("deep_mm2"), shallow.get("failed")), (0.0, []), shallow)
         self.assertGreater(shallow["window_mm2"], 300)  # the frame's own window is still read where the patch leaves it clear
 
+    def test_an_eye_layer_past_the_face_fails_and_one_tucked_behind_it_does_not(self):
+        from app import inside
+        # the worst camera of the miko's far-eye panel before 326d777, and the most any good build read
+        for past, fails in ((74.5, True), (8.5, False), (inside.PAST_MM2, False)):
+            said = self.page_said(0.0)
+            said["face"][1]["past_mm2"] = past
+            found = inside.judge(said)
+            self.assertEqual(bool(found["failed"]), fails, past)
+            self.assertEqual((found["past_mm2"], found["past_shot"]), (past, "face 0,0"))
+        self.assertIn("74 mm2 of an eye layer", inside.judge({**said, "face": [{**said["face"][1], "past_mm2": 74.5}]})["failed"][0])
+        # a report from before the eye layers were counted
+        self.assertEqual((inside.judge(self.page_said(0.0))["past_mm2"], inside.judge(self.page_said(0.0))["failed"]), (0.0, []))
+
+    def layered_vrm(self, name, grid_at):
+        """A VRM 1.0 file of a face (material face_patch, 12 x 12 cm), a white sheet as eyes.py makes it (a
+        FRAME_GRID of quads in the face's picture, 3 x 6 cm, its lower left corner at `grid_at` (x, z)) and a
+        sheet of hair 5 cm behind the face on a spring: skinned, the face and sheet to the head."""
+        cols, rows = 24, 16
+        bones = ["hips", "spine", "neck", "head", "leftUpperArm", "leftLowerArm", "leftHand", "rightUpperArm", "rightLowerArm", "rightHand",
+                 "leftUpperLeg", "leftLowerLeg", "leftFoot", "rightUpperLeg", "rightLowerLeg", "rightFoot"]
+        heights = {"hips": 0.9, "spine": 1.0, "neck": 1.35, "head": 1.43}
+        world = [heights.get(bone, 1.0) for bone in bones] + [1.6, 1.4]  # and the hair's two joints
+        hair, tip = len(bones), len(bones) + 1
+        binary, views, accessors, primitives = b"", [], [], []
+
+        def add(body, component=5126, **accessor):
+            nonlocal binary
+            views.append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(body)})
+            accessors.append({"bufferView": len(views) - 1, "componentType": component, **accessor})
+            binary += body + b"\0" * (-len(body) % 4)
+            return len(accessors) - 1
+
+        def sheet(x0, y0, x1, y1, z, columns, rows_, material, joint):
+            points = [(x0 + (x1 - x0) * i / columns, y0 + (y1 - y0) * j / rows_, z) for j in range(rows_ + 1) for i in range(columns + 1)]
+            quads = [(j * (columns + 1) + i, j * (columns + 1) + i + 1, (j + 1) * (columns + 1) + i + 1, (j + 1) * (columns + 1) + i)
+                     for j in range(rows_) for i in range(columns)]
+            triangles = [k for a, b, c, d in quads for k in (a, b, c, a, c, d)]
+            position = add(struct.pack(f"<{3 * len(points)}f", *(c for p in points for c in p)), count=len(points), type="VEC3",
+                           min=[min(p[k] for p in points) for k in range(3)], max=[max(p[k] for p in points) for k in range(3)])
+            joints = add(struct.pack(f"<{4 * len(points)}B", *([joint, 0, 0, 0] * len(points))), 5121, count=len(points), type="VEC4")
+            weights = add(struct.pack(f"<{4 * len(points)}f", *([1.0, 0, 0, 0] * len(points))), count=len(points), type="VEC4")
+            index = add(struct.pack(f"<{len(triangles)}H", *triangles), 5123, count=len(triangles), type="SCALAR")
+            primitives.append({"attributes": {"POSITION": position, "JOINTS_0": joints, "WEIGHTS_0": weights}, "indices": index, "material": material})
+        head = bones.index("head")
+        sheet(-0.06, 1.44, 0.06, 1.56, 0.0, 6, 6, 0, head)
+        sheet(grid_at[0], 1.47, grid_at[0] + 0.03, 1.53, grid_at[1], cols, rows, 0, head)
+        sheet(-0.15, 1.35, 0.15, 1.65, -0.05, 6, 6, 1, hair)
+        binds = add(struct.pack(f"<{16 * len(world)}f", *(v for h in world for v in (1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, -h, 0, 1))), count=len(world), type="MAT4")
+        nodes = ([{"name": bones[0], "translation": [0, heights["hips"], 0], "children": list(range(1, len(bones)))}]
+                 + [{"name": bone, "translation": [0, heights.get(bone, 1.0) - heights["hips"], 0]} for bone in bones[1:]])
+        nodes[head]["children"] = [hair]
+        nodes += [{"name": "hair", "translation": [0, 1.6 - heights["head"], 0], "children": [tip]}, {"name": "hairTip", "translation": [0, -0.2, 0]},
+                  {"name": "Body", "mesh": 0, "skin": 0}]
+        gltf = {"asset": {"version": "2.0"}, "extensionsUsed": ["VRMC_vrm", "VRMC_springBone"], "scene": 0, "scenes": [{"nodes": [0, len(nodes) - 1]}],
+                "nodes": nodes, "meshes": [{"primitives": primitives}], "skins": [{"joints": list(range(len(world))), "inverseBindMatrices": binds}],
+                "materials": [{"name": "face_patch", "doubleSided": True, "pbrMetallicRoughness": {"baseColorFactor": [0.95, 0.8, 0.7, 1]}},
+                              {"name": "Hair", "doubleSided": True, "pbrMetallicRoughness": {"baseColorFactor": [0.1, 0.1, 0.15, 1]}}],
+                "buffers": [{"byteLength": len(binary)}], "bufferViews": views, "accessors": accessors,
+                "extensions": {"VRMC_vrm": {"specVersion": "1.0", "meta": {"name": "Test", "authors": ["test"], "licenseUrl": "https://vrm.dev/licenses/1.0/"},
+                                            "humanoid": {"humanBones": {bone: {"node": i} for i, bone in enumerate(bones)}}},
+                               "VRMC_springBone": {"specVersion": "1.0", "springs": [{"joints": [{"node": hair, "stiffness": 1.0, "gravityPower": 0, "dragForce": 0.5},
+                                                                                                 {"node": tip}]}]}}}
+        return Engine.write_glb(self, name, gltf, binary)
+
+    def test_a_browser_finds_an_eye_layer_standing_past_the_face(self):
+        from app import inside, sheet
+        try:
+            sheet.find_browser()
+        except sheet.NoBrowser as error:
+            self.skipTest(str(error))
+        # the sheet beside the face's edge, before the hair: the miko's far-eye panel, a strip of skin from the side
+        past = inside.check(self.layered_vrm("past.vrm", (0.065, 0.0)), self.root / "past")
+        self.assertNotIn("left", past, past)
+        self.assertGreater(past["past_mm2"], 10 * inside.PAST_MM2, past)
+        self.assertTrue(any("eye layer" in line for line in past["failed"]), past)
+        # tucked 1 cm behind the middle of the face: never seen first
+        tucked = inside.check(self.layered_vrm("tucked.vrm", (-0.015, -0.01)), self.root / "tucked")
+        self.assertEqual((tucked.get("past_mm2"), tucked.get("failed")), (0.0, []), tucked)
+        report = json.loads((self.root / "tucked" / "inside.json").read_text())
+        self.assertEqual(report["eye_layer_vertices"], 25 * 17)
+
+    def test_the_page_knows_the_white_sheet_by_the_grid_eyes_py_makes(self):
+        import re
+        from app import inside
+        made = re.search(r"^FRAME_GRID = \((\d+), (\d+)\)", (REPO / "addon" / "vtuber_maker" / "pipeline" / "eyes.py").read_text(encoding="utf-8"), re.M)
+        known = re.search(r"^const FRAME_GRID = \[(\d+), (\d+)\];", inside.PAGE.read_text(encoding="utf-8"), re.M)
+        self.assertEqual(made.groups(), known.groups())
+
 
 class Blenders(unittest.TestCase):
     """One Blender kept through a run for its steps (engine._Worker), and the build's last steps side by side

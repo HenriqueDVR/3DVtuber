@@ -32,7 +32,9 @@
 // from the side, and no ray through the mesh told it from a patch standing off a round face, since a
 // ray doesn't know the frame is cut and the patch is blended. `python -m app inside`, app/inside.py.
 // ?model=/out/x.vrm ; &deep=12 (mm) ; &size=384 ; &post=1 sends the report (and with &pictures=1 the
-// sheets) to the server; &blend=1 counts holes in blended materials too (to see why they aren't).
+// sheets) to the server; &blend=1 counts holes in blended materials too (to see why they aren't). Also counted:
+// an eye layer in the face's picture standing past the face (the miko's far-eye panel before 326d777, a strip of
+// skin before her side hair from 40 degrees); &out=10 (mm).
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
@@ -45,6 +47,9 @@ for (const kind of ["warn", "error"]) {
 const query = new URLSearchParams(location.search);
 const model = query.get("model"), post = query.has("post"), pictures = query.has("pictures") || !post, blended = query.has("blend");
 const S = +(query.get("size") ?? 384), DEEP = +(query.get("deep") ?? 12) / 1000, LABEL = 18;
+// an eye layer counts as past the face where it shows the face's skin (within SKIN of its middle shade, summed over
+// red, green and blue) with hair on springs over OUT (mm) behind it: app/inside.py
+const OUT = +(query.get("out") ?? 10) / 1000, SKIN = 0.1;
 const statusBox = document.getElementById("status");
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
@@ -59,18 +64,19 @@ scene.add(sun);
 const camera = new THREE.PerspectiveCamera(20, 1, 0.01, 50);
 // numbers, not colours: one float target for what is seen, one for the first surface whatever its picture cuts
 const target = () => new THREE.WebGLRenderTarget(S, S, { type: THREE.FloatType, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
-const seenTarget = target(), firstTarget = target();
-const seenPixels = new Float32Array(S * S * 4), firstPixels = new Float32Array(S * S * 4);
+const seenTarget = target(), firstTarget = target(), bareTarget = target(), tintTarget = target();
+const seenPixels = new Float32Array(S * S * 4), firstPixels = new Float32Array(S * S * 4), barePixels = new Float32Array(S * S * 4), tintPixels = new Float32Array(S * S * 4);
 
 let vrm = null;
-const meshes = [], names = [], cutOut = new Set();
+const meshes = [], names = [], cutOut = new Set(), faceIds = new Set();
 
 // A material's stand-in for one pass. "seen": the file's own culling and its picture's alpha honoured
 // (a blended one counts as cut at a half), giving material and side, depth, and how much of the vertex
 // hangs from springs and from the head. "first": a surface its picture cuts drawn whole and from both
 // sides, giving its picture's alpha there and how it lies to the ray, so depth behind it is read square
 // to it. A blended sheet stays cut in both: it is an overlay, and a window under its clear part is still
-// the first surface there.
+// the first surface there. "bare": "seen" with the eye's layers taken away (`markEyeLayers`), to read what
+// lies behind them; "tint": the picture's colour where "seen" stands.
 function standIn(original, id, pass) {
   const map = original.map ?? original.uniforms?.map?.value ?? null;
   const cut = original.alphaTest > 0 ? original.alphaTest : (original.transparent ? 0.5 : 0);
@@ -78,14 +84,16 @@ function standIn(original, id, pass) {
   const whole = pass === "first" && (original.alphaTest > 0 || blended);
   const material = new THREE.MeshBasicMaterial({ map, side: pass === "first" ? THREE.DoubleSide : original.side, alphaTest: whole ? 0 : cut, blending: THREE.NoBlending });
   const side = `float(${id}) * 2.0 + (gl_FrontFacing ? 1.0 : 0.0)`;
-  const shared = "varying float vSprung;\nvarying float vHead;\nvarying float vDepth;\nvarying vec3 vAt;";
+  const shared = "varying float vSprung;\nvarying float vHead;\nvarying float vDepth;\nvarying vec3 vAt;\nvarying float vLayer;";
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", `#include <common>\nattribute float aSprung;\nattribute float aHead;\n${shared}`)
-      .replace("#include <project_vertex>", "#include <project_vertex>\nvDepth = -mvPosition.z; vSprung = aSprung; vHead = aHead; vAt = mvPosition.xyz;");
+      .replace("#include <common>", `#include <common>\nattribute float aSprung;\nattribute float aHead;\nattribute float aLayer;\n${shared}`)
+      .replace("#include <project_vertex>", "#include <project_vertex>\nvDepth = -mvPosition.z; vSprung = aSprung; vHead = aHead; vAt = mvPosition.xyz; vLayer = aLayer;");
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", `#include <common>\n${shared}`)
       .replace("#include <dithering_fragment>", pass === "seen" ? `gl_FragColor = vec4(${side}, vDepth, vSprung, vHead);`
+        : pass === "tint" ? `gl_FragColor = vec4(diffuseColor.rgb, vLayer);`
+        : pass === "bare" ? `if (vLayer > 0.5) discard;\ngl_FragColor = vec4(${side}, vDepth, vSprung, vHead);`
         : `gl_FragColor = vec4(${side}, vDepth, diffuseColor.a, abs(dot(normalize(cross(dFdx(vAt), dFdy(vAt))), normalize(vAt))));`);
   };
   material.customProgramCacheKey = () => `${pass}:${id}:${cut}`;
@@ -123,8 +131,64 @@ async function load(url) {
     const list = Array.isArray(node.material) ? node.material : [node.material];
     const ids = list.map((material) => { let id = names.indexOf(material.name); if (id < 0) { id = names.length; names.push(material.name); } return id + 1; });
     const both = (pass) => { const made = list.map((material, k) => standIn(material, ids[k], pass)); return Array.isArray(node.material) ? made : made[0]; };
-    meshes.push({ node, original: node.material, seen: both("seen"), first: both("first") });
+    node.geometry.setAttribute("aLayer", new THREE.BufferAttribute(new Float32Array(count), 1));
+    meshes.push({ node, original: node.material, seen: both("seen"), first: both("first"), bare: both("bare"), tint: both("tint") });
   });
+}
+
+// The eye's layers in the face's picture (eyes.py): the white sheet, a FRAME_GRID of quads, and the disc's still copy,
+// the iris disc again a little behind it. The file keeps no mark of them (the build's WHITE attribute isn't exported):
+// they are the face patch's pieces of those shapes, apart from its surface, on no spring.
+const FRAME_GRID = [24, 16];
+
+// A mesh's surfaces: its vertices joined where the picture's seams split them, then walked by triangle.
+function pieces(node) {
+  const position = node.geometry.attributes.position, count = position.count, index = node.geometry.index;
+  const where = new Map(), welded = new Int32Array(count), v = new THREE.Vector3();
+  for (let i = 0; i < count; i++) {
+    const key = `${Math.round(position.getX(i) * 1e5)},${Math.round(position.getY(i) * 1e5)},${Math.round(position.getZ(i) * 1e5)}`;
+    if (!where.has(key)) where.set(key, where.size);
+    welded[i] = where.get(key);
+  }
+  const parent = new Int32Array(where.size).map((_, i) => i);
+  const root = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  for (let t = 0; index && t < index.count; t += 3) {
+    const a = root(welded[index.getX(t)]);
+    for (const k of [1, 2]) { const b = root(welded[index.getX(t + k)]); if (a !== b) parent[b] = a; }
+  }
+  const found = new Map(), sprung = node.geometry.attributes.aSprung;
+  const piece = (r) => found.get(r) ?? found.set(r, { vertices: [], places: new Set(), triangles: 0, box: new THREE.Box3(), sprung: 0 }).get(r);
+  for (let i = 0; i < count; i++) {
+    const it = piece(root(welded[i]));
+    it.vertices.push(i);
+    it.places.add(welded[i]);
+    it.box.expandByPoint(node.getVertexPosition(i, v).applyMatrix4(node.matrixWorld));
+    it.sprung = Math.max(it.sprung, sprung.getX(i));
+  }
+  for (let t = 0; index && t < index.count; t += 3) piece(root(welded[index.getX(t)])).triangles++;
+  return [...found.values()];
+}
+
+function markEyeLayers() {
+  const discs = meshes.filter(({ node }) => !Array.isArray(node.material) && /^EyeIris/.test(node.material.name)).flatMap(({ node }) => pieces(node));
+  const [columns, rows] = FRAME_GRID;
+  let marked = 0;
+  for (const { node } of meshes) {
+    if (Array.isArray(node.material) || !/^face_patch(\.\d+)?$/.test(node.material.name)) continue;
+    faceIds.add(names.indexOf(node.material.name) + 1);
+    const layer = node.geometry.attributes.aLayer;
+    for (const it of pieces(node)) {
+      const sheet = it.places.size === (columns + 1) * (rows + 1) && it.triangles === 2 * columns * rows;
+      // the copy lies straight behind its disc: the same outline across the face, a little deeper
+      const copy = discs.some((disc) => disc.vertices.length === it.vertices.length && disc.triangles === it.triangles
+        && Math.abs(disc.box.min.x - it.box.min.x) + Math.abs(disc.box.max.x - it.box.max.x) + Math.abs(disc.box.min.y - it.box.min.y) + Math.abs(disc.box.max.y - it.box.max.y) < 0.004);
+      if (!(sheet || copy) || it.sprung > 0.01) continue;
+      for (const i of it.vertices) layer.setX(i, 1);
+      marked += it.vertices.length;
+    }
+    layer.needsUpdate = true;
+  }
+  return marked;
 }
 
 function bonePoint(name) {
@@ -190,7 +254,7 @@ function measure(draw, x0, y0) {
   }
   scene.background = null;
   renderer.setClearColor(0x000000, 0);
-  for (const [pass, into, pixels] of [["seen", seenTarget, seenPixels], ["first", firstTarget, firstPixels]]) {
+  for (const [pass, into, pixels] of [["seen", seenTarget, seenPixels], ["first", firstTarget, firstPixels], ["bare", bareTarget, barePixels], ["tint", tintTarget, tintPixels]]) {
     for (const mesh of meshes) mesh.node.material = mesh[pass];
     renderer.setRenderTarget(into);
     renderer.clear();
@@ -201,8 +265,17 @@ function measure(draw, x0, y0) {
   for (const mesh of meshes) mesh.node.material = mesh.original;
 
   const image = draw?.createImageData(S, S), out = image?.data;
-  const found = { model: 0, window: 0, deep: 0, through: 0, hairInside: 0, headInside: 0, by: {} };
-  const behindAll = [];
+  const found = { model: 0, window: 0, deep: 0, through: 0, hairInside: 0, headInside: 0, layer: 0, past: 0, by: {} };
+  const behindAll = [], layered = new Uint8Array(S * S), shades = [[], [], []];
+  for (let p = 0; p < S * S; p++) {
+    const code = Math.round(seenPixels[p * 4]);
+    if (code === 0) continue;
+    // an eye layer seen first: taken away, what shows lies further back
+    if (Math.round(barePixels[p * 4]) === 0 || barePixels[p * 4 + 1] > seenPixels[p * 4 + 1] + 0.0005) layered[p] = 1;
+    else if (faceIds.has(code >> 1)) for (const k of [0, 1, 2]) shades[k].push(tintPixels[p * 4 + k]);
+  }
+  // the face's skin: the middle shade of what the face's picture shows round the eyes
+  const skin = shades.map((shade) => shade.sort((a, b) => a - b)[shade.length >> 1] ?? -9);
   for (let row = 0; row < S; row++) {
     for (let col = 0; col < S; col++) {
       const at = ((S - 1 - row) * S + col) * 4, to = (row * S + col) * 4;
@@ -217,6 +290,15 @@ function measure(draw, x0, y0) {
           // the back of a surface: of hair on springs, or of what is the head's and on none
           if (seenPixels[at + 2] > 0.5) { found.hairInside++; r = 255; g = 170; b = 0; }
           else if (seenPixels[at + 3] > 0.5) { found.headInside++; r = 230; g = 30; b = 30; }
+        }
+        if (layered[at >> 2]) {
+          found.layer++;
+          // past the face: an eye layer showing the face's skin, the drawn eye's outside, with hair on springs over OUT
+          // behind it. Seen through the eye's opening a layer shows the drawn white, and behind it is the head's inside
+          const shade = Math.abs(tintPixels[at] - skin[0]) + Math.abs(tintPixels[at + 1] - skin[1]) + Math.abs(tintPixels[at + 2] - skin[2]);
+          if (shade < SKIN && Math.round(barePixels[at]) > 0 && barePixels[at + 2] > 0.5 && barePixels[at + 1] - seenPixels[at + 1] > OUT) {
+            found.past++; r = 255; g = 0; b = 255;
+          }
         }
         if (cut) {
           const behind = (seenPixels[at + 1] - firstPixels[at + 1]) * firstPixels[at + 3];
@@ -241,7 +323,8 @@ function measure(draw, x0, y0) {
 function note(shot, found) {
   const mm2 = (shot.span / S * 1000) ** 2;
   return { label: shot.label, from: shot.from, pose: shot.pose ?? "rest", model: found.model, window_mm2: +(found.window * mm2).toFixed(1), deep_mm2: +(found.deep * mm2).toFixed(1),
-    through_mm2: +(found.through * mm2).toFixed(1), behind90_mm: found.behind90, by: found.by, hair_inside_mm2: +(found.hairInside * mm2).toFixed(1), head_inside_mm2: +(found.headInside * mm2).toFixed(1) };
+    through_mm2: +(found.through * mm2).toFixed(1), behind90_mm: found.behind90, by: found.by, hair_inside_mm2: +(found.hairInside * mm2).toFixed(1), head_inside_mm2: +(found.headInside * mm2).toFixed(1),
+    layer_mm2: +(found.layer * mm2).toFixed(1), past_mm2: +(found.past * mm2).toFixed(1) };
 }
 
 // Every shot counted; with `name`, drawn on a sheet too (the file beside its counts) and sent.
@@ -259,7 +342,7 @@ async function shoot(shots, name) {
     if (draw) {
       const last = results[results.length - 1];
       draw.fillStyle = "#e6e6e6";
-      draw.fillText(`${shot.label}: ${last.deep_mm2} mm² over ${DEEP * 1000} mm deep through ${last.window_mm2} mm² of holes; hair's inside ${last.hair_inside_mm2} mm²`, x + 6, y + LABEL / 2);
+      draw.fillText(`${shot.label}: ${last.deep_mm2} mm² over ${DEEP * 1000} mm deep through ${last.window_mm2} mm² of holes; eye layer past the face ${last.past_mm2} mm²; hair's inside ${last.hair_inside_mm2} mm²`, x + 6, y + LABEL / 2);
     }
   }
   if (canvas) {
@@ -286,6 +369,7 @@ if (model) {
     const lost = said.filter((line) => /load texture/i.test(line));
     if (lost.length) throw new Error(`a texture didn't load (the browser's profile drive may be full): ${lost[0]}`);
     pose("rest");
+    const eyeLayers = markEyeLayers();
     const box = faceBox();
     const face = box ? box.getCenter(new THREE.Vector3()) : bonePoint("head").add(new THREE.Vector3(0, 0.07, 0));
     const faceSpan = box ? Math.max(0.3, 1.6 * Math.max(box.max.x - box.min.x, box.max.y - box.min.y)) : 0.3;
@@ -302,11 +386,12 @@ if (model) {
     const faces = await shoot(faceShots), hair = await shoot(hairShots);
     if (!faces.some((shot) => shot.model > 0)) throw new Error("nothing of the avatar was read back from any camera");
     const worst = faces.reduce((a, b) => (b.deep_mm2 > a.deep_mm2 ? b : a)), inside = hair.reduce((a, b) => (b.hair_inside_mm2 > a.hair_inside_mm2 ? b : a));
+    const past = faces.reduce((a, b) => (b.past_mm2 > a.past_mm2 ? b : a));
     if (pictures) {
       await shoot(faceShots, "face");
-      await shoot([faceShots[faces.indexOf(worst)], hairShots[hair.indexOf(inside)]], "worst");
+      await shoot([faceShots[faces.indexOf(worst)], hairShots[hair.indexOf(inside)], ...(past.past_mm2 > 0 ? [faceShots[faces.indexOf(past)]] : [])], "worst");
     }
-    const report = { model, materials: names, cut_out: [...cutOut].map((id) => names[id - 1]), deep_mm: DEEP * 1000, size: S, face: faces, hair,
+    const report = { model, materials: names, eye_layer_vertices: eyeLayers, out_mm: OUT * 1000, cut_out: [...cutOut].map((id) => names[id - 1]), deep_mm: DEEP * 1000, size: S, face: faces, hair,
       springJoints: vrm.springBoneManager?.joints.size ?? 0, drawnBy: drawnBy(), warnings: said };
     statusBox.textContent = `${worst.deep_mm2} mm² over ${DEEP * 1000} mm deep through a hole (${worst.label}); hair's inside ${inside.hair_inside_mm2} mm² (${inside.label})`;
     if (post) await fetch("/inside?name=done", { method: "POST", body: JSON.stringify(report) });
