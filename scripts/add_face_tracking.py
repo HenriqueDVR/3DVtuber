@@ -298,8 +298,9 @@ class FaceShapes:
         for side in ("Left", "Right"):
             sign = 1 if side == "Left" else -1
             self.add(f"mouth{side}", self.bump(self.mouth, 1.6 * w, [sign * SIDE_SHIFT * w, 0, 0]))
-        print("added mouth shapes; the patch brought in front of the face in", face_rig.patch_in_front(self.obj), "of them")
-        print(f"the skin over the mouth eased back behind it, at most {1000 * face_rig.flatten_lip(self.obj):.1f} mm")
+        # the lip eased back first: the patch is then laid on the face as eased
+        print(f"added mouth shapes; the skin over the mouth eased back behind it, at most {1000 * face_rig.flatten_lip(self.obj):.1f} mm")
+        print("the patch laid on the face in", face_rig.patch_in_front(self.obj), "of them")
         print("an overhanging lip kept off the mouth:", face_rig.lip_off_mouth(self.obj), "vertices held back")
 
     def add_mouth_from_vowels(self):
@@ -351,9 +352,9 @@ class FaceShapes:
                 points[:, 0] += sign * FREE_SLIDE * w
                 return points
             self.add(f"mouth{side}", on_patch(slide))
-        print("added mouth shapes that move only the mouth; the patch brought in front of the face in",
-              face_rig.patch_in_front(self.obj), "of them")
-        print(f"the skin over the mouth eased back behind it, at most {1000 * face_rig.flatten_lip(self.obj):.1f} mm")
+        print("added mouth shapes that move only the mouth; the skin over the mouth eased back behind it, at most "
+              f"{1000 * face_rig.flatten_lip(self.obj):.1f} mm")
+        print("the patch laid on the face in", face_rig.patch_in_front(self.obj), "of them")
         print("an overhanging lip kept off the mouth:", face_rig.lip_off_mouth(self.obj), "vertices held back")
 
     def add_blink(self, suffix, amount):

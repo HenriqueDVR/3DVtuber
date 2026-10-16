@@ -400,7 +400,8 @@ def reshape_mouth(obj, rest_share=MOUTH_REST_SHARE, lift=MOUTH_TOP_LIFT, scale=1
         return np.ptp(shape[:, 0]) / MOUTH_COLUMNS, max(np.ptp(shape[:, 2]) / MOUTH_ROWS, 1e-4)
 
     basis = co(basis_key)
-    polygons = [p.vertices[:] for p in mesh.polygons if not patch[list(p.vertices)].all()]
+    polygons = _face_polygons(mesh, patch)
+    grid = grid.reshape(-1, 3)[patch]
 
     def surface(points):
         return BVHTree.FromPolygons([Vector(v) for v in points], polygons)
@@ -416,13 +417,13 @@ def reshape_mouth(obj, rest_share=MOUTH_REST_SHARE, lift=MOUTH_TOP_LIFT, scale=1
         shape[:, 2] = top + scale * (shape[:, 2] - top)
         # in front of the face as this key moves it: the vowels drop the lower lip too, and a patch
         # laid on the still face sank behind it; model A's dropped lip bulged through between vertices
-        moved[patch] = _in_front_of_face(shape, surface(moved), cell(shape))
+        moved[patch] = _in_front_of_face(shape, surface(moved), cell(shape), grid=grid)
         shapes[name], moved_keys[name] = moved[patch], moved
     widest = shapes[max(vowels, key=lambda name: np.ptp(shapes[name][:, 0]))].copy()
     rest = widest.copy()
     rest[:, 0] = cover["x"] + rest_share * (rest[:, 0] - cover["x"])
     rest[:, 2] = top + (rest[:, 2] - top) * rest_height * cover["width"] / np.ptp(widest[:, 2])
-    rest = _in_front_of_face(rest, surface(basis), cell(rest))
+    rest = _in_front_of_face(rest, surface(basis), _closed_cell(cover["width"]), follow=True)
 
     for key in keys:
         if key == basis_key:
@@ -551,46 +552,87 @@ def _front_onto_patch(obj, box, au, av, step=0.0002):
 
 
 def patch_in_front(obj):
-    """Bring the mouth patch forward in every shape key wherever the face, as that key moves it, comes
-    within MOUTH_SURFACE_GAP of it; returns how many keys changed. Never moves it back.
+    """Lay the mouth patch on the face in every shape key, MOUTH_SURFACE_GAP in front of the face as that key
+    moves it (_in_front_of_face with its grid), and at the key's part ways (BLEND_WEIGHTS) too; returns how many
+    keys changed. It moves back too: left where the vowels put it, KemonoGirl's patch stood 4 to 6 mm proud of
+    her chin and of her upper lip once flatten_lip eased it (call this after flatten_lip): a flap in profile.
 
     reshape_mouth lays the vowels so; the shapes add_face_tracking.py builds on them (smiles, frowns,
     pucker, jaw) move skin and patch by one bump each, the skin under the patch's corners more than
     the patch, and skin stood up to 5 mm through the drawn mouth on the princess (seen in Warudo on
-    the miko, the princess and the chibi). The closed mouth lies at the gap itself, so keys mixed by
-    tracking keep it too, as far as the deltas add.
+    the miko, the princess and the chibi). An app moves each vertex in a straight line from the closed
+    mouth to the key's, over a lip that bulges between: laid at the key alone, a tenth of KemonoGirl's
+    mouth had skin in front of it at half "jawOpen". So each key's patch comes as far forward as its part
+    ways need: at a weight t its depth is the closed one plus t times the key's move. Moving back, keys that add
+    up sink it, which forward-only keys never did: so it is laid for the weights past 1 and beside JAW_KEY too.
     """
     mesh = obj.data
     if MOUTH_GRID_ATTRIBUTE not in mesh.attributes or mesh.shape_keys is None:
         return 0
     grid = np.empty(len(mesh.vertices) * 3)
     mesh.attributes[MOUTH_GRID_ATTRIBUTE].data.foreach_get("vector", grid)
-    patch = grid.reshape(-1, 3)[:, 2] > 0.5
+    grid = grid.reshape(-1, 3)
+    patch = grid[:, 2] > 0.5
     if not patch.any():
         return 0
-    polygons = [p.vertices[:] for p in mesh.polygons if not patch[list(p.vertices)].all()]
-    rest = np.empty(len(mesh.vertices) * 3)
-    mesh.shape_keys.reference_key.data.foreach_get("co", rest)
-    rest = rest.reshape(-1, 3)
+    grid = grid[patch]
+    polygons = _face_polygons(mesh, patch)
+    basis_key = mesh.shape_keys.reference_key
+    width = obj[MOUTH_COVER_PROPERTY]["width"] if MOUTH_COVER_PROPERTY in obj else None
+
+    def co(key):
+        values = np.empty(len(key.data) * 3)
+        key.data.foreach_get("co", values)
+        return values.reshape(-1, 3)
+
+    rest = co(basis_key)
     # each polygon's depth at rest, and the mouth's own there
     rest_depth = np.array([rest[list(p), 1].mean() for p in polygons])
     mouth_rest = rest[patch, 1]
-    changed = 0
-    for key in mesh.shape_keys.key_blocks:
-        values = np.empty(len(key.data) * 3)
-        key.data.foreach_get("co", values)
-        moved = values.reshape(-1, 3)
+
+    def laid(moved, open_mouth=True):
         shape = moved[patch]
         cell = (np.ptp(shape[:, 0]) / MOUTH_COLUMNS, max(np.ptp(shape[:, 2]) / MOUTH_ROWS, 1e-4))
         surface = BVHTree.FromPolygons([Vector(v) for v in moved], polygons)
-        ahead = np.minimum(shape[:, 1], _in_front_of_face(shape, surface, cell, skip=(rest_depth, mouth_rest))[:, 1])
-        if (ahead < shape[:, 1] - 1e-7).any():
-            shape[:, 1] = ahead
-            moved[patch] = shape
+        # the closed line as reshape_mouth lays it, an opening on the face
+        if not open_mouth:
+            return _in_front_of_face(shape, surface, _closed_cell(width or np.ptp(shape[:, 0])), skip=(rest_depth, mouth_rest), follow=True)[:, 1]
+        return _in_front_of_face(shape, surface, cell, skip=(rest_depth, mouth_rest), grid=grid)[:, 1]
+
+    changed = 0
+    keys = mesh.shape_keys.key_blocks
+    jaw = keys.get(JAW_KEY)
+    jaw_move = None
+    for key in [basis_key] + ([jaw] if jaw is not None else []) + [k for k in keys if k not in (basis_key, jaw)]:
+        moved = co(key)
+        if key == basis_key:
+            depth = laid(moved, open_mouth=False)
+        elif np.abs(moved - rest).max() < 1e-7:
+            continue
+        else:
+            # the patch's move in depth that keeps it in front at every weight looked at, and beside the jaw half open
+            closed = rest[patch, 1]
+            move = None
+            for weight in BLEND_WEIGHTS:
+                need = (laid(rest + weight * (moved - rest)) - closed) / weight
+                move = need if move is None else np.minimum(move, need)
+            if jaw_move is not None:
+                for jaw_weight, weight in JAW_MIXES:
+                    mixed = rest + jaw_weight * jaw_move + weight * (moved - rest)
+                    move = np.minimum(move, (laid(mixed) - closed - jaw_weight * jaw_move[patch, 1]) / weight)
+            depth = closed + move
+        if (np.abs(depth - moved[patch, 1]) > 1e-7).any():
+            moved[patch, 1] = depth
             key.data.foreach_set("co", moved.astype(np.float32).ravel())
             changed += 1
-            if key == mesh.shape_keys.reference_key:
+            if key == basis_key:
                 mesh.vertices.foreach_set("co", moved.astype(np.float32).ravel())
+                rest = moved
+        if key == basis_key:
+            # overhangs judged against the closed mouth as laid: one left behind the face took plain skin for one
+            mouth_rest = rest[patch, 1]
+        elif key == jaw:
+            jaw_move = co(key) - rest
     mesh.update()
     return changed
 
@@ -717,20 +759,119 @@ def lip_off_mouth(obj):
     return len(held)
 
 
-def _in_front_of_face(points, surface, cell, samples=5, skip=None):
+def _in_front_of_face(points, surface, cell, samples=5, skip=None, grid=None, follow=False):
     """Like _onto_face, but in front of the frontmost face seen anywhere within a cell (x, z) round each point.
 
     `skip`: (each polygon's depth at rest, each point's): a polygon over MOUTH_OVERHANG in front of the point
-    at rest isn't counted (see MOUTH_OVERHANG)."""
+    at rest isn't counted (see MOUTH_OVERHANG).
+
+    `follow`: each point is laid on the face instead, MOUTH_SURFACE_GAP in front of the face right behind it but no
+    deeper than the skin round it falling away at FACE_SLOPE. With `grid` ((u, v, 1) per point: the mouth patch's)
+    so, and then a quad that skin comes through between its corners comes forward as far as it does (_fit_between).
+    The frontmost face of a whole cell stood KemonoGirl's open mouth 4 to 6 mm out of a chin sloping back under
+    it: a flap in profile in Warudo."""
     result = points.copy()
     offsets = [(dx, dz) for dx in np.linspace(-cell[0], cell[0], samples) for dz in np.linspace(-cell[1], cell[1], samples)]
     for index, (x, y, z) in enumerate(points):
+        if follow or grid is not None:
+            # the face behind the point, but no deeper than the cell's skin sloping away at FACE_SLOPE: a chin
+            # sloping back is followed, a gap (a modelled mouth's, an opened slit) is bridged at its lips' depth
+            rest = None if skip is None else (skip[0], skip[1][index])
+            bounds = [depth + FACE_SLOPE * np.hypot(dx, dz) for dx, dz in offsets
+                      for depth in [_face_depth(surface, x + dx, y, z + dz, rest, front_only=True)] if depth is not None]
+            if bounds:
+                result[index, 1] = min(bounds) - MOUTH_SURFACE_GAP
+            continue
         hits = [surface.ray_cast(Vector((x + dx, y - 0.03, z + dz)), Vector((0.0, 1.0, 0.0)), 0.06) for dx, dz in offsets]
         depths = [hit[0].y for hit in hits if hit[0] is not None
                   and (skip is None or skip[0][hit[2]] > skip[1][index] - MOUTH_OVERHANG)]
         if depths:
             result[index, 1] = min(depths) - MOUTH_SURFACE_GAP
+    if grid is not None:
+        result = _fit_between(result, surface, grid, skip)
     return result
+
+
+def _closed_cell(width):
+    """The cell the closed mouth is laid on the face in (_in_front_of_face's `follow`): CLOSED_REACH mouth widths each
+    way. It may lie in a modelled mouth's groove: KemonoGirl's sank 9 mm into hers in a cell as tall as the line,
+    and an opening on its way from there to the face came out through her lips."""
+    return CLOSED_REACH * width, CLOSED_REACH * width
+
+
+def _face_depth(surface, x, y, z, skip=None, front_only=False):
+    """Depth (y) of the first face straight behind (x, z), looking from in front of y; None if there is none.
+
+    `skip`: (each polygon's depth at rest, the point's): an overhang (MOUTH_OVERHANG) is looked past. `front_only`
+    looks past faces turned away from the front too: through an opened slit, the head's inside."""
+    start = y - 0.03
+    for _ in range(8):
+        hit, normal, index, _distance = surface.ray_cast(Vector((x, start, z)), Vector((0.0, 1.0, 0.0)), y + 0.03 - start)
+        if hit is None:
+            return None
+        if (skip is None or skip[0][index] > skip[1] - MOUTH_OVERHANG) and not (front_only and normal.y > 0.0):
+            return hit.y
+        start = hit.y + 1e-6
+    return None
+
+
+# patch_in_front keeps the mouth in front of the face at these weights of each key (1: the key itself; 2: as far
+# again, as two openings stacked, or a tracker's gain past 1, carry it)...
+BLEND_WEIGHTS = (2.0, 1.0, 0.5, 0.25)
+# ...and beside JAW_KEY at these (jaw, key) weights: a tracker moves the jaw with nearly everything, the moves add,
+# and KemonoGirl's cheeks came through her mouth with the jaw at 0.4 and a smile at 0.6, though neither alone did;
+# in Warudo, laid for each key alone, her mouth tore with skin all round it; and a little skin still came through
+# with the mouth to one side and the jaw barely open, or past 1 (0.3 and 1.5 with the key at 1).
+JAW_KEY = "jawOpen"
+JAW_MIXES = ((0.5, 0.5), (1.0, 1.0), (0.3, 1.0), (1.5, 1.0))
+# The closed mouth is laid on the face as seen this many mouth widths round each point (_closed_cell).
+CLOSED_REACH = 0.1
+# How steeply (depth over distance across) the face may fall away behind the mouth before it is taken for a gap.
+FACE_SLOPE = 1.0
+# _fit_between looks at this many points across each patch quad, and moves quads forward this many rounds at most.
+FIT_SAMPLES = 5
+FIT_ROUNDS = 6
+
+
+def _fit_between(points, surface, grid, skip=None):
+    """Bring each quad of the patch (grid: (u, v, 1) per point) forward wherever the face comes within
+    MOUTH_SURFACE_GAP of it between its corners, by as much as it does."""
+    columns = np.rint((grid[:, 0] + 1.0) / 2.0 * MOUTH_COLUMNS).astype(int)
+    rows = np.rint((1.0 - grid[:, 1]) / 2.0 * MOUTH_ROWS).astype(int)
+    at = -np.ones((MOUTH_ROWS + 1, MOUTH_COLUMNS + 1), dtype=int)
+    at[rows, columns] = np.arange(len(points))
+    if (at < 0).any():
+        return points
+    result = points.copy()
+    steps = np.linspace(0.0, 1.0, FIT_SAMPLES)
+    for _ in range(FIT_ROUNDS):
+        moved = False
+        for j in range(MOUTH_ROWS):
+            for i in range(MOUTH_COLUMNS):
+                corners = [at[j, i], at[j, i + 1], at[j + 1, i], at[j + 1, i + 1]]
+                quad = result[corners]
+                need = 0.0
+                for a in steps:
+                    for b in steps:
+                        weights = np.array([(1 - a) * (1 - b), a * (1 - b), (1 - a) * b, a * b])
+                        x, y, z = weights @ quad
+                        rest = None if skip is None else (skip[0], float(weights @ skip[1][corners]))
+                        depth = _face_depth(surface, x, y, z, rest)
+                        if depth is not None:
+                            need = max(need, y - (depth - MOUTH_SURFACE_GAP))
+                if need > 1e-6:
+                    result[corners, 1] -= need
+                    moved = True
+        if not moved:
+            break
+    return result
+
+
+def _face_polygons(mesh, patch):
+    """The polygons the mouth patch is laid on: all but its own and the cavity's (cut_mouth) behind an opened slit."""
+    cavity = mesh.materials.find(MOUTH_MATERIAL)
+    return [p.vertices[:] for p in mesh.polygons
+            if not patch[list(p.vertices)].all() and (cavity < 0 or p.material_index != cavity)]
 
 
 def _onto_face(points, surface):

@@ -22,12 +22,36 @@ def co(key):
     return values.reshape(-1, 3)
 
 
+def skin_in_front(points, patch, polygons, rays=60):
+    """How many of rays x rays front rays over the mouth patch (points: every vertex) meet skin before the patch."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    patch_polygons = [p for p in polygons if patch[list(p)].all()]
+    face = BVHTree.FromPolygons([Vector(v) for v in points], [p for p in polygons if not patch[list(p)].all()])
+    mouth = BVHTree.FromPolygons([Vector(v) for v in points], patch_polygons)
+    shape = points[patch]
+    through = 0
+    for x in np.linspace(shape[:, 0].min(), shape[:, 0].max(), rays):
+        for z in np.linspace(shape[:, 2].min(), shape[:, 2].max(), rays):
+            seen = mouth.ray_cast(Vector((x, -1.0, z)), Vector((0.0, 1.0, 0.0)), 2.0)[0]
+            skin = face.ray_cast(Vector((x, -1.0, z)), Vector((0.0, 1.0, 0.0)), 2.0)[0]
+            through += seen is not None and skin is not None and skin.y < seen.y - 1e-5
+    return through
+
+
 class MouthFixture:
     """A flat face (y = 0, facing -Y) with a closed mouth patch and its openings, put through reshape_mouth."""
 
     ARGS = {}
     # vowel -> (half width, half height, drop), mouth widths: the openings the mesh comes with
     OPENINGS = {"aa": (0.42, 0.24, 0.13)}
+    BULGE = BULGE
+    SEGMENTS = 40
+
+    @staticmethod
+    def depth(x, z):
+        """The face's depth (y) at x, z; flat here."""
+        return np.zeros_like(x)
 
     @classmethod
     def setUpClass(cls):
@@ -36,9 +60,11 @@ class MouthFixture:
         obj = bpy.data.objects.new("face", mesh)
         bpy.context.scene.collection.objects.link(obj)
         bm = bmesh.new()
-        bmesh.ops.create_grid(bm, x_segments=40, y_segments=40, size=0.04)
+        bmesh.ops.create_grid(bm, x_segments=cls.SEGMENTS, y_segments=cls.SEGMENTS, size=0.04)
         bmesh.ops.rotate(bm, verts=bm.verts, matrix=Matrix.Rotation(np.pi / 2, 3, "X"))
         bmesh.ops.translate(bm, verts=bm.verts, vec=(0.0, 0.0, COVER["z"]))
+        for vert in bm.verts:
+            vert.co.y = float(cls.depth(np.array(vert.co.x), np.array(vert.co.z)))
         bm.to_mesh(mesh)
         bm.free()
         face_count = len(mesh.vertices)
@@ -75,7 +101,7 @@ class MouthFixture:
             opened = basis.copy()
             opened[cls.patch] = face_rig._mouth_shape(np.array(grid), COVER, shape)
             if name == "aa":
-                opened[lip, 1] -= BULGE
+                opened[lip, 1] -= cls.BULGE
             obj.shape_key_add(name=name).data.foreach_set("co", opened.astype(np.float32).ravel())
         slid = basis.copy()
         slid[cls.patch, 0] += 0.3 * WIDTH
@@ -107,15 +133,11 @@ class ReshapeMouth(MouthFixture, unittest.TestCase):
         self.assertAlmostEqual(rest[:, 2].max(), COVER["z"] + face_rig.MOUTH_TOP_LIFT * WIDTH, places=6)
 
     def test_patch_stays_in_front_of_the_dropped_lip(self):
-        # every patch vertex whose neighbouring quads overlap the bulge, not only those right over it
+        # between its vertices too: model A's dropped lip bulged through between them
+        polygons = [p.vertices[:] for p in bpy.data.objects["face"].data.polygons]
         aa = co(self.keys["aa"])
-        patch = aa[self.patch]
-        cell = (np.ptp(patch[:, 0]) / face_rig.MOUTH_COLUMNS, np.ptp(patch[:, 2]) / face_rig.MOUTH_ROWS)
-        lip = aa[self.lip]
-        over = [(np.abs(lip[:, 0] - x) <= cell[0]) & (np.abs(lip[:, 2] - z) <= cell[1]) for x, _y, z in patch]
-        touching = np.array([hit.any() for hit in over])
-        self.assertGreater(touching.sum(), 10)
-        self.assertLess(patch[touching, 1].max(), -BULGE)
+        self.assertLess(aa[self.patch, 1].min(), -BULGE)
+        self.assertEqual(skin_in_front(aa, self.patch, polygons), 0)
 
     def test_other_keys_keep_their_patch_move(self):
         delta = co(self.keys["mouthLeft"]) - co(self.keys["Basis"])
@@ -131,6 +153,47 @@ class ReshapeFreeMouth(ReshapeMouth):
     """Bigger openings and a drawn closed mouth, as fix_mouth.py --free --scale makes them."""
 
     ARGS = {"scale": 1.3, "rest_share": 0.6, "rest_height": 0.07}
+
+
+class AChinSlopingBackUnderTheMouth(MouthFixture, unittest.TestCase):
+    """KemonoGirl's face slopes back under her mouth; laid in front of the frontmost face round each vertex, her
+    open mouth stood 4 to 6 mm out of it: a flap in profile in Warudo."""
+
+    BULGE = 0.0
+    SLOPE = 0.8
+
+    @classmethod
+    def depth(cls, x, z):
+        return cls.SLOPE * np.maximum(COVER["z"] - z, 0.0)
+
+    def test_the_open_mouth_lies_on_the_chin(self):
+        from mathutils import Vector
+        from mathutils.bvhtree import BVHTree
+        mesh = bpy.data.objects["face"].data
+        polygons = [p.vertices[:] for p in mesh.polygons]
+        aa = co(self.keys["aa"])
+        face = BVHTree.FromPolygons([Vector(v) for v in aa], [p for p in polygons if not self.patch[list(p)].all()])
+        for x, y, z in aa[self.patch]:
+            behind = face.ray_cast(Vector((x, y - 0.03, z)), Vector((0.0, 1.0, 0.0)), 0.06)[0].y
+            self.assertLess(behind - y, face_rig.MOUTH_SURFACE_GAP + 0.0005, "the mouth stands out of the chin")
+        self.assertEqual(skin_in_front(aa, self.patch, polygons), 0)
+
+
+class AClosedLineOverAGroove(MouthFixture, unittest.TestCase):
+    """KemonoGirl's modelled lips leave a groove along her mouth line; laid in a cell as tall as the line, her closed
+    mouth sank 9 mm into it, and an opening on its way from there came out through her lips."""
+
+    BULGE = 0.0
+    SEGMENTS = 160
+    GROOVE = 0.008
+
+    @classmethod
+    def depth(cls, x, z):
+        return np.where((np.abs(z - COVER["z"] - face_rig.MOUTH_TOP_LIFT * WIDTH) < 0.001) & (np.abs(x) < WIDTH), cls.GROOVE, 0.0)
+
+    def test_the_closed_line_bridges_the_groove(self):
+        rest = co(self.keys["Basis"])[self.patch]
+        self.assertLess(rest[:, 1].max(), 0.0015 * face_rig.FACE_SLOPE)
 
 
 class TrackerShapesOnASmallFreeMouth(MouthFixture, unittest.TestCase):
@@ -197,6 +260,20 @@ class TrackerShapesOnASmallFreeMouth(MouthFixture, unittest.TestCase):
         self.assertLess(pucker[~self.patch, 1].min(), -1e-4)
         self.assertLess(pucker[self.patch, 1].min(), -1e-4)
 
+    def test_no_skin_in_front_of_the_mouth_part_way_or_beside_the_jaw(self):
+        # an app moves each vertex in a straight line, and keys add: KemonoGirl's lip showed through her mouth at
+        # half "jawOpen", her cheeks with the jaw at 0.4 and a smile at 0.6
+        polygons = [p.vertices[:] for p in bpy.data.objects["face"].data.polygons]
+        mixes = [{"jawOpen": weight} for weight in (0.25, 0.5, 0.75, 1.5)] + [{"aa": 0.5}, {"oh": 0.5}]
+        mixes += [{"jawOpen": 0.4, name: 0.6} for name in ("mouthSmileLeft", "mouthFrownRight", "mouthPucker", "mouthLeft")]
+        # stacked: in Warudo, keys laid each alone tore KemonoGirl's mouth with skin all round it
+        mixes += [{"jawOpen": 1, "mouthFunnel": 1}, {"jawOpen": 1, "oh": 1}, {"jawOpen": 1.2, "mouthSmileLeft": 0.6}]
+        # and to one side, the jaw barely open or past 1
+        mixes += [{"mouthLeft": 1, "jawOpen": 0.3}, {"mouthRight": 1, "jawOpen": 1.3}]
+        for values in mixes:
+            with self.subTest(shapes=values):
+                self.assertEqual(skin_in_front(self.shown(values), self.patch, polygons, rays=40), 0)
+
     def test_no_shape_puts_skin_in_front_of_the_mouth(self):
         # smiles and frowns moved skin and patch by one bump: skin stood 5 mm through the princess's mouth
         from mathutils import Vector
@@ -228,6 +305,18 @@ class TrackerShapesOnABigFreeMouth(TrackerShapesOnASmallFreeMouth):
         np.testing.assert_allclose(pucker[self.patch, 2], 0.7 * ou[self.patch, 2], atol=1e-6)
         funnel, oh = co(self.keys["mouthFunnel"]) - basis, co(self.keys["oh"]) - basis
         np.testing.assert_allclose(funnel[self.patch, 0], oh[self.patch, 0], atol=1e-6)
+
+
+class TrackerShapesOnACurvedFace(TrackerShapesOnABigFreeMouth):
+    """A face like KemonoGirl's: round across, a lower lip, the chin sloping back under it. The keys move the mouth
+    back onto the chin there, and every mix and stack must keep it in front. (Her own stacks, which tore her mouth
+    in Warudo with keys laid each alone, don't come out of so smooth a face: SETUP.md.)"""
+
+    @staticmethod
+    def depth(x, z):
+        # a lower lip standing 3 mm out a third of a mouth width under the line, the chin sloping back below it
+        lip = 0.003 * np.exp(-((z - COVER["z"] + 0.3 * WIDTH) / (0.15 * WIDTH)) ** 2 - (x / (0.4 * WIDTH)) ** 4)
+        return 0.8 * np.maximum(COVER["z"] - z, 0.0) + 8.0 * x * x - lip
 
 
 class AnUpperLipOverTheMouth(unittest.TestCase):
