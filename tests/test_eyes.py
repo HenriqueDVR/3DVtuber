@@ -470,6 +470,28 @@ class FaceOverTheDisc(unittest.TestCase):
         self.assertEqual(self.classes(0.003), (False, False))   # behind: the disc shows anyway
 
 
+class LeftoversInTheWhite(unittest.TestCase):
+    """The demon girl's white kept her iris's rim drawn past the circle read and flecks standing alone in it: both
+    read as iris leaking into her white. The lids' lines, touching the eye's edge, stay."""
+
+    def test_rim_and_flecks_go_lines_from_the_edge_stay(self):
+        ys, xs = np.mgrid[0:60, 0:100] + 0.5
+        see = (np.abs(xs - 50) < 45) & (np.abs(ys - 30) < 25)
+        rgb = np.full((60, 100, 3), 0.95)
+        rgb[~see] = (0.9, 0.75, 0.7)
+        hole = np.hypot(xs - 50, ys - 30) < 12
+        rgb[hole] = (0.6, 0.2, 0.6)
+        rim = (np.hypot(xs - 50, ys - 30) >= 12) & (np.hypot(xs - 50, ys - 30) < 14)
+        rgb[rim] = (0.3, 0.3, 0.4)          # the iris's rim, past the circle read
+        rgb[30:32, 85:87] = (0.2, 0.2, 0.2)  # a fleck alone in the white
+        line = see & (ys > 52) & (np.abs(xs - 20) < 8)
+        rgb[(ys > 52) & (ys < 56) & (np.abs(xs - 20) < 8)] = (0.1, 0.1, 0.1)  # a lid's line from the edge
+        painted = eyes.paint_out(rgb, see, hole)
+        self.assertGreater(float(painted[rim & see].mean()), 0.7)
+        self.assertGreater(float(painted[30:32, 85:87].mean()), 0.7)
+        self.assertLess(float(painted[line].mean()), 0.4)
+
+
 class TheWhitePastTheFace(unittest.TestCase):
     """The miko's eye white was painted past her face's outline, and the sheet and the disc's copy stood flat there,
     a skin panel before her side hair from 40 degrees; her bangs were the first thing in front."""

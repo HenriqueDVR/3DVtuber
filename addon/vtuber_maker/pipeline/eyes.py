@@ -626,6 +626,10 @@ def _circular_median(hues):
     return float(np.arctan2(np.median(np.sin(angle)), np.median(np.cos(angle))) / (2 * np.pi)) % 1.0
 
 
+# A moving iris's painting-out reaches this share of its radius past the hole into the white, lines too
+IRIS_LEFTOVER = 0.3
+
+
 def paint_out(rgb, see_through, hole, iris_hue=None):
     """The crop with the whole eye white, `hole` (under the iris) included, one neutral white.
 
@@ -645,6 +649,14 @@ def paint_out(rgb, see_through, hole, iris_hue=None):
     whiten = hole | rest & (value >= WHITE_LINE * typical)
     if iris_hue is not None:
         whiten |= rest & (np.abs((_hue(rgb) - iris_hue + 0.5) % 1.0 - 0.5) < CARRY_HUE) & (saturation > CARRY_SATURATION)
+    # ... and any line right beside the hole is the iris's own rim and shadow drawn past the circle read: kept as
+    # lines, the demon girl's showed as grey-purple smudges in her white once the iris looked away (Warudo)
+    if hole.any():
+        whiten |= rest & _dilate(hole, max(1, int(IRIS_LEFTOVER * np.sqrt(hole.sum() / np.pi))))
+    # ... and marks standing alone in the white, touching no edge of the eye (the lids' lines do): the demon girl's
+    # flecks read as iris leaking into her white
+    kept = rest & ~whiten
+    whiten |= kept & ~_reach(kept & _dilate(~see_through, 2), kept)
     rgb[whiten] = (tone * white_shading(see_through | hole))[whiten]
     return _smooth(rgb, whiten & _dilate(~whiten, WHITE_SMOOTH), WHITE_SMOOTH, np.ones_like(whiten))
 
