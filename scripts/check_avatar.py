@@ -57,6 +57,32 @@ SQUASH_MIN = 0.02
 # line alone kept model B "not ready". What such an edge has on every one of them: both its ends
 # are shared between the bones the pose moves and the ones that stay (the reference: 0.17 to 0.83
 # of each end on the moving bones; ours 0.11 to 0.87). So an edge with both ends shared between
+# Hair round the head with no spring in it: what hangs between the head and neck joints further than UNSPRUNG_OFF of
+# the head's height (head joint to crown) off the head's upright axis, on the head bone, off the face's own
+# materials, in a piece of surface that reaches the crown. Over UNSPRUNG places of it, with springs on under
+# UNSPRUNG_SHARE as many there, nothing swings round the head. The demon girl's bob, taken for skin while her horns
+# were taken for hair (2026-10-16): 486 places, 0 sprung. Good builds: at most 65 with none sprung (the knight's
+# short hair, one surface with his face), more only with springs beside them (the chibi 414 to 123). Hair that is
+# one surface with the face, and a bob part-sprung, aren't judged.
+UNSPRUNG_OFF = 0.4
+UNSPRUNG = 200
+UNSPRUNG_SHARE = 0.1
+# the crown: the highest point within this (m) of the head's upright axis; a piece reaching CROWN_REACH of the way
+# from the head joint up to it reaches the crown
+CROWN_AXIS = 0.06
+CROWN_REACH = 0.6
+# Round a drawn mouth (its width out to the sides and below, OFF_PICTURE_UP of it above), what shows first from the
+# front on a picture other than the face's own, differing from the face's picture there by over OFF_PICTURE_DIFF
+# (any channel, 0..1): over OFF_PICTURE mm2 of it is a strip of the model's own lip round the mouth. The miko's
+# (2026-10-16, pale with the old lip line, over her open mouth in Warudo): 9.6; the fox girl's under her mouth,
+# 14.9; good builds at most 2.7 (the chibi's). The face's own layers (face_patch_over) are not read.
+OFF_PICTURE_SIDE = 0.2
+OFF_PICTURE_UP = 0.4
+OFF_PICTURE_DIFF = 0.08
+OFF_PICTURE = 5.0
+# mm2 of a moving iris's white the eye step left unlike white (eyes.white_leftovers, kept on the mesh): the demon girl's
+# iris rim and flecks, "iris leaking into the white" in Warudo (2026-10-16): 17.3; good builds 1.7 to 3.8.
+WHITE_LEFTOVER = 8.0
 # SHARED[0] and SHARED[1] is in the joint's blend, its crease closing: measured, not judged.
 SHARED = (0.05, 0.95)
 # An edge with an end wholly on one side (0.97 to 1.0, or 0.0 to 0.03, on what was measured) is
@@ -125,6 +151,8 @@ FINGER_TORN = 0.002
 # quarter of the patch (LIMITS "mouth_turned"): the pirate's, all three shapes at full leaving a
 # sliver, turns 14% of it and nothing shows.
 MOUTH_PATCH = "MouthInside"
+# The face's own materials: its picture, its layers (face_patch_over), the eyes' and the mouth's
+FACE_MATERIALS = ("face_patch", "Eye", "Mouth")
 MOUTH_NARROWING = ("jawOpen", "mouthPucker", "mouthFunnel")
 MOUTH_STEPS = (0.0, 0.5, 1.0)
 FLAT = 0.98
@@ -405,6 +433,20 @@ def main():
 
     hair, on_head = hair_on_the_head(arm, mesh_obj, rest)
     measured["hair"] = hair
+    if "Head" in arm.data.bones and "Neck" in arm.data.bones:
+        total = np.bincount(held_vertex, weights=held_weight, minlength=len(rest))
+        part = lambda wanted: np.bincount(held_vertex, weights=held_weight * np.isin(held_bone, wanted),  # noqa: E731
+                                          minlength=len(rest)) / np.maximum(total, 1e-12)
+        sprung = part([g.index for g in mesh_obj.vertex_groups if g.name in springs])
+        on_bone = part([mesh_obj.vertex_groups["Head"].index] if "Head" in mesh_obj.vertex_groups else [])
+        face_slots = [i for i, m in enumerate(mesh.materials) if m and m.name.startswith(FACE_MATERIALS)]
+        slot = np.empty(len(mesh.polygons), np.int64)
+        mesh.polygons.foreach_get("material_index", slot)
+        on_face = np.zeros(len(rest), bool)
+        for polygon in np.flatnonzero(np.isin(slot, face_slots)):
+            on_face[list(mesh.polygons[int(polygon)].vertices)] = True
+        joint = lambda name: np.array(arm.matrix_world @ arm.data.bones[name].head_local)  # noqa: E731
+        hair.update(unsprung_hair(rest, surface_pieces(rest, edges), sprung, on_bone, on_face, joint("Head"), joint("Neck")))
     if "Head" in arm.pose.bones and "Neck" in arm.pose.bones:
         # not one of the judged poses: the neck's own skin stretches as it should
         crown = float((arm.matrix_world @ arm.pose.bones["Head"].head).z) + HEAD_CLEAR
@@ -421,9 +463,18 @@ def main():
           + (f" (down to {hair['hangs_cm']} cm under them)" if hair["hangs_on_head"] else "")
           + f"; {hair.get('ledge_edges', 0)} edges above the head joint grow over {LEDGE * 1000:.0f} mm when head and neck tilt together"
           + (f" (the worst {hair['ledge_mm']} mm, {hair['ledge_weights'][0]} | {hair['ledge_weights'][1]})" if hair.get("ledge_edges") else "")
-          + f"; {hair['shared_above']} vertices up there are shared between the head and the body")
+          + f"; {hair['shared_above']} vertices up there are shared between the head and the body"
+          + (f"; {hair['unsprung']} places hang round the head with no spring, {hair['sprung']} with one" if "unsprung" in hair else ""))
 
     face = face_shapes(arm, mesh_obj)
+    leftover = mesh_obj.get("eyes_white_leftover_mm2")
+    if leftover is not None:
+        measured["eye_white_leftover_mm2"] = float(leftover)
+        print(f"CHECK eye whites: {float(leftover)} mm2 left unlike white where the irises move")
+    off_picture = mouth_off_picture(mesh_obj)
+    if off_picture is not None:
+        measured["mouth_off_picture_mm2"] = off_picture
+        print(f"CHECK round the mouth: {off_picture} mm2 shows a picture other than the face's, unlike it")
     if face:
         measured["face"] = face
         if "mouth_on_head" in face:
@@ -821,6 +872,90 @@ def hair_findings(rest, on_head_bone, on_head, shoulders, head):
     return found
 
 
+def unsprung_hair(rest, pieces, on_springs, on_head_bone, on_face, head, neck):
+    """{"unsprung": places, "sprung": places} round the head (see UNSPRUNG): `rest` the vertices' places, `pieces`
+    their piece of surface (surface_pieces), `on_springs` and `on_head_bone` how much spring bones and the head bone
+    hold each, `on_face` whether each is on the face's own materials, `head` and `neck` the joints' (x, y, z)."""
+    head, neck = np.asarray(head, float), np.asarray(neck, float)
+    off = np.hypot(rest[:, 0] - head[0], rest[:, 1] - head[1])
+    near = off < CROWN_AXIS
+    if not near.any():
+        return {"unsprung": 0, "sprung": 0}
+    tall = float(rest[near, 2].max()) - head[2]
+    crown = np.isin(pieces, np.unique(pieces[rest[:, 2] > head[2] + CROWN_REACH * tall]))
+    hanging = crown & ~on_face & (rest[:, 2] < head[2]) & (rest[:, 2] > neck[2]) & (off > UNSPRUNG_OFF * tall)
+    unsprung = hanging & (on_springs < 0.05) & (on_head_bone >= MOSTLY_HEAD)
+    return {"unsprung": places(rest[unsprung]), "sprung": places(rest[hanging & (on_springs >= 0.05)])}
+
+
+def mouth_off_picture(mesh_obj):
+    """mm2 round the drawn mouth showing a picture other than the face's own, unlike it (see OFF_PICTURE); None
+    without a drawn mouth or a face patch. Read in the rest pose, from the front."""
+    from pathlib import Path
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    from mathutils.geometry import barycentric_transform
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
+    from vtuber_maker.pipeline import eyes, face_rig, meshdata
+    mesh = mesh_obj.data
+    if face_rig.MOUTH_GRID_ATTRIBUTE not in mesh.attributes or mesh.materials.find("face_patch") < 0:
+        return None
+    grid = np.empty(len(mesh.vertices) * 3)
+    mesh.attributes[face_rig.MOUTH_GRID_ATTRIBUTE].data.foreach_get("vector", grid)
+    patch = grid.reshape(-1, 3)[:, 2] > 0.5
+    if not patch.any():
+        return None
+    rest = meshdata.world_vertices(mesh_obj)
+    mesh.calc_loop_triangles()
+    tris = meshdata.triangles(mesh)
+    loops = np.empty(len(mesh.loop_triangles) * 3, np.int64)
+    mesh.loop_triangles.foreach_get("loops", loops)
+    loops = loops.reshape(-1, 3)
+    slot = np.empty(len(mesh.loop_triangles), np.int64)
+    mesh.loop_triangles.foreach_get("material_index", slot)
+    uv = np.empty(len(mesh.loops) * 2)
+    mesh.uv_layers.active.data.foreach_get("uv", uv)
+    uv = uv.reshape(-1, 2)
+    scene = BVHTree.FromPolygons([Vector(v) for v in rest], tris.tolist())
+    names = [m.name if m else "" for m in mesh.materials]
+    pictures = {}
+
+    def picture(index):
+        if index not in pictures:
+            material = mesh.materials[index]
+            image = next((n.image for n in material.node_tree.nodes if n.type == "TEX_IMAGE" and n.image), None)                 if material and material.use_nodes else None
+            pictures[index] = eyes.image_rows(image)[..., :3] if image else None
+        return pictures[index]
+
+    face = eyes.FacePatch(mesh_obj)
+    own = eyes.image_rows(face.image)[..., :3]
+    mouth = rest[patch]
+    left, right, low, top = mouth[:, 0].min(), mouth[:, 0].max(), mouth[:, 2].min(), mouth[:, 2].max()
+    width = right - left
+    front = mouth[:, 1].min()
+    xs = np.linspace(left - OFF_PICTURE_SIDE * width, right + OFF_PICTURE_SIDE * width, 60)
+    zs = np.linspace(low - OFF_PICTURE_SIDE * width, top + OFF_PICTURE_UP * width, 40)
+    cell = float(np.diff(xs[:2])[0] * np.diff(zs[:2])[0])
+    unlike = 0
+    for x in xs:
+        for z in zs:
+            hit, _normal, index, _distance = scene.ray_cast(Vector((x, -10.0, z)), Vector((0.0, 1.0, 0.0)), 20.0)
+            # hair or a hat well in front of the mouth may cover it; the face's own materials show its picture
+            if hit is None or hit.y < front - 0.01 or names[slot[index]].startswith(FACE_MATERIALS):
+                continue
+            rows = picture(slot[index])
+            if rows is None:
+                continue
+            a, b, c = (Vector(rest[v]) for v in tris[index])
+            at = barycentric_transform(hit, a, b, c, *(Vector((*uv[loop], 0.0)) for loop in loops[index]))
+            height, wide = rows.shape[:2]
+            colour = rows[int(np.clip((1.0 - at.y) * height, 0, height - 1)), int(np.clip(at.x * wide, 0, wide - 1))]
+            u, v = face.pixel(np.array([[x, z]]))[0]
+            there = own[int(np.clip(v, 0, own.shape[0] - 1)), int(np.clip(u, 0, own.shape[1] - 1))]
+            unlike += float(np.abs(colour - there).max()) > OFF_PICTURE_DIFF
+    return round(unlike * cell * 1e6, 1)
+
+
 def mouth_turned(basis, shapes, triangles):
     """{"mixes", "of", "share", "mix"}: in how many mixes of the tracker's mouth shapes part of the
     drawn mouth (`triangles`) faces backwards, the largest share of its area so turned and the mix
@@ -955,10 +1090,20 @@ def failures(measured):
         failed.append(f"{seams['fingers']} places in the hands come apart as the fingers curl and spread (up to "
                       f"{seams['fingers_mm']:.0f} mm): a slit between two fingers, the copies of a vertex along a texture "
                       "seam held by different fingers")
+    if measured.get("eye_white_leftover_mm2", 0) > WHITE_LEFTOVER:
+        failed.append(f"{measured['eye_white_leftover_mm2']:.0f} mm2 of the eye whites a moving iris uncovers isn't white: "
+                      "the iris's colour or its rim left in them")
+    if measured.get("mouth_off_picture_mm2", 0) > OFF_PICTURE:
+        failed.append(f"{measured['mouth_off_picture_mm2']:.0f} mm2 round the drawn mouth shows the model's own texture, "
+                      "not the face's picture: a strip of the old lip, its line drawn over or under the mouth")
     hair = measured.get("hair", {})
     if hair.get("hangs_on_head", 0) > LIMITS["hangs_on_head"]:
         failed.append(f"{hair['hangs_on_head']} vertices hang from the head bone to {hair['hangs_cm']:.0f} cm below the "
                       "shoulders: hair no spring holds, it turns with the head and stands still while the hair round it swings")
+    if hair.get("unsprung", 0) > UNSPRUNG and hair.get("sprung", 0) < UNSPRUNG_SHARE * hair["unsprung"]:
+        failed.append(f"{hair['unsprung']} places of surface hang round the head off the face with no spring bone in them "
+                      f"(and {hair['sprung']} with one): hair that doesn't swing, most often hair taken for skin; paint it "
+                      "on the Parts page and call it hair")
     if hair.get("ledge_edges", 0) > LIMITS["ledge_edges"]:
         failed.append(f"{hair['ledge_edges']} edges above the head joint grow over {LEDGE * 1000:.0f} mm when head and neck "
                       f"tilt together (the worst {hair['ledge_mm']:.0f} mm): the neck or the body holds part of what is the "

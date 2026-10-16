@@ -626,6 +626,26 @@ def _circular_median(hues):
     return float(np.arctan2(np.median(np.sin(angle)), np.median(np.cos(angle))) / (2 * np.pi)) % 1.0
 
 
+# What a moving iris's white still holds once painted out (white_leftovers), mm2, kept on the mesh for the rig check
+LEFTOVER_PROPERTY = "eyes_white_leftover_mm2"
+
+
+def white_leftovers(rgb, see_through, hole, iris_hue=None):
+    """Pixels of an eye's white (`see_through` and the iris's `hole`, painted out: paint_out) that aren't white:
+    of the iris's own hue, or dark marks touching no edge of the eye (the lids' lines do). The demon girl's showed
+    as iris leaking into her white in Warudo."""
+    saturation, value = _saturation_value(np.asarray(rgb, np.float32))
+    white = see_through | hole
+    if not white.any():
+        return 0
+    typical = float(np.median(value[white]))
+    marks = white & (value < WHITE_LINE * typical)
+    marks &= ~_reach(marks & _dilate(~white, 2), marks)
+    if iris_hue is not None:
+        marks |= white & (np.abs((_hue(rgb) - iris_hue + 0.5) % 1.0 - 0.5) < CARRY_HUE) & (saturation > CARRY_SATURATION)
+    return int(marks.sum())
+
+
 # A moving iris's painting-out reaches this share of its radius past the hole into the white, lines too
 IRIS_LEFTOVER = 0.3
 
@@ -1165,17 +1185,21 @@ def add_moving_irises(mesh_obj, points, still_iris=False, travel=1.0, only=None,
         opening = find_opening(rgb, eye)
         reads[side] = (eye, rgb, opening, *find_iris(rgb, opening))
     misread = _mirror_misread(reads)
+    leftover = 0.0
     for side, (eye, rgb, opening, iris, ellipse) in reads.items():
         x0, y0, x1, y1 = eye.box
         see = window(opening)
         layer, hole = iris_layer(rgb, see, iris, ellipse)
-        rows[y0:y1, x0:x1, :3] = paint_out(rgb, see, hole, _circular_median(_hue(rgb)[iris & see]) if (iris & see).any() else None)
+        iris_hue = _circular_median(_hue(rgb)[iris & see]) if (iris & see).any() else None
+        rows[y0:y1, x0:x1, :3] = paint_out(rgb, see, hole, iris_hue)
+        leftover += white_leftovers(rows[y0:y1, x0:x1, :3], see, hole, iris_hue) * face.metres_per_pixel ** 2 * 1e6
         lids[y0:y1, x0:x1, 3][see] = 0.0
         iris_rows[y0:y1, x0:x1] = layer
         windows[y0:y1, x0:x1] |= see
         found[side] = _measure_eye(face, eye, opening, see, ellipse, layer)
 
     _store(face.image, rows)
+    mesh_obj[LEFTOVER_PROPERTY] = round(leftover, 1)
     mesh = mesh_obj.data
     lid_slot = _material_like(mesh, LIDS_MATERIAL, new_image(LIDS_MATERIAL, lids))
     iris_slot = _material_like(mesh, IRIS_MATERIAL, new_image(IRIS_MATERIAL, iris_rows))

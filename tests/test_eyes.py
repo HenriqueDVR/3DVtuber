@@ -490,6 +490,9 @@ class LeftoversInTheWhite(unittest.TestCase):
         self.assertGreater(float(painted[rim & see].mean()), 0.7)
         self.assertGreater(float(painted[30:32, 85:87].mean()), 0.7)
         self.assertLess(float(painted[line].mean()), 0.4)
+        # what the step keeps on the mesh for the rig check: nothing left once painted out, the rim and fleck before
+        self.assertEqual(eyes.white_leftovers(painted, see, hole), 0)
+        self.assertGreater(eyes.white_leftovers(rgb, see, np.zeros_like(hole)), 0)
 
 
 class TheWhitePastTheFace(unittest.TestCase):

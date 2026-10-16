@@ -266,6 +266,40 @@ class HairOnTheHeadWrongly(unittest.TestCase):
             self.assertEqual(self.check.failures(dict(CLEAN, hair=dict(hair, hangs_on_head=0, ledge_edges=edges))), [])
 
 
+class HairWithNoSpring(unittest.TestCase):
+    """The demon girl's bob, taken for skin: a shell over the crown hanging round her head with no spring in it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.check = load()
+
+    def bob(self, sprung):
+        # a ring of 300 places round the head axis 12 cm out, between the head (1.4) and neck (1.3) joints, in one piece
+        # with a point on the crown (1.6); a face point in front on the face's own picture
+        angles = np.linspace(0.0, 2 * np.pi, 300, endpoint=False)
+        ring = np.stack([0.12 * np.cos(angles), 0.12 * np.sin(angles), np.full(300, 1.35)], axis=1)
+        rest = np.vstack([ring, [(0.0, 0.0, 1.6), (0.0, -0.13, 1.35)]])
+        pieces = np.zeros(len(rest), int)
+        on_springs = np.full(len(rest), 1.0 if sprung else 0.0)
+        on_face = np.zeros(len(rest), bool)
+        on_face[-1] = True
+        return self.check.unsprung_hair(rest, pieces, on_springs, np.ones(len(rest)), on_face, (0, 0, 1.4), (0, 0, 1.3))
+
+    def test_a_bob_with_no_spring_is_counted_one_on_springs_is_not(self):
+        bare = self.bob(sprung=False)
+        self.assertEqual((bare["unsprung"], bare["sprung"]), (300, 0))
+        self.assertTrue(any("no spring bone" in line for line in self.check.failures({"unweighted": 0, "worst": {}, "hair": bare})))
+        self.assertEqual(self.bob(sprung=True)["unsprung"], 0)
+
+    def test_a_piece_that_reaches_no_crown_is_not_hair(self):
+        # the same ring as a collar: its own piece, nothing of it over the head
+        angles = np.linspace(0.0, 2 * np.pi, 300, endpoint=False)
+        rest = np.vstack([np.stack([0.12 * np.cos(angles), 0.12 * np.sin(angles), np.full(300, 1.35)], axis=1), [(0, 0, 1.6)]])
+        pieces = np.r_[np.zeros(300, int), 1]
+        found = self.check.unsprung_hair(rest, pieces, np.zeros(301), np.ones(301), np.zeros(301, bool), (0, 0, 1.4), (0, 0, 1.3))
+        self.assertEqual(found["unsprung"], 0)
+
+
 class TheWhiteOfAnEye(unittest.TestCase):
     """What lies beside an iris, where the white shows: the fox girl's was her model's own socket,
     3 cm back, and only Warudo's side view showed it."""
