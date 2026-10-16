@@ -24,6 +24,8 @@ HAIR_SHARE = 0.5
 HAIR_COLOR_DISTANCE = 0.2
 # Crown: the top of the model, as a fraction of the head's height, where hair color is sampled.
 CROWN = 0.1
+# ... over a strip this wide either side of the head joint (fraction of the head's height)
+CROWN_STRIP = 0.15
 # Hair fused into another piece counts when a hair-coloured stretch of it holds this share of the
 # vertices (model A's T-pose FBX: its smallest real lock 0.38%; the eyebrows and trims beside the face 0.1%).
 FUSED_HAIR = 0.003
@@ -211,7 +213,11 @@ def find(mesh_obj, joints, eyes_at=None, file_parts=None):
         face, nearest = _face_piece(verts, labels, inserts, small, [centre[p] for p in eyes.values()])
 
     colors = texture_space.vertex_colors(mesh_obj, texture_space.base_color_image(mesh_obj))
-    hair_color = _dominant_color(colors[(verts[:, 2] > top - CROWN * head_height) & (verts[:, 2] <= top)])
+    # ... read over the head's middle: the demon girl's horns stood highest, beside her crown, their dark red was taken
+    # for the hair's, the horns were hung on chains and her purple hair had none
+    middle = np.abs(verts[:, 0] - joints["head"][0]) < CROWN_STRIP * head_height
+    crown = float(verts[middle & (verts[:, 2] <= top), 2].max()) if (middle & (verts[:, 2] <= top)).any() else top
+    hair_color = _dominant_color(colors[middle & (verts[:, 2] > crown - CROWN * head_height) & (verts[:, 2] <= crown)])
     hair_colored = np.linalg.norm(colors - hair_color, axis=1) < HAIR_COLOR_DISTANCE
     share = np.bincount(labels, weights=hair_colored, minlength=labels.max() + 1) / np.maximum(
         np.bincount(labels, minlength=labels.max() + 1), 1
