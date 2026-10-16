@@ -40,6 +40,10 @@ NEVER_ASKED, STARTS = 25, 3
 # look through its file that never came (2026-10-12, SETUP.md "The tester's computer").
 PROFILE_ROOM, WINDOWS_PATH = 120, 259
 PROFILE_NAME = len("\\.browser_12345678")
+# Bytes free a drive needs for the browser to keep an avatar's textures in its profile there. Below it the
+# browser refuses a texture ("a texture didn't load"): nothing drawn on E: at 3.4 and 4.0 GB free, a white body
+# on C: at 3.7; drawn at 6.5 GB and more (2026-10-16, SETUP.md "The open mouth laid on the face").
+BROWSER_FREE = 5 * 2**30
 
 mimetypes.add_type("model/gltf-binary", ".vrm")
 mimetypes.add_type("text/javascript", ".js")
@@ -61,16 +65,35 @@ def find_browser(given=None):
     raise NoBrowser("no Edge or Chrome found: set VTUBER_MAKER_BROWSER to one")
 
 
-def profile_for(out_dir):
-    """A new, empty folder for the browser's profile. Beside the sheets, not in %TEMP%: the browser
-    keeps large blobs (a 4096 px texture) in its profile, and on a system drive with 3.7 GB free it
-    refused the main texture: a white body. Unless that is too deep on the disk for the browser to
-    write in (PROFILE_ROOM): then in the app's own out folder, then in the temp folder; with room in
-    none of them, in the shallowest."""
+def profile_places(out_dir):
+    """Where a browser's profile may go, best first: beside the sheets, not in %TEMP% (the browser keeps large
+    blobs, a 4096 px texture, in its profile, and on a system drive with 3.7 GB free it refused the main texture:
+    a white body); then the app's own out folder; then the temp folder. Those too deep on the disk for the
+    browser to write in (PROFILE_ROOM) go last, shallowest first; of the rest, those on a drive with
+    BROWSER_FREE go first: KemonoGirl's and the fox girl's files went undrawn on an E: with 4 GB free while
+    C: had 9."""
     places = [Path(out_dir), REPO / "out", Path(tempfile.gettempdir())]
-    roomy = [place for place in places if os.name != "nt" or len(str(place)) + PROFILE_NAME + PROFILE_ROOM <= WINDOWS_PATH]
+    deep = lambda place: os.name == "nt" and len(str(place)) + PROFILE_NAME + PROFILE_ROOM > WINDOWS_PATH  # noqa: E731
+    roomy = [place for place in places if not deep(place)]
+    roomy.sort(key=lambda place: free_at(place) < BROWSER_FREE)  # stable: the order above within each
+    return roomy + sorted((place for place in places if deep(place)), key=lambda place: len(str(place)))
+
+
+def free_at(path):
+    """Bytes free on the drive `path` is, or will be, on (0 when that can't be read)."""
+    path = Path(path).resolve()
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return 0
+
+
+def profile_for(out_dir):
+    """A new, empty folder for the browser's profile, in the first of profile_places that takes one."""
     failed = None
-    for place in roomy + sorted((place for place in places if place not in roomy), key=lambda place: len(str(place))):
+    for place in profile_places(out_dir):
         try:
             place.mkdir(parents=True, exist_ok=True)
             return tempfile.mkdtemp(prefix=".browser_", dir=place)

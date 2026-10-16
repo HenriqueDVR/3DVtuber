@@ -203,6 +203,7 @@ Before a build (`preflight`): **stop** lines are asked about on the Build page, 
 | `VM-ONEDRIVE` | warn | the character's output folder lies inside a OneDrive folder (`%OneDrive%`, `%OneDriveCommercial%`, `%OneDriveConsumer%`) | move the app out of OneDrive |
 | `VM-MODEL-ONLINE` | warn | the model file carries OneDrive's "online only" mark | "Always keep on this device", or copy it out |
 | `VM-NO-BROWSER` | warn | no Edge or Chrome: the exported file isn't drawn to see through it, no contact sheets | nothing is wrong with the avatar; install one, or `VTUBER_MAKER_BROWSER` |
+| `VM-NOT-DRAWN` | warn before; a review issue after | no drive the browser can keep its profile on has 5 GB free (before); the browser drew nothing, most often a texture refused for want of room (after): what shows through the eyes wasn't looked at, and a moving iris over a hole wasn't sent back to the discs | free space (Characters page), then build again from vrm_check |
 
 ## The tester's computer
 

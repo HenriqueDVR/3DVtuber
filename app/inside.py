@@ -92,13 +92,17 @@ def is_vrm(path):
 
 
 def check(vrm, out_dir, browser=None, timeout=TIMEOUT):
-    """`judge` of the file, or {"left": why} when it couldn't be drawn (no browser, a browser whose
-    graphics can't be read back, a page that never answered). Never raises: a build is not lost to it."""
+    """`judge` of the file, or {"left": why, "code": ...} when it couldn't be drawn: VM-NO-BROWSER with no browser,
+    VM-NOT-DRAWN for a browser that drew nothing (graphics it can't read back, a page that never answered, a
+    texture it refused for want of room). Never raises: a build is not lost to it."""
     if not is_vrm(vrm):
         return {"left": "not a VRM file"}
     try:
         return judge(measure(vrm, out_dir, browser, timeout, pictures=True))
     except sheet.NoBrowser as error:
-        return {"left": str(error)}
+        return {"left": str(error), "code": "VM-NO-BROWSER"}
     except (TimeoutError, RuntimeError, OSError, ValueError, KeyError) as error:
-        return {"left": f"the file couldn't be drawn: {error}"}
+        # a texture refused for want of room reads as any other failure: the room there is said beside it
+        free = sheet.free_at(sheet.profile_places(out_dir)[0])
+        return {"left": f"the file couldn't be drawn: {error} ({free / 2**30:.1f} GB free where the browser kept its profile)",
+                "code": "VM-NOT-DRAWN"}

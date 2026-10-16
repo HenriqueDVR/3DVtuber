@@ -591,7 +591,11 @@ class Project:
         seen = (steps["vrm_check"].get("report") or {}).get("seen") or {}
         (looks if self.improving else issues).extend(("review", f"as apps draw it: {line}") for line in seen.get("failed", []))
         if seen.get("left") and self._last_vrm() is not None:
-            looks.append(("review", f"the avatar wasn't drawn to see what shows through it: {seen['left']}"))
+            # no browser: nothing to do for the avatar; a browser that drew nothing left its eyes unlooked at
+            # (VM-NOT-DRAWN): not ready, as the fox girl's moving iris over a hole passed so
+            unlooked = seen.get("code") == "VM-NOT-DRAWN" and not self.improving
+            (issues if unlooked else looks).append(("review", f"the avatar wasn't drawn to see what shows through it: {seen['left']}"
+                                                    + (f"; {errors.describe('VM-NOT-DRAWN')['fix']}" if unlooked else "")))
         for name in sorted(SOFT):
             if steps.get(name, {}).get("status") == "failed":
                 issues.append(("build", f"built without {name.replace('_', ' ')}"))
@@ -908,7 +912,12 @@ class Project:
 
     def _iris_seen_through(self):
         """Whether the build's exported file showed something deep through a hole (inside.py) while the eyes
-        were the moving iris chosen by the build itself, on a model with iris discs to fall back to."""
+        were the moving iris chosen by the build itself, on a model with iris discs to fall back to.
+
+        A file that went undrawn (VM-NOT-DRAWN) showed nothing either way, and isn't taken for a hole: falling back
+        then would trade every such build's moving iris for discs, good ones too (KemonoGirl's draws clean). It is
+        said instead and holds the build back (`ready`); run again from vrm_check with room, the look is made and
+        this falls back as it should (the fox girl's: 102 mm2 seen, 4.1 mm beside her discs)."""
         seen = (self.state["steps"].get("vrm_check", {}).get("report") or {}).get("seen") or {}
         return (bool(seen.get("failed")) and not getattr(self, "_seen_retry", False) and self.data["options"]["eyes"] is None
                 and self.options()["eyes"] == "iris" and bool((self.survey() or {}).get("parts", {}).get("eye_inserts")))
@@ -1199,6 +1208,8 @@ class Project:
             # are compared by it; a file that couldn't be drawn says why and the build goes on
             seen = inside.check(exported or self._last_vrm(), stem.with_name(stem.name + "_seen"))
             entry["report"]["seen"] = seen
+            if seen.get("code") == "VM-NOT-DRAWN":
+                entry["warnings"] = [*entry.get("warnings", []), f"{seen['left']}: {errors.describe('VM-NOT-DRAWN')['what']}"]
             _write_json(entry["json"], {**_read_json(entry["json"], {}), "seen": seen})
             with open(log, "a", encoding="utf-8") as handle:
                 handle.write(f"\nseen: {json.dumps(seen)}\n")

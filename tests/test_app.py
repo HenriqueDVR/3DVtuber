@@ -457,6 +457,9 @@ class Engine(unittest.TestCase):
         project._seen_retry = False
         project.state["steps"]["vrm_check"]["report"]["seen"] = {"failed": []}
         self.assertFalse(project._iris_seen_through())
+        # a file that wasn't drawn isn't taken for a hole: said instead, and the build isn't ready (verdict)
+        project.state["steps"]["vrm_check"]["report"]["seen"] = {"left": "the file couldn't be drawn", "code": "VM-NOT-DRAWN"}
+        self.assertFalse(project._iris_seen_through())
         # nor an iris the user chose, nor a model with no discs to fall back to
         project.state["steps"]["vrm_check"]["report"]["seen"] = {"failed": ["102.5 mm2 seen deep"]}
         self.assertFalse(self.project({"options": {}, "triangles": 40000}, eyes="iris")._iris_seen_through())
@@ -1507,6 +1510,26 @@ class Engine(unittest.TestCase):
         with mock.patch.object(sheet, "REPO", deep / "app"), mock.patch.object(sheet.tempfile, "gettempdir", return_value=str(deep / "t")):
             # nowhere with room: the shallowest of them, since a browser with little room still draws
             self.assertEqual(Path(sheet.profile_for(deep / "runs" / "x")).parent, deep / "t")
+
+    def test_the_browsers_profile_goes_where_the_drive_has_room_for_its_textures(self):
+        # on an E: with 4 GB free the browser refused a texture and drew nothing, while C: had 9: the fox girl
+        # passed with her moving iris over a hole, KemonoGirl unlooked at (2026-10-16)
+        from unittest import mock
+        from app import sheet
+        out, temp = self.root / "run" / "x_seen", self.root / "temp"
+        temp.mkdir()
+        free = {out: 4 << 30, self.root / "app" / "out": 4 << 30, temp: 9 << 30}
+        with mock.patch.object(sheet, "REPO", self.root / "app"), mock.patch.object(sheet.tempfile, "gettempdir", return_value=str(temp)), \
+                mock.patch.object(sheet, "free_at", side_effect=lambda place: free[Path(place)]):
+            self.assertEqual(sheet.profile_places(out)[0], temp)
+            self.assertEqual(Path(sheet.profile_for(out)).parent, temp)
+            # room beside the sheets: there, as before
+            free[out] = 6 << 30
+            self.assertEqual(sheet.profile_places(out), [out, temp, self.root / "app" / "out"])
+            # room nowhere: the order as it was
+            free[out], free[temp] = 4 << 30, 4 << 30
+            self.assertEqual(sheet.profile_places(out), [out, self.root / "app" / "out", temp])
+        self.assertGreater(sheet.free_at(self.root / "not" / "made" / "yet"), 0)  # read on the drive it would be on
 
     def landmarks(self, mouth_height=0.0):
         """What the detector found on model A (T-pose)'s face patch picture, the mouth's height set."""
@@ -3891,10 +3914,16 @@ class Inside(unittest.TestCase):
             self.assertEqual(inside.check(fake, self.root / "seen"), {"left": "not a VRM file"})
             self.assertEqual(inside.check(self.root / "missing.vrm", self.root / "seen"), {"left": "not a VRM file"})
         real = Engine.write_glb(self, "real.vrm", {"asset": {"version": "2.0"}, "extensions": {"VRMC_vrm": {}}})
-        for error, said in ((sheet.NoBrowser("no Edge or Chrome found"), "no Edge or Chrome found"), (TimeoutError("inside.html wasn't drawn in 300 s"), "couldn't be drawn"),
-                            (RuntimeError("this browser's graphics can't be read back as numbers"), "can't be read back")):
+        for error, said, code in ((sheet.NoBrowser("no Edge or Chrome found"), "no Edge or Chrome found", "VM-NO-BROWSER"),
+                                  (TimeoutError("inside.html wasn't drawn in 300 s"), "couldn't be drawn", "VM-NOT-DRAWN"),
+                                  (RuntimeError("this browser's graphics can't be read back as numbers"), "can't be read back", "VM-NOT-DRAWN"),
+                                  (RuntimeError("a texture didn't load (the browser's profile drive may be full)"), "a texture didn't load", "VM-NOT-DRAWN")):
             with mock.patch.object(sheet, "browse", side_effect=error):
-                self.assertIn(said, inside.check(real, self.root / "seen")["left"])
+                left = inside.check(real, self.root / "seen")
+                self.assertIn(said, left["left"])
+                self.assertEqual(left["code"], code)
+                # the room the browser had is said beside a file it drew nothing of
+                self.assertEqual("GB free where the browser kept its profile" in left["left"], code == "VM-NOT-DRAWN")
 
     def test_the_exported_files_check_ends_with_it_and_the_verdict_takes_it_in(self):
         from unittest import mock
@@ -3925,11 +3954,26 @@ class Inside(unittest.TestCase):
             verdict = project.verdict([])
             self.assertFalse(verdict["ready"])
             self.assertTrue(any(page == "review" and line.startswith("as apps draw it: 408 mm2") for page, line in verdict["issues"]), verdict)
-            # a file that couldn't be drawn is a look, never an issue
-            project.state["steps"]["vrm_check"]["report"]["seen"] = {"left": "no Edge or Chrome found"}
+            # with no browser, a file that couldn't be drawn is a look, never an issue
+            project.state["steps"]["vrm_check"]["report"]["seen"] = {"left": "no Edge or Chrome found", "code": "VM-NO-BROWSER"}
             verdict = project.verdict([])
-            self.assertFalse(any("as apps draw it" in line for _, line in verdict["issues"]))
+            self.assertFalse(any("as apps draw it" in line or "wasn't drawn" in line for _, line in verdict["issues"]))
             self.assertTrue(any("wasn't drawn" in line and "no Edge or Chrome" in line for _, line in verdict["looks"]), verdict)
+            # ... but a browser that drew nothing left the eyes unlooked at: the fox girl's moving iris over a hole
+            # passed so on an E: with 4 GB free. Not ready, and the way on said
+            undrawn = {"left": "the file couldn't be drawn: a texture didn't load (4.0 GB free where the browser kept its profile)",
+                       "code": "VM-NOT-DRAWN"}
+            project.state["steps"]["vrm_check"]["report"]["seen"] = undrawn
+            verdict = project.verdict([])
+            line = next(line for page, line in verdict["issues"] if page == "review" and "wasn't drawn" in line)
+            self.assertIn("a texture didn't load", line)
+            self.assertIn("free space on the drive", line)
+            self.assertFalse(verdict["ready"])
+            self.assertFalse(any("wasn't drawn" in line for _, line in verdict["looks"]))
+            # said as the step ends too
+            with mock.patch.object(inside, "check", return_value=undrawn):
+                entry = project._run_step("vrm_check", engine.NAMES.index("vrm_check"), self.root)
+            self.assertTrue(any("a texture didn't load" in warning and "weren't looked at" in warning for warning in entry["warnings"]), entry)
         finally:
             engine._blender, engine.free_disk, engine.free_memory, engine.SETTINGS = real
 
@@ -3960,6 +4004,14 @@ class Inside(unittest.TestCase):
         # the same file drawn again, and a report from before the count was kept
         self.assertEqual(engine.compare_checks.changes(check(0.6), check(1.8)), ([], []))
         self.assertEqual(engine.compare_checks.changes(check(None), check(408.3)), ([], []))
+        # a build not drawn after one that was says nothing of its holes: worse, not the same (the fox girl's)
+        undrawn = {"poses": {}, "unweighted": 0, "seen": {"left": "the file couldn't be drawn: a texture didn't load", "code": "VM-NOT-DRAWN"}}
+        worse, better = engine.compare_checks.changes(check(0.6), undrawn)
+        self.assertEqual((len(worse), better), (1, []))
+        self.assertIn("not drawn as apps draw it", worse[0])
+        self.assertIn("a texture didn't load", worse[0])
+        self.assertEqual(engine.compare_checks.changes(undrawn, check(0.6)), ([], ["drawn as apps draw it, the build before wasn't"]))
+        self.assertEqual(engine.compare_checks.changes(check(None), undrawn), ([], []))
 
     def tiny_vrm(self, name, behind, patch=False):
         """A VRM 1.0 file of three sheets at head height, facing forward: an eye's frame (material EyeLids, cut
@@ -5749,6 +5801,20 @@ class TestersComputer(unittest.TestCase):
             # only of a run that comes to the exported file's check
             self.assertEqual(self.warned(project, start="survey", stop="tpose"), {})
             self.assertEqual(project.preflight()["stops"], 0)
+
+    def test_no_drive_with_room_for_the_browser_is_said_before_a_build(self):
+        from unittest import mock
+        from app import sheet
+        project = self.project()
+        with mock.patch.object(sheet, "find_browser", return_value="msedge.exe"):
+            with mock.patch.object(sheet, "free_at", return_value=4 << 30):
+                line = self.warned(project)["VM-NOT-DRAWN"]
+                self.assertEqual((line["kind"], line["at"]), ("warn", "vrm_check"))
+                self.assertIn("4.0 GB", line["text"])
+                self.assertEqual(self.warned(project, start="survey", stop="tpose"), {})
+                self.assertEqual(project.preflight()["stops"], 0)
+            with mock.patch.object(sheet, "free_at", return_value=6 << 30):
+                self.assertNotIn("VM-NOT-DRAWN", self.warned(project))
 
     def test_no_blender_found_is_a_refusal_with_its_code(self):
         from unittest import mock

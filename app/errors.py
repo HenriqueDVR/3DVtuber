@@ -197,6 +197,13 @@ KNOWN = [
     Known("VM-NO-BROWSER", (), None,
           "no Edge or Chrome was found: the finished avatar isn't drawn to see what shows through it, and no contact sheets are made",
           "nothing is wrong with the avatar for it; to have those checks, install Edge or Chrome (or name one in VTUBER_MAKER_BROWSER)"),
+    # a build whose file went undrawn passed as one with nothing seen: the fox girl kept her moving iris over a
+    # socket that shows the inside of her head, as the look that would have sent her back to her discs saw nothing
+    Known("VM-NOT-DRAWN", (), None,
+          "the finished avatar couldn't be drawn as apps draw it: what shows through its eyes and the eye layers "
+          "past the face weren't looked at, and the eyes weren't put back to the discs for it",
+          "free space on the drive (the browser needs about 5 GB free where it keeps its profile), then build again "
+          "from the exported file's check", page="home"),
 ]
 
 TAG = "VTUBER_MAKER_ERROR"

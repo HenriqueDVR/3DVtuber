@@ -78,6 +78,13 @@ def changes(before, after, worse_than=STRETCH_NOISE):
             worse.append(f"{what} {old:g} -> {new:g}")
         elif _grew(new, old, noise):
             better.append(f"{what} {old:g} -> {new:g}")
+    # a file not drawn says nothing of what shows through it: the fox girl's moving iris over a hole read as a
+    # build no worse than the one drawn before it, only the depth beside her iris telling (app/inside.py)
+    drawn = lambda report: "deep_mm2" in (report.get("seen") or {})  # noqa: E731
+    if drawn(before) and (after.get("seen") or {}).get("left"):
+        worse.append(f"not drawn as apps draw it, the build before was: {after['seen']['left']}")
+    elif (before.get("seen") or {}).get("left") and drawn(after):
+        better.append("drawn as apps draw it, the build before wasn't")
     return worse, better
 
 

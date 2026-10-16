@@ -648,6 +648,14 @@ def _place(c):
         sheet.find_browser()
     except sheet.NoBrowser:
         yield _line(WARN, "VM-NO-BROWSER", at="vrm_check")
+    else:
+        # the browser that draws the exported file keeps its textures in its profile: with no drive to put that
+        # on with room, it drew nothing and the build passed unlooked at (the fox girl's eyes, 2026-10-16)
+        places = sheet.profile_places(c.project.out)
+        if all(sheet.free_at(place) < sheet.BROWSER_FREE for place in places):
+            room = ", ".join(sorted({f"{Path(place).resolve().anchor} {sheet.free_at(place) / 2**30:.1f} GB" for place in places}))
+            yield _line(WARN, "VM-NOT-DRAWN", f"no drive the browser can keep its profile on has {sheet.BROWSER_FREE / 2**30:.0f} GB "
+                        f"free ({room}): the finished avatar may not be drawn as apps draw it, and its eyes not checked", at="vrm_check")
 
 
 def _onedrive(path):
