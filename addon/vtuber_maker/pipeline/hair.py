@@ -47,6 +47,12 @@ FRONT_DEPTH = 0.4
 FRONT_TUFT = 0.78
 FRONT_TUFT_BEHIND = 0.125
 MIN_CHAIN_LENGTH = 0.4
+# A surface hanging past the jaw within this share of the bangs' half width is a lock, not bangs (_bangs).
+LOCK_MIDDLE = 0.75
+# The weights across a cut the bangs make in a surface of hair are smoothed this far from it (head radii), in this
+# many rounds of averaging each vertex with its neighbours (_blend_cuts).
+CUT_BLEND = 0.2
+CUT_ROUNDS = 8
 # Fraction of a chain's length over which weight hands over from the head bone.
 ROOT_BLEND = 0.12
 # And never over fewer of the strand's own edges than this: on a coarse mesh with short chains
@@ -98,7 +104,8 @@ def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None, off_a
     # its own, as VRoid's bangs have chains of their own. One surface with the long front locks, the miko's
     # fringe was grouped with them by angle alone and lay in their root's hand-over: 60% on the head, still
     # in Warudo
-    bangs = _bangs(verts, head, features, hanging & in_front, float(joints["head"][2]))
+    bangs = _bangs(verts, head, features, hanging & in_front, float(joints["head"][2]), labels)
+    surfaces = labels
     labels = np.where(bangs, labels + labels.max() + 1, labels)
 
     chains, strands = [], []
@@ -145,15 +152,87 @@ def build_hair_bones(mesh_obj, armature, joints, features, hair_mask=None, off_a
             if chain.root_z > head.center[2] - HANGS_BELOW_CENTER * head.radius:
                 armature.data.bones[chain.names[0]][FRONT_HUNG] = True
         _reweight(mesh_obj, verts, head, strands, np.flatnonzero(hanging & ~covered))
+        _blend_cuts(mesh_obj, verts, weld, edges, surfaces, labels, hanging, CUT_BLEND * head.radius)
     return [chain.names for chain in chains]
 
 
-def _bangs(verts, head, features, front, jaw_z):
+def _blend_cuts(mesh_obj, verts, weld, edges, surfaces, labels, hanging, reach):
+    """Smooth the weights across each cut the bangs made in a surface of hair, within `reach` (m) of it.
+
+    Weighted apart, the cut snapped from the fringe's chain to the locks' and opened as the hair swung:
+    NerdGirl's fringe in shards over her face, 330 edges hung from chains sharing no bone where her build before
+    the bangs rule had 29. Weighting the whole surface across all its chains closed the cut but pulled the
+    fringe onto the locks (44% on its own chain): only the band by the cut is blended, the fringe keeps its own.
+    """
+    a, b = weld[edges[0::2]], weld[edges[1::2]]
+    cut = hanging[a] & hanging[b] & (surfaces[a] == surfaces[b]) & (labels[a] != labels[b])
+    if not cut.any():
+        return
+    from mathutils.kdtree import KDTree
+    seam = np.unique(np.concatenate([a[cut], b[cut]]))
+    tree = KDTree(len(seam))
+    for k, vertex in enumerate(seam):
+        tree.insert(verts[vertex], k)
+    tree.balance()
+    near = np.zeros(len(verts), dtype=bool)
+    for vertex in np.flatnonzero(hanging & np.isin(surfaces, np.unique(surfaces[seam]))):
+        near[vertex] = tree.find(verts[vertex])[2] <= reach
+    band = np.unique(weld[near])  # welded vertices: copies along a UV seam move as one
+    if not len(band):
+        return
+    keep = hanging[a] & hanging[b] & (a != b)
+    neighbours = {int(v): set() for v in band}
+    for i, j in zip(a[keep], b[keep]):
+        if int(i) in neighbours:
+            neighbours[int(i)].add(int(j))
+        if int(j) in neighbours:
+            neighbours[int(j)].add(int(i))
+    groups = mesh_obj.vertex_groups
+    names = {group.index: group.name for group in groups}
+    involved = set(band) | {n for found in neighbours.values() for n in found}
+    weights = {v: {names[g.group]: g.weight for g in mesh_obj.data.vertices[v].groups if g.weight > 0} for v in involved}
+    for _ in range(CUT_ROUNDS):
+        smoothed = {}
+        for v in band:
+            v = int(v)
+            around = [weights[n] for n in neighbours[v]] or [weights[v]]
+            mixed = {}
+            for name, weight in weights[v].items():
+                mixed[name] = mixed.get(name, 0.0) + 0.5 * weight
+            for found in around:
+                for name, weight in found.items():
+                    mixed[name] = mixed.get(name, 0.0) + 0.5 * weight / len(around)
+            smoothed[v] = mixed
+        weights.update(smoothed)
+    copies = {}
+    for vertex, first in enumerate(weld):
+        if near[vertex] or first in neighbours:
+            copies.setdefault(int(first), []).append(vertex)
+    for first in band:
+        first = int(first)
+        strongest = sorted(weights[first].items(), key=lambda item: -item[1])[:MAX_INFLUENCES]
+        total = sum(weight for _, weight in strongest)
+        for vertex in copies.get(first, [first]):
+            for group in groups:
+                group.remove([vertex])
+            for name, weight in strongest:
+                groups[name].add([vertex], weight / total, "REPLACE")
+
+
+def _bangs(verts, head, features, front, jaw_z, surfaces):
     """Of the `front` vertices, those across the face (within the eyes' outer corners) above `jaw_z` (the head
-    joint's height): what hangs lower in front is a lock over the chest."""
+    joint's height): what hangs lower in front is a lock over the chest. A surface that goes on down past the jaw
+    across the face is such a lock, bangs and all: cut at the jaw, NerdGirl's side-swept fringe hung its upper
+    part from a short chain that swung and its lower part from one rooted at her jaw that stayed, and folded to
+    shards over her face between them as her head swung."""
     eyes = np.array([features["left_eye"], features["right_eye"]], dtype=float)
     span = np.ptp(eyes[:, 0]) / 2 + float(np.asarray(features.get("eye_size", (0.0, 0.0)))[0]) / 2
-    return front & (np.abs(verts[:, 0] - head.center[0]) < span) & (verts[:, 2] > jaw_z)
+    across = front & (np.abs(verts[:, 0] - head.center[0]) < span)
+    # down the face, not along its sides: the miko's locks hang past her chin at the eyes' outer corners
+    middle = front & (np.abs(verts[:, 0] - head.center[0]) < LOCK_MIDDLE * span)
+    below = np.unique(surfaces[middle & (verts[:, 2] <= jaw_z)], return_counts=True)
+    locks = below[0][below[1] >= MIN_CHAIN_VERTICES]
+    return across & (verts[:, 2] > jaw_z) & ~np.isin(surfaces, locks)
 
 
 def _on_the_head(mesh_obj, members):

@@ -249,12 +249,15 @@ class BangsJoinedToLongLocks(unittest.TestCase):
     """The miko's fringe is one surface with the long locks hanging past her chin either side of her face:
     grouped with them by angle it lay in their roots' hand-over, 60% on the head, and never swung."""
 
+    WINDOW = True
+
     @classmethod
     def setUpClass(cls):
         bpy.ops.wm.read_factory_settings(use_empty=True)
         verts, faces = _sheet(-0.08, 0.08, 1.0, 1.6, -0.12, 17, 31, 0)
         middle = verts[faces].mean(axis=1)
-        faces = faces[~((np.abs(middle[:, 0]) < 0.045) & (middle[:, 2] < 1.44))]  # the face's window
+        if cls.WINDOW:
+            faces = faces[~((np.abs(middle[:, 0]) < 0.045) & (middle[:, 2] < 1.44))]  # the face's window
         used = np.unique(faces)
         verts, faces = verts[used], np.searchsorted(used, faces)
         data = bpy.data.meshes.new("hair")
@@ -286,6 +289,31 @@ class BangsJoinedToLongLocks(unittest.TestCase):
         own = {n for c in short for n in c}
         on_bangs = [sum(g.weight for g in self.mesh.data.vertices[int(i)].groups if names[g.group] in own) for i in fringe]
         self.assertGreater(float(np.mean(on_bangs)), 0.5)
+
+    def test_the_cut_between_fringe_and_locks_does_not_open(self):
+        # weighted apart, the cut hung each side from its own chain with no bone between: NerdGirl's fringe went to
+        # shards over her face as her head swung (330 such edges, 29 before the bangs rule)
+        names = {g.index: g.name for g in self.mesh.vertex_groups}
+        chain_of = {n: chain[0] for chain in self.chains for n in chain}
+
+        def chains(vertex):
+            return {chain_of[names[g.group]] for g in self.mesh.data.vertices[vertex].groups
+                    if g.weight > 1e-4 and names[g.group] in chain_of}
+        apart = [e for e in self.mesh.data.edges
+                 if chains(e.vertices[0]) and chains(e.vertices[1]) and not chains(e.vertices[0]) & chains(e.vertices[1])]
+        self.assertEqual(len(apart), 0)
+
+
+
+class ALockDownAcrossTheFace(BangsJoinedToLongLocks):
+    """NerdGirl's side-swept fringe goes on past her chin over the face: cut at the jaw into bangs on a short chain
+    and a lock on one rooted at her jaw, it folded to shards between them as her head swung."""
+
+    WINDOW = False
+
+    def test_the_fringe_swings_on_a_short_chain_of_its_own(self):
+        bones = self.armature.data.bones
+        self.assertEqual([c for c in self.chains if min(bones[n].tail_local.z for n in c) > 1.4], [], "a chain ends above the jaw")
 
 
 if __name__ == "__main__":
