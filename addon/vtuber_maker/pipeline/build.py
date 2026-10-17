@@ -17,7 +17,7 @@ NECK_BLEND_BELOW = 0.03
 def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=None, face_points_path=None, keep_eyes=False,
                  joints_override=None, rigid_head=False, cloth_physics=False, hat_tip=False, mouth_color=None,
                  free_mouth=False, pieces=None, pieces_reference=None, rig_path=None, skinning="heat",
-                 hair_hits_body=True, sleeve_springs=True):
+                 hair_hits_body=True, sleeve_springs=True, still_fingers=False):
     """Rig the character, add face expressions and hair physics, and export VRM 1.0.
 
     `objects` are the freshly imported objects. Returns a report of what was found.
@@ -48,6 +48,7 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
     and weights replace joint detection and skinning; the rest runs as usual. `skinning`
     "template" weights the body from a fitted template (template_skin.py) instead of bone heat;
     "voxel" solves the skinning proxy by geodesic voxel binding (voxel_skin.py), rules unchanged.
+    `still_fingers` (option `fingers: none`) hands an adopted rig's finger weights to the hands.
     """
     warnings = []
     override = {k: np.asarray(v, dtype=float) for k, v in (joints_override or {}).items()}
@@ -146,6 +147,37 @@ def build_avatar(objects, filepath, name, author, height=1.6, closed_eyes_image=
             chin = rig.chin_height(verts, found.face_area, float(features["mouth"][0]),
                                    float(joints["neck"][2]), float(features["mouth"][2]))
             rig.weight_head(mesh, armature, found.face_area, found.labels, chin_z=chin, behind=adopt.FACE_BEHIND)
+            # ... and the rest of the head as on our own rig, only where the rig's own weights would tear above the
+            # head joint as head and neck tilt (the rig check's ledge): Tripo's hung NerdGirl's hood 21-35% on her
+            # shoulder beside vertices wholly on the head, 165 places stepping up to 22 mm, torn along that line in
+            # Warudo. Done everywhere it cost the chibi a head turn of 3.7 cm for 1.3; kept only when it helps.
+            ledge = rig.head_ledge(mesh, armature)
+            if ledge > rig.LEDGE_LIMIT:
+                kept = rig.weights_of(mesh)
+                rig.follow_head_column(mesh, armature, chin_z=chin, skip=found.hair, side_fade=True)
+                after = rig.head_ledge(mesh, armature)
+                if after < ledge:
+                    notes.append(f"the head took the rest of the head from the rig's own weights: {ledge} places stepping "
+                                 f"above the head joint as head and neck tilt, {after} after")
+                else:
+                    rig.set_weights(mesh, kept)
+        # the arms' weight spread over the body, as our own rig keeps it off it (rig._keep_arms_off_chest), only where
+        # the body caves in with the arms down (CAVE_LIMIT) and the rule helps without stretching any arm pose more:
+        # Tripo's rig hung NerdGirl's chest by the armpit 58% on her upper arm, and with her arms down it moved 40 mm
+        # (53 the most) where nothing should move: her hoodie squashed in Warudo; 3.9 mm after
+        cave, stretched, turned = rig.arms_cave(mesh, armature)
+        if cave > rig.CAVE_LIMIT:
+            kept = rig.weights_of(mesh)
+            rig._keep_arms_off_chest(mesh, armature, np.zeros(len(mesh.data.vertices), dtype=bool), below_shoulders=True)
+            cave_after, stretched_after, turned_after = rig.arms_cave(mesh, armature)
+            if (cave_after < cave and stretched_after <= stretched + rig.CAVE_STRETCH
+                    and turned_after <= turned + rig.CAVE_STRETCH):
+                notes.append(f"the arms' weight on the body went to the torso: it moved {cave * 1000:.0f} mm with the arms "
+                             f"down, {cave_after * 1000:.0f} after")
+            else:
+                rig.set_weights(mesh, kept)
+        if still_fingers:
+            adopt.still_fingers(mesh)
     else:
         armature = rig.build_armature(joints)
     if adopted is None and skinning == "template":

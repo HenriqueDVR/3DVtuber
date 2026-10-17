@@ -99,6 +99,7 @@ def main():
         skinning=args.skinning,
         hair_hits_body=not args.hair_head_only,
         sleeve_springs=not args.no_sleeve_springs,
+        still_fingers=bool(data) and (data.get("options") or {}).get("fingers") == "none",
     )
     if args.blend:
         bpy.ops.wm.save_as_mainfile(filepath=str(args.blend.resolve()))

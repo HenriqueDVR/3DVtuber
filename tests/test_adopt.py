@@ -178,6 +178,105 @@ class ArmsOffTheHead(unittest.TestCase):
         np.testing.assert_allclose(total[changed], 1.0, atol=1e-5)
 
 
+
+class AHoodOnTheShoulder(unittest.TestCase):
+    """NerdGirl's hood on Tripo's rig: half of it 35% on her shoulder beside the rest wholly on the head, torn along
+    the line as head and neck tilted. head_ledge counts it as the rig check does; the head column (with its side
+    fade) takes it onto the head."""
+
+    @classmethod
+    def setUpClass(cls):
+        mesh, _ = load_fixture()
+        joints = landmarks.detect_body(meshdata.world_vertices(mesh), meshdata.triangles(mesh.data))
+        cls.armature = rig.build_armature(joints)
+        rig.skin(mesh, cls.armature)
+        verts = meshdata.world_vertices(mesh)
+        head = cls.armature.data.bones["Head"]
+        head_x = (cls.armature.matrix_world @ head.head_local).x
+        head_z = (cls.armature.matrix_world @ head.head_local).z
+        shoulder = mesh.vertex_groups.get("RightShoulder") or mesh.vertex_groups.new(name="RightShoulder")
+        head_group = mesh.vertex_groups["Head"]
+        for i in np.flatnonzero(verts[:, 2] > head_z):
+            i = int(i)
+            for g in mesh.data.vertices[i].groups:
+                mesh.vertex_groups[g.group].remove([i])
+            if verts[i, 0] < head_x:
+                head_group.add([i], 0.65, "REPLACE")
+                shoulder.add([i], 0.35, "REPLACE")
+            else:
+                head_group.add([i], 1.0, "REPLACE")
+        cls.mesh = mesh
+        cls.before = rig.head_ledge(mesh, cls.armature)
+        rig.follow_head_column(mesh, cls.armature, side_fade=True)
+        cls.after = rig.head_ledge(mesh, cls.armature)
+
+    def test_the_ledge_is_counted(self):
+        self.assertGreater(self.before, 10)
+
+    def test_the_head_takes_the_hood(self):
+        self.assertLess(self.after, self.before / 4)
+
+
+class AChestOnTheArm(unittest.TestCase):
+    """NerdGirl's chest by the armpit hung 58% on her upper arm in Tripo's rig: with the arms down it caved in (40 mm
+    where nothing should move). arms_cave measures it; the arms kept off the chest bring it down."""
+
+    @classmethod
+    def setUpClass(cls):
+        mesh, _ = load_fixture()
+        joints = landmarks.detect_body(meshdata.world_vertices(mesh), meshdata.triangles(mesh.data))
+        armature = rig.build_armature(joints)
+        rig.skin(mesh, armature)
+        verts = meshdata.world_vertices(mesh)
+        bones = armature.data.bones
+        shoulder = (armature.matrix_world @ bones["LeftUpperArm"].head_local)
+        hips = (armature.matrix_world @ bones["Hips"].head_local)
+        arm = mesh.vertex_groups["LeftUpperArm"]
+        # the chest's left side, inside the shoulder, a little under it: half on the arm
+        for i in np.flatnonzero((verts[:, 0] - hips.x > 0.3 * (shoulder.x - hips.x)) & (verts[:, 0] - hips.x < 0.75 * (shoulder.x - hips.x))
+                                & (verts[:, 2] < shoulder.z) & (verts[:, 2] > shoulder.z - 0.12)):
+            i = int(i)
+            for g in mesh.data.vertices[i].groups:
+                mesh.vertex_groups[g.group].add([i], g.weight * 0.5, "REPLACE")
+            arm.add([i], 0.5, "REPLACE")
+        cls.before = rig.arms_cave(mesh, armature)
+        rig._keep_arms_off_chest(mesh, armature, np.zeros(len(verts), dtype=bool), below_shoulders=True)
+        cls.after = rig.arms_cave(mesh, armature)
+
+    def test_the_cave_in_is_measured(self):
+        self.assertGreater(self.before[0], rig.CAVE_LIMIT)
+
+    def test_the_arms_kept_off_the_chest_close_it(self):
+        self.assertLess(self.after[0], self.before[0] / 2)
+        self.assertEqual(len(self.after), 3)
+
+
+class StillFingers(unittest.TestCase):
+    """NerdGirl's hands are inside her cuffs: their finger weights go to the hands, the fingers move nothing."""
+
+    def test_the_hand_takes_what_the_fingers_held(self):
+        mesh, _ = load_fixture()
+        joints = landmarks.detect_body(meshdata.world_vertices(mesh), meshdata.triangles(mesh.data))
+        rig.skin(mesh, rig.build_armature(joints))
+        hand = mesh.vertex_groups[BONE_NAMES["left_hand"]]
+        finger = mesh.vertex_groups.new(name="LeftIndexProximal")
+        ring = mesh.vertex_groups.new(name="RightRingIntermediate")
+        held = [v.index for v in mesh.data.vertices if any(g.group == hand.index and g.weight > 0.5 for g in v.groups)][:20]
+        self.assertTrue(held)
+        for i in held:
+            weight = next(g.weight for g in mesh.data.vertices[i].groups if g.group == hand.index)
+            hand.add([i], weight * 0.4, "REPLACE")
+            finger.add([i], weight * 0.6, "REPLACE")
+        ring.add([0], 0.0, "REPLACE")
+        before = ReadMixamoRig.weights(mesh)
+        self.assertEqual(adopt.still_fingers(mesh), len(held))
+        after = ReadMixamoRig.weights(mesh)
+        self.assertNotIn("LeftIndexProximal", {n for n, w in after.items() if w[held].max() > 0})
+        np.testing.assert_allclose(after[BONE_NAMES["left_hand"]][held], before[BONE_NAMES["left_hand"]][held]
+                                   + before["LeftIndexProximal"][held], atol=1e-5)
+        np.testing.assert_allclose(sum(after.values())[held], sum(before.values())[held], atol=1e-5)
+
+
 if __name__ == "__main__":
     unittest.main()
 

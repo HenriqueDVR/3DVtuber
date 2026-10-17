@@ -6,7 +6,7 @@ Assumes the character stands on z=0 facing -Y.
 import bmesh
 import bpy
 import numpy as np
-from mathutils import Vector
+from mathutils import Euler, Matrix, Vector
 from mathutils.kdtree import KDTree
 
 from .landmarks import ARM_HANGS
@@ -403,13 +403,15 @@ def _smooth_body_weights(mesh_obj, skip):
                 groups[g].remove([int(index)])
 
 
-def _keep_arms_off_chest(mesh_obj, armature_obj, skip):
+def _keep_arms_off_chest(mesh_obj, armature_obj, skip, below_shoulders=False):
     """Hand shoulder and arm weight medial of the arm joints back to the torso (see SHOULDER_SPAN).
 
     Bone heat and weight smoothing spread the shoulder bones over the sternum and the upper
     arm over the front of the chest, which folds the chest in when the arms move. Only the
     torso's height range is touched, and nothing hugging the arm past the shoulder (the inner
-    side of a sleeve on an arm hanging close to the body).
+    side of a sleeve on an arm hanging close to the body). `below_shoulders` (a rig made elsewhere): only under the
+    shoulder joints, where the chest caves in; up by the neck it took the chibi's shoulder weight onto her chest, and
+    her head turn went 1.3 -> 2.7 cm.
     """
     verts = world_vertices(mesh_obj)
     bones = armature_obj.data.bones
@@ -418,7 +420,10 @@ def _keep_arms_off_chest(mesh_obj, armature_obj, skip):
     torso = [(BONE_NAMES[key], (matrix @ bones[BONE_NAMES[key]].head_local).z) for key in TORSO_KEYS]
     centre_x = float((matrix @ bones[BONE_NAMES["hips"]].head_local).x)
     neck_z = float((matrix @ bones[BONE_NAMES["neck"]].head_local).z)
-    body = (verts[:, 2] > torso[0][1]) & (verts[:, 2] < neck_z) & ~np.asarray(skip, dtype=bool)
+    top = neck_z
+    if below_shoulders:
+        top = min(float((matrix @ bones[BONE_NAMES[f"{s}_upper_arm"]].head_local).z) for s in ("left", "right"))
+    body = (verts[:, 2] > torso[0][1]) & (verts[:, 2] < top) & ~np.asarray(skip, dtype=bool)
     arms = {groups[BONE_NAMES[f"{s}_{k}"]].index for s in ("left", "right")
             for k in ("shoulder", "upper_arm", "lower_arm", "hand") if BONE_NAMES[f"{s}_{k}"] in groups}
     trunk = {groups[name].index for name, _z in torso if name in groups}
@@ -1408,9 +1413,12 @@ COLUMN_BLEND = 0.06
 # 20 cm) and 1.6 before (model B's collar, 25 cm); the end of a tail held up behind the pirate lay 3.1 to
 # 4.4 away (50 to 70 cm), went to the head and stretched 21.7 cm from its root when the head turned.
 COLUMN_DEPTH = (1.75, 2.25)
+# ... and out to the side with `side_fade`, all of it within the shoulder joints' width, none past this many times
+# it: cut off at the width, NerdGirl's hood on Tripo's weights stepped 38 mm at its edge on a head and neck tilt
+COLUMN_SIDE = 1.5
 
 
-def follow_head_column(mesh_obj, armature_obj, chin_z=None, skip=None):
+def follow_head_column(mesh_obj, armature_obj, chin_z=None, skip=None, side_fade=False):
     """Whatever stands above the head joint, between the shoulders, follows the head alone.
 
     `weight_head` does this for the face part. On a model whose jaw, beard, hair and the back of
@@ -1434,7 +1442,10 @@ def follow_head_column(mesh_obj, armature_obj, chin_z=None, skip=None):
     # hair and a beard hang on past the jaw: handed over across COLUMN_BLEND about the joint, not
     # the face's 2 cm above it (the pirate's hair beside his jaw: 90 edges over 3 cm on a head turn)
     share = np.clip((verts[:, 2] - head_z + COLUMN_BLEND / 2) / COLUMN_BLEND, 0.0, 1.0)
-    share[np.abs(verts[:, 0] - joint.x) >= reach] = 0.0
+    if side_fade:
+        share *= np.clip((COLUMN_SIDE - np.abs(verts[:, 0] - joint.x) / max(reach, 1e-6)) / (COLUMN_SIDE - 1.0), 0.0, 1.0)
+    else:
+        share[np.abs(verts[:, 0] - joint.x) >= reach] = 0.0
     near, far = COLUMN_DEPTH
     share *= np.clip((far - np.abs(verts[:, 1] - joint.y) / max(reach, 1e-6)) / (far - near), 0.0, 1.0)
     if skip is not None:
@@ -1454,6 +1465,151 @@ def follow_head_column(mesh_obj, armature_obj, chin_z=None, skip=None):
         head.add([i], target, "REPLACE")
         changed += 1
     return changed
+
+
+# head_ledge: head and neck tilted together as the rig check tilts them (check_avatar.py NECK_TILT, HEAD_TILT, radians
+# about the world X and Y axes, both ways), and an edge above the head joint (HEAD_CLEAR, m) held mostly by the head
+# and what hangs from it (MOSTLY_HEAD) that grows past LEDGE (m) is a ledge. LEDGE_LIMIT: the check fails past it.
+NECK_TILT, HEAD_TILT = 0.21, 0.31
+HEAD_CLEAR = 0.03
+MOSTLY_HEAD = 0.5
+LEDGE = 0.005
+LEDGE_LIMIT = 100
+
+
+def head_ledge(mesh_obj, armature_obj):
+    """How many places above the head joint step (LEDGE) as head and neck tilt together: the rig check's
+    "edges at a ledge", by blending the weights by hand instead of posing, so a build can weigh its own skinning.
+    0 for a rig with no head and neck bone."""
+    bones = armature_obj.data.bones
+    if BONE_NAMES["head"] not in bones or BONE_NAMES["neck"] not in bones:
+        return 0
+    world = np.array(armature_obj.matrix_world)
+    joint = lambda name: (world @ np.array([*bones[name].head_local, 1.0]))[:3]  # noqa: E731
+    neck, head = joint(BONE_NAMES["neck"]), joint(BONE_NAMES["head"])
+    head_family = {BONE_NAMES["head"], *(b.name for b in bones[BONE_NAMES["head"]].children_recursive)}
+    neck_family = {BONE_NAMES["neck"], *(b.name for b in bones[BONE_NAMES["neck"]].children_recursive)} - head_family
+    verts = world_vertices(mesh_obj)
+    names = {g.index: g.name for g in mesh_obj.vertex_groups}
+    held = [(v.index, names[g.group], g.weight) for v in mesh_obj.data.vertices for g in v.groups
+            if g.weight > 0 and names[g.group] in bones]
+    if not held:
+        return 0
+    vertex = np.array([h[0] for h in held])
+    weight = np.array([h[2] for h in held])
+    total = np.maximum(np.bincount(vertex, weights=weight, minlength=len(verts)), 1e-12)
+    on_head = np.bincount(vertex, weights=weight * np.array([h[1] in head_family for h in held]), minlength=len(verts)) / total
+    on_neck = np.bincount(vertex, weights=weight * np.array([h[1] in neck_family for h in held]), minlength=len(verts)) / total
+    edges = np.array([e.vertices[:] for e in mesh_obj.data.edges])
+    if not len(edges):
+        return 0
+    its_own = (verts[edges][:, :, 2] > head[2] + HEAD_CLEAR).all(axis=1) & (on_head[edges] >= MOSTLY_HEAD).all(axis=1)
+    edges = edges[its_own]
+    if not len(edges):
+        return 0
+    rest = np.linalg.norm(verts[edges[:, 0]] - verts[edges[:, 1]], axis=1)
+    grown = np.zeros(len(edges))
+    for axis in ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0)):
+        for way in (1.0, -1.0):
+            turn_neck = np.array(Matrix.Rotation(way * NECK_TILT, 3, axis))
+            turn_head = np.array(Matrix.Rotation(way * HEAD_TILT, 3, axis))
+            by_neck = neck + (verts - neck) @ turn_neck.T
+            moved_head = neck + (head - neck) @ turn_neck.T
+            by_head = moved_head + (by_neck - moved_head) @ turn_head.T
+            posed = verts + on_neck[:, None] * (by_neck - verts) + on_head[:, None] * (by_head - verts)
+            length = np.linalg.norm(posed[edges[:, 0]] - posed[edges[:, 1]], axis=1)
+            grown = np.maximum(grown, length - rest)
+    middle = (verts[edges[:, 0]] + verts[edges[:, 1]]) / 2
+    stepped = middle[grown > LEDGE]
+    return len(np.unique(np.round(stepped / 1e-5).astype(np.int64), axis=0)) if len(stepped) else 0
+
+
+# arms_cave: the arms pointed as the rig check points them (check_avatar.py ARM_POSES, mirrored for the right), how far
+# the body's skin inside the shoulders (within CAVE_SPAN of the shoulder joint's distance from the middle, between
+# the hips and the shoulders) moves with the arms down; and the worst any edge stretches in the three poses.
+ARM_POSES = {"at sides": (0.25, 0.0, -1.0), "forward": (0.3, -1.0, -0.3), "raised": (0.5, 0.0, 1.0)}
+CAVE_SPAN = 0.8
+# The build keeps an adopted rig's arms off its chest when the body caves in further than this (m, the 99th
+# percentile) with the arms down, and only if that stretches no pose more than CAVE_STRETCH (m) more.
+CAVE_LIMIT = 0.015
+CAVE_STRETCH = 0.005
+# ... nor the head turned as the check turns it (check_avatar.py HEAD_TURNS, euler angles): the rule took the miko's
+# and the chibi's shoulder weight by the neck too, and their head turns went 2.3 -> 3.6 and 1.3 -> 2.7 cm
+HEAD_TURNS = ((0.5, 0.0, 0.0), (-0.5, 0.0, 0.0), (0.0, 0.0, 0.6), (0.0, 0.0, -0.6), (0.0, 0.4, 0.0))
+
+
+def arms_cave(mesh_obj, armature_obj):
+    """(how far the body inside the shoulders moves with the arms down, m (99th percentile), the worst edge stretch
+    of the arm poses, m, and of the head turns, m), by blending the weights by hand as head_ledge does. Zeros for a
+    rig without arms."""
+    bones = armature_obj.data.bones
+    sides = [(s, m) for s, m in (("left", 1.0), ("right", -1.0)) if BONE_NAMES[f"{s}_upper_arm"] in bones and BONE_NAMES[f"{s}_hand"] in bones]
+    if not sides or BONE_NAMES["hips"] not in bones:
+        return 0.0, 0.0, 0.0
+    world = np.array(armature_obj.matrix_world)
+    joint = lambda name: (world @ np.array([*bones[name].head_local, 1.0]))[:3]  # noqa: E731
+    verts = world_vertices(mesh_obj)
+    names = {g.index: g.name for g in mesh_obj.vertex_groups}
+    held = [(v.index, names[g.group], g.weight) for v in mesh_obj.data.vertices for g in v.groups
+            if g.weight > 0 and names[g.group] in bones]
+    if not held:
+        return 0.0, 0.0, 0.0
+    vertex = np.array([h[0] for h in held])
+    weight = np.array([h[2] for h in held])
+    total = np.maximum(np.bincount(vertex, weights=weight, minlength=len(verts)), 1e-12)
+    hips = joint(BONE_NAMES["hips"])
+    shares, inside = {}, np.zeros(len(verts), dtype=bool)
+    for side, mirror in sides:
+        upper = BONE_NAMES[f"{side}_upper_arm"]
+        family = {upper, *(b.name for b in bones[upper].children_recursive)}
+        shares[side] = np.bincount(vertex, weights=weight * np.array([h[1] in family for h in held]), minlength=len(verts)) / total
+        start = joint(upper)
+        out = mirror * (verts[:, 0] - hips[0])
+        inside |= (out >= 0) & (out < CAVE_SPAN * abs(start[0] - hips[0])) & (verts[:, 2] < start[2]) & (verts[:, 2] > hips[2])
+    edges = np.array([e.vertices[:] for e in mesh_obj.data.edges])
+    rest = np.linalg.norm(verts[edges[:, 0]] - verts[edges[:, 1]], axis=1)
+    cave, worst = 0.0, 0.0
+    for label, direction in ARM_POSES.items():
+        posed = verts.copy()
+        for side, mirror in sides:
+            start = joint(BONE_NAMES[f"{side}_upper_arm"])
+            now = Vector(joint(BONE_NAMES[f"{side}_hand"]) - start).normalized()
+            want = Vector((mirror * direction[0], direction[1], direction[2])).normalized()
+            turn = np.array(now.rotation_difference(want).to_matrix())
+            posed += shares[side][:, None] * ((start + (verts - start) @ turn.T) - verts)
+        length = np.linalg.norm(posed[edges[:, 0]] - posed[edges[:, 1]], axis=1)
+        worst = max(worst, float((length - rest).max()))
+        if label == "at sides" and inside.any():
+            cave = float(np.percentile(np.linalg.norm(posed - verts, axis=1)[inside], 99))
+    turned = 0.0
+    head = BONE_NAMES["head"]
+    if head in bones:
+        family = {head, *(b.name for b in bones[head].children_recursive)}
+        share = np.bincount(vertex, weights=weight * np.array([h[1] in family for h in held]), minlength=len(verts)) / total
+        start = joint(head)
+        for angles in HEAD_TURNS:
+            turn = np.array(Euler(angles).to_matrix())
+            posed = verts + share[:, None] * ((start + (verts - start) @ turn.T) - verts)
+            length = np.linalg.norm(posed[edges[:, 0]] - posed[edges[:, 1]], axis=1)
+            turned = max(turned, float((length - rest).max()))
+    return cave, worst, turned
+
+
+def weights_of(mesh_obj):
+    """Every vertex's weights, {vertex: {group name: weight}}, to put back with set_weights."""
+    names = {g.index: g.name for g in mesh_obj.vertex_groups}
+    return {v.index: {names[g.group]: g.weight for g in v.groups} for v in mesh_obj.data.vertices}
+
+
+def set_weights(mesh_obj, kept):
+    """Put back what weights_of read (groups made since are left empty)."""
+    groups = mesh_obj.vertex_groups
+    everyone = [v.index for v in mesh_obj.data.vertices]
+    for group in groups:
+        group.remove(everyone)
+    for vertex, found in kept.items():
+        for name, weight in found.items():
+            (groups.get(name) or groups.new(name=name)).add([vertex], weight, "REPLACE")
 
 
 def make_active(obj):

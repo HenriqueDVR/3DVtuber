@@ -379,6 +379,35 @@ def transfer_weights(mesh_obj, armature_obj, surface, weights):
     return float(np.percentile(gaps, 95)), ~ok
 
 
+def still_fingers(mesh_obj):
+    """Hand every finger's weight to its hand: the fingers move nothing. For a character whose hands don't show
+    (option `fingers: none`): NerdGirl's are inside her cuffs, 1720 vertices on Tripo's 30 finger bones, and the
+    cuffs tore open where Warudo curled them. Returns how many vertices changed."""
+    groups = mesh_obj.vertex_groups
+    fingers = {g.index: "Left" if g.name.startswith("Left") else "Right" for g in groups
+               if g.name.startswith(("Left", "Right")) and g.name.removeprefix("Left").removeprefix("Right").startswith(tuple(_FINGER_NAMES))}
+    if not fingers:
+        return 0
+    hands = {side: groups.get(BONE_NAMES[f"{side.lower()}_hand"]) or groups.new(name=BONE_NAMES[f"{side.lower()}_hand"])
+             for side in ("Left", "Right")}
+    changed = 0
+    for vertex in mesh_obj.data.vertices:
+        moved = {"Left": 0.0, "Right": 0.0}
+        for g in vertex.groups:
+            if g.group in fingers:
+                moved[fingers[g.group]] += g.weight
+        if not any(moved.values()):
+            continue
+        for index in fingers:
+            groups[index].remove([vertex.index])
+        for side, weight in moved.items():
+            if weight:
+                held = next((g.weight for g in vertex.groups if g.group == hands[side].index), 0.0)
+                hands[side].add([vertex.index], held + weight, "REPLACE")
+        changed += 1
+    return changed
+
+
 def keep_arms_off_head(mesh_obj, armature_obj):
     """Take the shoulder, arm, hand and finger weights that leaked onto the head off it, handing
     their share to the vertex's other bones (Head when it has none). Returns how many changed.
