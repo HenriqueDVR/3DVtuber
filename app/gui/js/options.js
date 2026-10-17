@@ -13,7 +13,7 @@ const OPTION_UI = [
   ["hat_tip", "Swinging hat tip", "Only with a solid head: the tip of a pointed hat (a witch hat) swings with physics.",
     [[true, "on", "The tip bounces when the head moves; the rest of the hat stays solid."], [false, "off", "The whole hat stays solid."]]],
   ["face_tracking", "Mouth tracking and blink", "Adds the ARKit-named face shapes that iPhone and webcam face tracking drive: the jaw, the mouth's corners and a blink (no brows or cheeks yet). Needs the face points (Face page).",
-    [[true, "on", "The mouth and blink follow your face in Warudo/VNyan."], [false, "off", "Only the five vowel mouths: no blink unless eye tracking adds one."]]],
+    [[true, "on", "The mouth and blink follow your face in your tracking app."], [false, "off", "Only the five vowel mouths: no blink unless eye tracking adds one."]]],
   ["mouth_colour", "Inside of the mouth", "The colour painted inside the mouth when it opens.",
     [AUTO("picked from the model's texture"), ["skin", "skin", "Skin-coloured: for simple faces where a dark mouth reads as a hole."]]],
   ["Hair and clothes"],
@@ -26,7 +26,7 @@ const OPTION_UI = [
     [[true, "on", "Long hair stays out of the back and off the arms."],
       [false, "off (head only)", "For hair that rests on the shoulders: it no longer lifts or breaks into a ledge when the head tilts. It can sink a little into a shoulder."]]],
   ["chest", "Chest bounce", "Two spring bones on the front of the chest, as VRoid avatars have: it bounces and settles when the body moves. Hair hanging over the chest keeps its own springs.",
-    [[false, "off", "The chest moves with the body only."], [true, "on", "It bounces in Warudo/VNyan, as much as the slider below says."]]],
+    [[false, "off", "The chest moves with the body only."], [true, "on", "It bounces in your tracking app, as much as the slider below says."]]],
   ["chest_amount", "Chest bounce amount", "How much the chest bounces when chest bounce is on: softer springs that move more of the chest, or stiffer ones that move less.",
     { min: 0.25, max: 2, step: 0.05, fallback: 0.5, low: "barely", high: "a lot" }],
   ["loose_pieces", "Repair torn straps", "Straps, belts and chains that cross between two limbs are weighted so they don't tear apart when the limbs move apart.",
@@ -50,7 +50,7 @@ const OPTION_UI = [
       ["auto", "quick guess", "Older, faster detection; less exact on curled or touching fingers."],
       ["none", "none", "No finger bones: each hand moves as one piece. For mittens, or if the fingers come out broken."]]],
   ["tpose", "Final pose", "VRM apps expect the avatar saved standing in a T-pose; this is how the model gets there.",
-    [["spec", "T-pose, flat hands (recommended)", "Arms straight out and fingers straight, like a VRoid avatar: finger tracking in Warudo works best from this."],
+    [["spec", "T-pose, flat hands (recommended)", "Arms straight out and fingers straight, like a VRoid avatar: finger tracking works best from this."],
       ["plain", "T-pose, hands as modelled", "Arms straight out; the fingers keep their modelled curl."],
       ["none", "no T-pose", "Keeps the modelled pose. No final .vrm is made: for testing the rig only."]]],
 ];
@@ -62,37 +62,76 @@ async function setOption(key, value) {
 
 // The options that count for a character taken in from a finished .vrm (engine.KEPT skips the rest).
 const IMPROVES = ["chest", "chest_amount", "licence_read"];
-// ... and what only counts for one
-const ONLY_IMPROVES = ["A finished avatar", "licence_read"];
+
+// Each option's default (pipeline/manifest.py OPTIONS): a tile whose value differs says "changed".
+const DEFAULTS = { rigid_head: null, hat_tip: false, face_tracking: true, mouth_colour: null, cloth: null, ahoge: true, hair_hits_body: true,
+  chest: false, chest_amount: 0.5, loose_pieces: true, repair_shoulder_seams: true, auto_pieces: false, licence_read: false, facing: null,
+  skinning: "heat", fingers: "guides", tpose: "spec" };
+// One line each, said plainly; the whole of what the option does is a click away (the "?").
+const SHORT = { rigid_head: "Hats, helmets, masks: the head moves as one block.", hat_tip: "A pointed hat's tip bounces.",
+  face_tracking: "Your mouth and blinks drive the avatar's.", mouth_colour: "The colour inside the open mouth.",
+  cloth: "Skirts, coat tails and capes swing.", ahoge: "The single strand on top of the head bounces.",
+  hair_hits_body: "Long hair stays off the back and arms.", chest: "The chest bounces as the body moves.",
+  loose_pieces: "Straps and belts between limbs don't tear.", repair_shoulder_seams: "No gaps at the shoulders when the arms go up.",
+  auto_pieces: "Sleeves and mantles the arms leave behind follow them.", licence_read: "The avatar's terms let you change it.",
+  facing: "Which side of the model is its front.", skinning: "How the skin follows the bones.", fingers: "Finger bones for hand tracking.",
+  tpose: "The pose the avatar is saved in." };
+// The page in groups: what most people look at open, the rest folded with a word on when to open it.
+const GROUPS = [
+  { title: "What moves", keys: ["cloth", "ahoge", "hair_hits_body", "chest"] },
+  { title: "Face and head", keys: ["face_tracking", "mouth_colour", "rigid_head", "hat_tip"] },
+  { title: "Repairs", note: "leave these on unless something looks wrong after a build", keys: ["loose_pieces", "repair_shoulder_seams", "auto_pieces"], folded: true },
+  { title: "Advanced", note: "body weights, fingers, the saved pose, which way the model faces", keys: ["skinning", "fingers", "tpose", "facing"], folded: true },
+  { title: "A finished avatar", keys: ["licence_read"], improving: true },
+];
+const row = (key) => OPTION_UI.find((r) => r[0] === key);
+const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+const folded = {};
 
 export function renderOptions() {
   if (!S.manifest) { $("option-grid").innerHTML = `<p class="msg">Open or create a character first.</p>`; return; }
-  const resolved = S.status?.options || {};
-  // a finished avatar keeps what it has: only what the build can add to one is offered
-  const offered = OPTION_UI.filter((row) => S.status?.improving ? IMPROVES.includes(row[0]) : !ONLY_IMPROVES.includes(row[0]));
-  $("option-grid").innerHTML = (S.status?.improving ? `<p class="help">This character is a finished avatar (.vrm): its head, hair, hands, face and pose stay as they are, so only what can be added to it is here.</p>` : "") + offered.map((row) => {
-    if (row.length === 1) return `<h3>${row[0]}</h3>`;
-    const [key, title, what, choices] = row, v = S.manifest.options[key] ?? null;
-    if (!Array.isArray(choices)) {
-      const value = v ?? choices.fallback;
-      return `<div class="opt"><b>${title}</b><p class="help">${what}</p>
-        <input type="range" data-slider="${key}" aria-label="${esc(title)}" min="${choices.min}" max="${choices.max}" step="${choices.step}" value="${value}">
-        <p class="choice">${choices.low} <b data-amount="${key}">${(+value).toFixed(2)}</b> ${choices.high} (1.00 is the usual amount)</p></div>`;
-    }
-    return `<div class="opt"><b>${title}</b><p class="help">${what}</p>
-      <select data-option="${key}" aria-label="${esc(title)}">${choices.map(([val, label]) =>
-        `<option value='${JSON.stringify(val)}' ${JSON.stringify(val) === JSON.stringify(v) ? "selected" : ""}>${label}</option>`).join("")}</select>
-      <p class="choice" data-choice="${key}"></p></div>`;
-  }).join("");
-  const explain = (sel) => {
-    const [key, , , choices] = OPTION_UI.find((r) => r[0] === sel.dataset.option);
-    const val = JSON.parse(sel.value), [, , text] = choices.find(([c]) => JSON.stringify(c) === sel.value);
-    // what "auto" came to for this model, when the survey has run
-    const picked = val === null && key in resolved ? choices.find(([c]) => c !== null && JSON.stringify(c) === JSON.stringify(resolved[key])) : null;
-    document.querySelector(`[data-choice="${key}"]`).textContent = text + (picked ? `. For this model: ${picked[1]}.` : "");
+  const resolved = S.status?.options || {}, o = S.manifest.options, improving = !!S.status?.improving;
+  const value = (key) => o[key] ?? (typeof DEFAULTS[key] === "number" ? DEFAULTS[key] : null);
+  // what "auto" came to for this model, once the survey has run
+  const picked = (key, choices) => value(key) === null && key in resolved ? choices.find(([c]) => c !== null && same(c, resolved[key])) : null;
+  // a swinging hat tip only means something on a solid head; the bounce's amount only with the bounce on
+  const shown = (key) => key === "hat_tip" ? (value("rigid_head") ?? resolved.rigid_head) === true : true;
+  const tile = (key) => {
+    const [, title, what, choices] = row(key), v = value(key), changed = !same(v, DEFAULTS[key]);
+    const auto = picked(key, choices), chosen = choices.find(([c]) => same(c, v)) || choices[0];
+    const amount = key === "chest" && v === true ? (() => {
+      const [, , , range] = row("chest_amount"), a = o.chest_amount ?? range.fallback;
+      return `<label class="amount">how much <input type="range" data-slider="chest_amount" aria-label="chest bounce amount" min="${range.min}" max="${range.max}" step="${range.step}" value="${a}">
+        <b data-amount="chest_amount">${(+a).toFixed(2)}</b></label>`;
+    })() : "";
+    return `<div class="otile ${changed ? "changed" : ""}" data-key="${key}">
+      <div class="ohead"><b>${esc(title)}</b>${changed ? `<span class="chip warn">changed</span>` : ""}<button class="why" data-why="${key}" title="what this does" aria-expanded="false">?</button></div>
+      <p class="short">${esc(SHORT[key] || "")}</p>
+      <div class="seg" role="group" aria-label="${esc(title)}">${choices.map(([c, label, text]) =>
+        `<button data-option="${key}" data-value='${esc(JSON.stringify(c))}' class="${same(c, v) ? "on" : ""}" title="${esc(text)}">${esc(label)}</button>`).join("")}</div>
+      ${amount}
+      <p class="choice">${esc(chosen[2])}${auto ? ` <b>For this model: ${esc(auto[1])}.</b>` : ""}</p>
+      <p class="long" hidden>${esc(what)}</p></div>`;
   };
+  const changedCount = Object.keys(DEFAULTS).filter((k) => k !== "chest_amount" && !same(value(k), DEFAULTS[k])).length;
+  const groups = GROUPS.filter((g) => improving ? g.keys.some((k) => IMPROVES.includes(k)) : !g.improving);
+  $("option-grid").innerHTML = `<p class="olead">${improving ? "This character is a finished avatar (.vrm): its head, hair, hands, face and pose stay as they are, so only what can be added to it is here."
+      : "Most models need nothing here: the defaults suit them, and <b>auto</b> lets the survey decide."}
+      ${changedCount ? `<span class="chip warn">${changedCount} changed</span>` : `<span class="chip done">all defaults</span>`}</p>`
+    + groups.map((g) => {
+      const keys = g.keys.filter((k) => (!improving || IMPROVES.includes(k)) && shown(k));
+      const open = folded[g.title] ?? !g.folded;
+      const changedHere = keys.filter((k) => !same(value(k), DEFAULTS[k])).length;
+      return `<details class="ogroup" data-group="${esc(g.title)}" ${open ? "open" : ""}><summary>${esc(g.title)}${g.note ? ` <span>${esc(g.note)}</span>` : ""}
+        ${changedHere ? `<span class="chip warn">${changedHere} changed</span>` : ""}</summary><div class="ogrid">${keys.map(tile).join("")}</div></details>`;
+    }).join("");
+  document.querySelectorAll(".ogroup").forEach((d) => d.ontoggle = () => { folded[d.dataset.group] = d.open; });
+  document.querySelectorAll("[data-why]").forEach((b) => b.onclick = () => {
+    const long = b.closest(".otile").querySelector(".long");
+    long.hidden = !long.hidden; b.setAttribute("aria-expanded", String(!long.hidden)); b.classList.toggle("on", !long.hidden);
+  });
   document.querySelectorAll("[data-slider]").forEach((slider) => {
-    const key = slider.dataset.slider, [, title, , range] = OPTION_UI.find((r) => r[0] === key);
+    const key = slider.dataset.slider, [, title, , range] = row(key);
     slider.oninput = () => { document.querySelector(`[data-amount="${key}"]`).textContent = (+slider.value).toFixed(2); };
     slider.onchange = async () => {
       const before = S.manifest.options[key] ?? range.fallback;
@@ -104,17 +143,14 @@ export function renderOptions() {
       } catch (e) { say("options-msg", e.message, true); }
     };
   });
-  document.querySelectorAll("[data-option]").forEach((sel) => {
-    explain(sel);
-    sel.onchange = async () => {
-      const key = sel.dataset.option, before = S.manifest.options[key] ?? null, title = OPTION_UI.find((r) => r[0] === key)[1];
-      explain(sel);
-      try {
-        await setOption(key, JSON.parse(sel.value));
-        pushUndo(title, () => setOption(key, before));
-        say("options-msg", "");
-        saved(`${title} saved. Rebuild for it to count.`);
-      } catch (e) { say("options-msg", e.message, true); }
-    };
+  document.querySelectorAll("button[data-option]").forEach((b) => b.onclick = async () => {
+    const key = b.dataset.option, next = JSON.parse(b.dataset.value), before = S.manifest.options[key] ?? null, title = row(key)[1];
+    if (same(next, value(key))) return;
+    try {
+      await setOption(key, next);
+      pushUndo(title, () => setOption(key, before));
+      say("options-msg", "");
+      saved(`${title} saved. Rebuild for it to count.`);
+    } catch (e) { say("options-msg", e.message, true); }
   });
 }

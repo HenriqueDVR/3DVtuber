@@ -73,7 +73,8 @@ OPTIONS = {
     "slide": [],              # with "slide": [horizontal, vertical] travel in mm
     # the user's word over what the eye step reads (the Face page): all need the eye step to run
     "eye_shown": None,        # "left" or "right": the character's other eye is covered (hair over it, an eyepatch) and is
-                              # left as it is, with no blink; both are still marked, the covered one where it would be
+                              # left as it is, with no blink; the Face page asks only for the shown eye's points and writes
+                              # the covered one's as their mirror across the mouth's middle
     "iris_shape": None,       # modelled iris discs: "circle" or "oval"; None: as it is drawn
     "iris_size": 1.0,         # modelled iris discs: a factor on the size read, IRIS_SIZE; never wider than its disc
     "look_travel": 1.0,       # how far the eyes look, a factor on what the build works out, LOOK_TRAVEL

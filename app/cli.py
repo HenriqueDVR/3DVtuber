@@ -160,11 +160,11 @@ def main(argv=None):
 
     p = sub.add_parser("approve", help="keep this build's checks as the baseline later builds are compared with")
     p.add_argument("manifest", type=Path)
-    p.add_argument("--note", default="", help="why it is good, e.g. what was checked in Warudo")
+    p.add_argument("--note", default="", help="why it is good, e.g. what was checked in the tracking app")
 
-    p = sub.add_parser("warudo", help="copy the finished .vrm into Warudo's Characters folder")
+    p = sub.add_parser("send", aliases=["warudo"], help="copy the finished .vrm into the folder picked for avatars (else Warudo's, from Steam)")
     p.add_argument("manifest", type=Path, nargs="?")
-    p.add_argument("--folder", help="send avatars to this folder from now on ('' = the one found in Steam)")
+    p.add_argument("--folder", help="send avatars to this folder from now on ('' forgets it)")
 
     p = sub.add_parser("compare", help="compare two check reports (scripts/compare_checks.py)")
     p.add_argument("before", type=Path)
@@ -325,12 +325,12 @@ def cmd_approve(args):
     return _project(args).approve(args.note)
 
 
-def cmd_warudo(args):
+def cmd_send(args):
     if args.folder is not None:
-        return engine.use_warudo(args.folder)
+        return engine.use_folder(args.folder)
     if args.manifest is None:
-        return {"warudo": str(engine.warudo_folder() or "")}
-    return _project(args).send_to_warudo()
+        return {"send_to": str(engine.send_folder() or "")}
+    return _project(args).send_to_folder()
 
 
 def cmd_regress(args):
@@ -1188,7 +1188,7 @@ COMMANDS = {"report": cmd_report, "init": cmd_init, "status": cmd_status, "prefl
             "pieces": cmd_pieces, "piece": cmd_piece, "render": cmd_render, "portraits": cmd_portraits, "sheet": cmd_sheet, "inside": cmd_inside, "movement": cmd_movement, "springs": cmd_springs,
             "face-patch": cmd_face_patch, "face": cmd_face, "face-guess": cmd_face_guess, "paint": cmd_paint, "duplicate": cmd_duplicate, "rename": cmd_rename, "hide": cmd_hide, "delete": cmd_delete, "compare": cmd_compare, "approve": cmd_approve, "bundle": cmd_bundle,
             "runs": cmd_runs, "disk": cmd_disk, "prune": cmd_prune, "prepare": cmd_prepare, "setup": cmd_setup, "inputs": cmd_inputs,
-            "regress": cmd_regress, "vendor": cmd_vendor, "update": cmd_update, "pack": cmd_pack, "detector": cmd_detector, "warudo": cmd_warudo}
+            "regress": cmd_regress, "vendor": cmd_vendor, "update": cmd_update, "pack": cmd_pack, "detector": cmd_detector, "send": cmd_send, "warudo": cmd_send}
 
 
 def _project(args):

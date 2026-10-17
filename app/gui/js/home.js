@@ -70,7 +70,7 @@ $("disk-check").onclick = loadDisk;
 $("disk-prune").onclick = async () => {
   const runs = disk.characters.reduce((n, c) => n + c.prunable_runs, 0);
   const ok = await ask("Free up disk space", { text: `Delete the model files (.blend, .vrm) of ${runs} old run${runs === 1 ? "" : "s"}: ${gb(disk.prunable)}.\n\n`
-    + "Their reports and logs stay. Each character's build in use, the build marked good and builds with a Warudo note are not touched.\n\nThis can't be undone.",
+    + "Their reports and logs stay. Each character's build in use, the build marked good and builds with a note are not touched.\n\nThis can't be undone.",
     ok: `Delete ${gb(disk.prunable)}`, danger: true });
   if (!ok) return;
   try {
@@ -171,11 +171,13 @@ $("duplicate").onclick = async () => {
 };
 $("survey-run").onclick = () => job("run", { only: "survey" });
 $("prepare-run").onclick = () => job("prepare", {});
-// Ready: the one thing only the user can do is the face, a press away. The page isn't changed under
-// them: landing on step 4 from step 1 read as pages skipped.
-app.prepared = () => {
-  toast("Ready: the pieces are listed and the face patch is made. Next, mark the eyes and mouth on the Face page.", "good",
-    { action: { label: "Go to Face", run: () => app.go("face") }, ms: 20000 });
+// Ready: the next page is Parts, to look the pieces over (most need nothing). The page isn't changed under them:
+// the Next button at the bottom points there and calls for the press (the arcade look's nudge); a message and its
+// own button elsewhere were one thing too many.
+app.prepared = (took) => {
+  const why = `Ready${took ? ` in ${took}` : ""}: pieces listed, face patch made. Next, look the parts over: most are fine as they are.`;
+  if (app.nudge) app.nudge("parts", why);
+  else toast(why, "good", { action: { label: "Go to Parts", run: () => app.go("parts") }, ms: 20000 });
 };
 document.querySelectorAll("[data-browse]").forEach((b) => b.onclick = async () => {
   try { const { path } = await call("browse", { kind: b.dataset.browse }); if (path) $(b.dataset.for).value = path; }

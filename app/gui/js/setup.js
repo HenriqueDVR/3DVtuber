@@ -7,6 +7,7 @@ const same = (a, b) => String(a || "").toLowerCase().replaceAll("/", "\\") === S
 
 export async function loadSetup() {
   try { S.setup = await call("setup"); } catch (e) { say("setup-msg", e.message, true); return; }
+  app.renderVrm?.();  // the send buttons name the folder picked
   renderSetup();
   app.renderStart?.();
   app.renderAll();

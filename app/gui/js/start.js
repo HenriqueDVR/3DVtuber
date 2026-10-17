@@ -44,8 +44,8 @@ export function renderStart() {
   $("start-needed").innerHTML = rows.map(([c, t]) => row(c, t, all.findIndex(([x]) => x === c))).join("");
   $("start-extras").innerHTML = extras.length ? extras.map(([c, t]) => row(c, t, all.findIndex(([x]) => x === c))).join("")
     : `<p class="done">Nothing more to add.</p>`;
-  $("start-warudo").innerHTML = s.warudo ? `<b class="done">✓ Warudo found</b><br>Finished avatars can be sent straight into its character list from the Build page.<br><span class="msg">${esc(s.warudo)}</span>`
-    : `<b class="warn">! Warudo not found</b><br>Not needed to build. The Build page's “Send to Warudo” asks for its Characters folder the first time; VNyan and other apps load the .vrm file from wherever you keep it.`;
+  $("start-send").innerHTML = s.send_to ? `<b class="done">✓ Avatars are sent to</b> <span class="msg">${esc(s.send_to)}</span><br>Change it with “Change folder” on the Review page.`
+    : `<b>Where avatars go</b><br>Not needed to build. The first “Send to a folder…” (Build or Review) asks for your tracking app's avatar folder and remembers it; or load the .vrm from wherever it is.`;
   // offered once everything needed is there and no character is open yet: the way on from a first start
   $("start-go").hidden = !s.ready || !!S.manifest;
   $("start-version").textContent = `App version ${s.app || "unknown"} · Python ${s.python} · ${s.version ? `Blender ${s.version}` : "no Blender"}`;

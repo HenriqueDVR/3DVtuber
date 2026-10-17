@@ -281,10 +281,10 @@ def api(route, query, body):
         return JOBS.cancel()
     if route == "reveal":
         return _reveal(Path(body["path"]))
-    if route == "send_warudo":
+    if route == "send":
         if "folder" in body:
-            engine.use_warudo(body["folder"])
-        return Project(m).send_to_warudo()
+            engine.use_folder(body["folder"])
+        return Project(m).send_to_folder()
     if route == "movement":
         return JOBS.start("movement check", lambda emit: cli.cmd_movement(_args(manifest=Path(m), step=body.get("step"))))
     if route == "movement_result":
@@ -353,6 +353,8 @@ def api(route, query, body):
         return cli.cmd_bundle(_args(manifest=Path(m), note=body.get("note", "")))
     if route == "browse":
         return {"path": _browse(body.get("kind", "model"))}
+    if route == "browse_folder":
+        return {"path": _browse_folder(engine.send_folder())}
     if route == "events":
         return JOBS.poll(int((query.get("since") or ["0"])[0]))
     if route == "url":
@@ -505,6 +507,32 @@ def _browse(kind):
     try:
         chosen = filedialog.askopenfilename(title=f"Choose the {title.lower()}", filetypes=[(title, pattern), ("All files", "*.*")],
                                             initialdir=str(start if start.is_dir() else Path.home()))
+    finally:
+        root.destroy()
+    return str(Path(chosen)) if chosen else None
+
+
+def _browse_folder(start):
+    """A native choose-a-folder dialog, from the server: the folder avatars are sent to."""
+    start = Path(start) if start and Path(start).is_dir() else Path.home()
+    if sys.platform == "darwin":
+        script = f'POSIX path of (choose folder with prompt "Choose the folder to send avatars to" default location POSIX file "{start}")'
+        done = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        return done.stdout.strip() or None
+    try:
+        import tkinter
+        from tkinter import filedialog
+    except ImportError:
+        raise ValueError("this Python has no file dialog (tkinter): type the path instead. "
+                         "Linux: install python3-tk and start the app again") from None
+    try:
+        root = tkinter.Tk()
+    except tkinter.TclError as error:
+        raise ValueError(f"no file dialog can open here ({error}): type the path instead") from None
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        chosen = filedialog.askdirectory(title="Choose the folder to send avatars to", initialdir=str(start), mustexist=True)
     finally:
         root.destroy()
     return str(Path(chosen)) if chosen else None

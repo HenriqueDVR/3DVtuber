@@ -123,9 +123,9 @@ class StepFailed(Exception):
         self.carries_on = carries_on
 
 
-class NoWarudo(FileNotFoundError):
-    """Warudo's Characters folder isn't known: the page asks for it."""
-    known = errors.describe("VM-NO-WARUDO")
+class NoFolder(FileNotFoundError):
+    """No folder to send avatars to: the page asks for one."""
+    known = errors.describe("VM-NO-FOLDER")
 
 
 class NoBlender(FileNotFoundError):
@@ -522,27 +522,26 @@ class Project:
     def approved(self):
         return _read_json(self.out / "approved" / "approved.json", None)
 
-    def send_to_warudo(self):
-        """Copy the finished .vrm into Warudo's Characters folder as <name>_<run>.vrm, where its
-        character list finds it. A copy per build, never written over: the note a user writes
-        about what they saw has to stay about that file."""
+    def send_to_folder(self):
+        """Copy the finished .vrm into the folder the user picked (`use_folder`: a tracking app's avatar
+        folder, say) as <name>_<run>.vrm. A copy per build, never written over: what the user saw has
+        to stay about that file."""
         vrm = self._last_vrm()
         if vrm is None:
             raise refused("VM-NO-EXPORT", "no finished .vrm yet: build first")
-        folder = warudo_folder()
+        folder = send_folder()
         if folder is None:
-            raise NoWarudo("Warudo wasn't found in a Steam library: give its Characters folder "
-                           r"(Warudo\Warudo_Data\StreamingAssets\Characters)")
+            raise NoFolder("no folder to send avatars to: pick one")
         target = folder / f"{self.name}_{vrm.parent.name}.vrm"
         already = target.exists() and target.stat().st_size == vrm.stat().st_size
         if target.exists() and not already:
-            raise refused("VM-WARUDO-FILE", f"{target} is there already and is a different file: rename or remove it in Warudo's folder",
+            raise refused("VM-FOLDER-FILE", f"{target} is there already and is a different file: rename or remove it there",
                           str(target))
         if not already:
             if free_disk(folder) < vrm.stat().st_size + DISK_FLOOR:
                 known = errors.describe("VM-DISK-FULL")
                 raise StepFailed(f"no room for the avatar on {folder.anchor} [VM-DISK-FULL] {known['fix']}", known)
-            # under another name first: a Warudo that is open must not find half a file to load
+            # under another name first: an app watching the folder must not find half a file to load
             part = target.with_suffix(".part")
             shutil.copy2(vrm, part)
             part.replace(target)
@@ -2827,7 +2826,7 @@ def setup(given=None):
             # for the first-run page: whether it was finished, and what a tester quotes in a report
             "welcomed": bool(_read_json(SETTINGS, {}).get("welcomed")), "python": platform.python_version(),
             **open_in(),
-            "warudo": str(warudo_folder() or ""), "app": app_version()}
+            "send_to": str(send_folder(chosen=True) or ""), "app": app_version()}
 
 
 def app_version():
@@ -3088,26 +3087,30 @@ def steam_libraries():
     return [steam, *(Path(p.replace("\\\\", "\\")) for p in listed)]
 
 
-def warudo_folder():
-    """Warudo's Characters folder, where it lists avatars: the one set by hand (`use_warudo`), else
-    the one in a Steam library; None when there is neither."""
-    chosen = _read_json(SETTINGS, {}).get("warudo")
-    for folder in ([Path(chosen)] if chosen else []) + [library / WARUDO_CHARACTERS for library in steam_libraries()]:
+def send_folder(chosen=False):
+    """Where finished avatars are sent: the folder the user picked (`use_folder`; "warudo" is what the
+    setting was called before other apps were meant), else, unless only a `chosen` one will do, Warudo's
+    Characters folder in a Steam library, if there is one (the CLI's `send`, and where the dialog opens);
+    None otherwise."""
+    settings = _read_json(SETTINGS, {})
+    picked = settings.get("send_to") or settings.get("warudo")
+    found = [] if chosen else [library / WARUDO_CHARACTERS for library in steam_libraries()]
+    for folder in ([Path(picked)] if picked else []) + found:
         if folder.is_dir():
             return folder
     return None
 
 
-def use_warudo(folder):
-    """Send avatars to this folder from now on; "" goes back to the one found in Steam."""
+def use_folder(folder):
+    """Send avatars to this folder from now on; "" forgets it."""
     if folder and not Path(folder).is_dir():
-        raise ValueError(f"{folder} isn't a folder: pick Warudo's Characters folder "
-                         r"(Warudo\Warudo_Data\StreamingAssets\Characters)")
+        raise ValueError(f"{folder} isn't a folder: pick the folder to send avatars to")
     settings = _read_json(SETTINGS, {})
-    settings["warudo"] = str(folder) if folder else None
+    settings["send_to"] = str(folder) if folder else None
+    settings.pop("warudo", None)
     SETTINGS.parent.mkdir(parents=True, exist_ok=True)
     _write_json(SETTINGS, settings)
-    return {"warudo": str(warudo_folder() or "")}
+    return {"send_to": str(send_folder(chosen=True) or "")}
 
 
 def _fingerprint_of(blend):

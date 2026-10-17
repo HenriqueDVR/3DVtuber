@@ -5,6 +5,7 @@
 // run) could be chosen on Setup until 2026-10-12.
 import { $, S, app, esc, lastVrm, stepName, tookLast } from "./core.js";
 import { arm, mood, musicOn, musicVolume, play, setMusic, setVolume, soundOn, switchMusic, switchSound, volume } from "./sfx.js";
+import { ORDER, after, before, skipped } from "./nav.js";
 
 const root = document.documentElement;
 const MOTION = "vtuber-maker-motion";
@@ -147,7 +148,7 @@ function start() {
     <canvas id="a-fx"></canvas><div class="wipe" id="a-wipe"></div>`);
   document.body.insertAdjacentHTML("beforeend", `<footer id="a-hints"></footer>`);
   $("steps").insertAdjacentHTML("beforebegin", `<div id="a-crumbs"></div>`);
-  document.querySelector("nav .foot").insertAdjacentHTML("beforebegin", `<div class="tbs"><button id="a-music" title="the music, on or off; its loudness is on Setup"></button><button id="a-sfx" title="the menus' and buttons' sounds, on or off; their loudness is on Setup"></button><button data-to="help">Stuck?</button><button data-to="setup">Setup</button></div>`);
+  document.querySelector("nav .foot").insertAdjacentHTML("beforebegin", `<div class="tbs"><button id="a-bug" title="something went wrong or looks off: tell the developers (nothing is sent until you press Send)"><i aria-hidden="true">⚑</i>Report a bug</button><button id="a-music" title="the music, on or off; its loudness is on Setup"></button><button id="a-sfx" title="the menus' and buttons' sounds, on or off; their loudness is on Setup"></button><button data-to="help">Stuck?</button><button data-to="setup">Setup</button></div>`);
   $("home").insertAdjacentHTML("afterbegin", `<div class="hero"><h2 class="atitle mid">Character select<span id="a-count"></span></h2>
     <div class="band" id="a-band"><div class="who"><span class="tag" id="a-tag"></span><h3 id="a-name"></h3><p id="a-note"></p><div class="stats" id="a-stats"></div><button class="act small" id="a-draw" data-job hidden>Draw its poses</button></div></div>
     <div class="pop" id="a-pop"><img id="a-art" alt="" hidden><div class="mystery" id="a-mystery" hidden>?</div></div><div class="roster" id="a-roster"></div>
@@ -169,12 +170,15 @@ function start() {
   stage(); arm();
   app.shown = shown; app.navDrawn = navDrawn; app.homeDrawn = hero;
   document.querySelector(".tbs").onclick = (e) => { const b = e.target.closest("button[data-to]"); if (b) { play("select"); app.go(b.dataset.to); } };
+  A("bug").onclick = () => { play("select"); app.report(); };
   A("music").onclick = () => { switchMusic(); $("look-music").value = musicVolume(); tuneButton(); play("select"); };
   A("sfx").onclick = () => { switchSound(); $("look-sound").value = volume(); tuneButton(); play("select"); };
   tuneButton();
   // "Avatar ready" stays up until it is clicked, the page is left or another build starts
   A("bband").querySelector(".slam").onclick = () => A("bband").classList.remove("built");
   A("crumbs").onclick = (e) => { const b = e.target.closest("button"); if (b) { play("back"); app.go(b.dataset.to); } };
+  // the step bar: back, the steps, next
+  A("hints").onclick = (e) => { const b = e.target.closest("button[data-to]"); if (b && !b.disabled) { play(b.classList.contains("back") ? "back" : "select"); app.go(b.dataset.to); } };
   A("more").onclick = () => $("main").scrollTo({ top: document.querySelector(".hero").offsetHeight, behavior: still() ? "auto" : "smooth" });
   A("draw").onclick = () => draw([S.projects[sel]]);
   A("drawall").onclick = () => draw(undrawn());
@@ -234,12 +238,35 @@ function chrome() {
     if (b.dataset.to === "setup") b.classList.toggle("bad", !!S.setup && !S.setup.ready);
   });
   const k = (a, b) => `<span><kbd>${a}</kbd>${b}</span>`, menus = ["home", "menu", "pages"].includes(page), step = $(page)?.dataset.step, path = open()?.manifest;
-  html(A("hints"), (menus ? k(page === "pages" ? "↑ ↓" : "← →", "choose") + k("Enter", "select") + (page === "home" ? "" : k("Esc", "back"))
-    : `<span>${step ? `step ${step} of 8 · ` : ""}${esc(label(page))}</span>`)
-    + `<span class="sp"></span><span class="path">${path && page !== "home" ? esc(path.replaceAll("/", "\\").split("\\").slice(-3).join("\\")) + " · saved as you go" : ""}</span>`);
+  const where = `<span class="path">${path && page !== "home" ? esc(path.replaceAll("/", "\\").split("\\").slice(-3).join("\\")) + " · saved as you go" : ""}</span>`;
+  html(A("hints"), S.manifest && (ORDER.includes(page) || page === "paint") ? stepBar(where)
+    : (menus ? k(page === "pages" ? "↑ ↓" : "← →", "choose") + k("Enter", "select") + (page === "home" ? "" : k("Esc", "back"))
+      : `<span>${step ? `step ${step} of 8 · ` : ""}${esc(label(page))}</span>`) + `<span class="sp"></span>${where}`);
   put(A("ghost-a"), `${label(page)} · `.repeat(8));
   put(A("ghost-b"), `${page === "home" || !open() ? "OC2VRM" : open().name} · `.repeat(12));
   bars();
+}
+
+// The step bar along the bottom of a step page: the way back, every step (done ones ticked, the one shown lit, a
+// locked one saying why), and the way on, there without scrolling to a page's end. Next glows once this page is done.
+// A nudge (app.nudge): something finished and says where to go on; the Next button takes it, its label pointing
+// there, bouncing, with the reason in a bubble over it, instead of a message to read and a button elsewhere.
+let nudge = null;
+app.nudge = (to, text) => { nudge = { from: page, to, text }; play("select"); chrome(); };
+function stepBar(where) {
+  const nav = (n) => document.querySelector(`#steps button[data-go="${n}"]`);
+  const done = (n) => !!nav(n)?.querySelector(".n.done");
+  if (nudge && nudge.from !== page) nudge = null;
+  const prev = before(page), next = nudge ? nudge.to : after(page);
+  const steps = ORDER.filter((n) => !skipped(n)).map((n, i) => {
+    const why = nav(n)?.classList.contains("locked") ? nav(n).title : "";
+    return `<li><button data-to="${n}" class="${n === page || (page === "paint" && n === "face") ? "on" : ""} ${done(n) ? "done" : ""}" title="${esc(why ? `${TITLES[n]}: ${why}` : `step ${i + 1}: ${TITLES[n]}`)}"${why ? " disabled" : ""}>`
+      + `<i>${done(n) ? "✓" : i + 1}</i><span>${esc(TITLES[n])}</span></button></li>`;
+  }).join("");
+  return `<button class="back" data-to="${prev || "menu"}">← ${esc(prev ? TITLES[prev] : "Menu")}</button><ol class="steps">${steps}</ol>`
+    + `<span class="sp"></span>${where}`
+    + `<span class="go">${nudge ? `<span class="bubble">${esc(nudge.text)}</span>` : ""}`
+    + `<button class="next ${done(page) ? "ready" : ""} ${nudge ? "nudge" : ""}" data-to="${next || "menu"}">${next ? `Next: ${esc(TITLES[next])}` : "Main menu"} →</button></span>`;
 }
 
 // the pages redrew their badges: the open character, its colour, and whichever menu is up
@@ -449,7 +476,7 @@ async function band() {
     // each finished step is heard, higher as the build goes
     if (over > settledWas) play("step", share);
   } else {
-    name = !S.manifest ? "No character" : left ? (over > 1 ? `${left} to build` : "Ready?") : st?.verdict?.ready ? "Ready for Warudo" : "Built";
+    name = !S.manifest ? "No character" : left ? (over > 1 ? `${left} to build` : "Ready?") : st?.verdict?.ready ? "Ready to use" : "Built";
     tag = !S.manifest ? "open or create a character first" : failed.length ? `built without ${failed.map((s) => stepName(s.step)).join(", ")}` : `${list.length} steps · ${tookLast(st) ? `about ${tookLast(st)} the last time` : "a few minutes"}`;
   }
   settledWas = over;

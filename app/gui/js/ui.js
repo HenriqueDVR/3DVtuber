@@ -10,6 +10,9 @@ export function toast(text, kind = "good", { action, ms = 4500 } = {}) {
     action ||= { label: "Report", run: () => app.report?.(text) };
     ms = Math.max(ms, 9000);
   }
+  // under the arcade look's top bar, however tall it wrapped (arcade.css #toasts)
+  const bar = document.querySelector(".arcade body > nav");
+  if (bar) document.documentElement.style.setProperty("--a-top", `${Math.round(bar.getBoundingClientRect().bottom)}px`);
   const el = document.createElement("div");
   el.className = `toast ${kind}`;
   el.innerHTML = `<span>${esc(text)}</span>`;

@@ -1948,7 +1948,7 @@ class Engine(unittest.TestCase):
         finally:
             os.path.getsize = real
 
-    def test_the_finished_vrm_is_sent_to_warudo_once_and_never_written_over(self):
+    def test_the_finished_vrm_is_sent_to_its_folder_once_and_never_written_over(self):
         project = self.project()
         library = self.root / "SteamLibrary"
         real, engine.steam_libraries = engine.steam_libraries, lambda: [self.root / "Steam", library]
@@ -1957,28 +1957,31 @@ class Engine(unittest.TestCase):
             vrm.parent.mkdir(parents=True)
             vrm.write_bytes(b"x" * 1000)
             with self.assertRaisesRegex(engine.StepFailed, "build first"):
-                project.send_to_warudo()
+                project.send_to_folder()
             project.state["steps"]["export"] = {"status": "done", "vrm": str(vrm)}
-            with self.assertRaisesRegex(FileNotFoundError, "Warudo wasn't found"):
-                project.send_to_warudo()
+            with self.assertRaisesRegex(FileNotFoundError, "no folder to send avatars to"):
+                project.send_to_folder()
             characters = library / engine.WARUDO_CHARACTERS
             characters.mkdir(parents=True)
-            sent = project.send_to_warudo()
+            sent = project.send_to_folder()
             self.assertEqual((sent["name"], sent["already"]), ("Test_20260104-100000.vrm", False))
             self.assertEqual([p.name for p in characters.iterdir()], ["Test_20260104-100000.vrm"])
-            self.assertTrue(project.send_to_warudo()["already"])
+            self.assertTrue(project.send_to_folder()["already"])
             (characters / sent["name"]).write_bytes(b"someone else's")
             with self.assertRaisesRegex(engine.StepFailed, "a different file"):
-                project.send_to_warudo()
+                project.send_to_folder()
             self.assertEqual((characters / sent["name"]).read_bytes(), b"someone else's")
-            # a folder given by hand wins over Steam's, and only a folder is taken
-            mine = self.root / "Portable Warudo" / "Characters"
+            # a folder picked by hand wins over Steam's Warudo, and only a folder is taken; only a picked one
+            # counts as chosen (the page asks for one before the first send)
+            self.assertIsNone(engine.send_folder(chosen=True))
+            mine = self.root / "VNyan" / "Avatars"
             with self.assertRaisesRegex(ValueError, "isn't a folder"):
-                engine.use_warudo(str(mine))
+                engine.use_folder(str(mine))
             mine.mkdir(parents=True)
-            self.assertEqual(engine.use_warudo(str(mine)), {"warudo": str(mine)})
-            self.assertEqual(Path(project.send_to_warudo()["sent"]).parent, mine)
-            self.assertEqual(engine.use_warudo(""), {"warudo": str(characters)})
+            self.assertEqual(engine.use_folder(str(mine)), {"send_to": str(mine)})
+            self.assertEqual(Path(project.send_to_folder()["sent"]).parent, mine)
+            self.assertEqual(engine.use_folder(""), {"send_to": ""})
+            self.assertEqual(engine.send_folder(), characters)
         finally:
             engine.steam_libraries = real
 
@@ -3002,7 +3005,7 @@ class Server(unittest.TestCase):
 
             def _api(self, route, query, body):
                 self.said.append(route)
-        for route in ("run", "prune", "approve", "cancel", "vendor", "sheet", "face_guess", "send_warudo", "set", "bundle", "report", "report_send", "report_address"):
+        for route in ("run", "prune", "approve", "cancel", "vendor", "sheet", "face_guess", "send", "set", "bundle", "report", "report_send", "report_address"):
             probe = Probe(f"/api/{route}?manifest=x")
             probe.do_GET()
             self.assertEqual(probe.said, [405], route)
@@ -4982,13 +4985,13 @@ class Failures(unittest.TestCase):
         self.assertEqual(nothing.exception.known["code"], "VM-NOTHING-BUILT")
         self.assertEqual(project.state["steps"]["tpose"]["last_failure"]["failure"]["page"], "build")
         with self.assertRaises(engine.StepFailed) as no_file:
-            project.send_to_warudo()
+            project.send_to_folder()
         self.assertEqual(no_file.exception.known["code"], "VM-NO-EXPORT")
         with self.assertRaises(engine.StepFailed) as early:
             project.approve()
         self.assertEqual(early.exception.known["code"], "VM-NO-EXPORT")
-        self.assertEqual(engine.NoWarudo("Warudo wasn't found").known["code"], "VM-NO-WARUDO")
-        self.assertTrue(issubclass(engine.NoWarudo, FileNotFoundError))
+        self.assertEqual(engine.NoFolder("no folder").known["code"], "VM-NO-FOLDER")
+        self.assertTrue(issubclass(engine.NoFolder, FileNotFoundError))
         # a model not surveyed: every later step reads the survey
         project.state["steps"].pop("survey")
         with self.assertRaises(engine.StepFailed) as unsurveyed:
@@ -5011,7 +5014,7 @@ class Failures(unittest.TestCase):
         self.assertEqual(unread.exception.known["code"], "VM-STATE-UNREADABLE")
         self.assertEqual(server.busy("build").known["code"], "VM-BUSY")
         # every code a refusal names is one the app can say
-        for code in ("VM-BUSY", "VM-NO-SURVEY", "VM-NOTHING-BUILT", "VM-NO-EXPORT", "VM-STATE-UNREADABLE", "VM-WARUDO-FILE", "VM-NO-WARUDO"):
+        for code in ("VM-BUSY", "VM-NO-SURVEY", "VM-NOTHING-BUILT", "VM-NO-EXPORT", "VM-STATE-UNREADABLE", "VM-FOLDER-FILE", "VM-NO-FOLDER"):
             self.assertTrue(errors.describe(code)["what"] and errors.describe(code)["fix"], code)
 
     def test_a_job_that_fails_hands_the_page_its_failure_drawn(self):
@@ -5044,7 +5047,7 @@ class Failures(unittest.TestCase):
         build = (server.GUI / "js" / "build.js").read_text(encoding="utf-8")
         jobs = (server.GUI / "js" / "jobs.js").read_text(encoding="utf-8")
         pages = core + build + jobs
-        for words in ("plain(", "lastLine", "iris shows over the lids", "face over the eye patch", "Warudo wasn't found", ".match(/see", "reason).split"):
+        for words in ("plain(", "lastLine", "iris shows over the lids", "face over the eye patch", "no folder to send", ".match(/see", "reason).split"):
             self.assertFalse(words in pages, f"the page still reads a failure's words: {words}")
         self.assertTrue("tell(s.failure)" in build and "state.failure" in jobs)
 

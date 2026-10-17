@@ -98,12 +98,12 @@ KNOWN = [
     Known("VM-STATE-UNREADABLE", (), None,
           "the record of this character's builds (state.json) can't be read, and neither can its backup",
           "move state.json out of the character's folder: the builds stay where they are, and the next build starts the record afresh"),
-    Known("VM-WARUDO-FILE", (), None,
-          "Warudo's folder already holds another file under this avatar's name",
-          "rename or remove that file in Warudo's Characters folder, then send again", page="build"),
-    Known("VM-NO-WARUDO", (), None,
-          "Warudo wasn't found in a Steam library",
-          "give its Characters folder (Warudo\\Warudo_Data\\StreamingAssets\\Characters): the app remembers it", page="build"),
+    Known("VM-FOLDER-FILE", (), None,
+          "the folder avatars are sent to already holds another file under this avatar's name",
+          "rename or remove that file there, or pick another folder, then send again", page="build"),
+    Known("VM-NO-FOLDER", (), None,
+          "no folder to send avatars to has been picked",
+          "pick one (your tracking app's avatar folder, for instance): the app remembers it", page="build"),
 
     # ----- the look before a build (app/preflight.py): what is known to go wrong before a Blender starts
     Known("VM-NO-BLENDER", (), None,

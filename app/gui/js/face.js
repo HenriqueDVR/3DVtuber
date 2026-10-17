@@ -1,7 +1,7 @@
 // Face: the face patch, the twelve marked points (in the embedded marker) and how the face moves.
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { $, S, app, call, say, refreshManifest, refreshStatus } from "./core.js";
+import { $, S, app, call, esc, say, refreshManifest, refreshStatus } from "./core.js";
 import { makeView } from "./views.js";
 import { saved, toast } from "./ui.js";
 import { job } from "./jobs.js";
@@ -20,8 +20,10 @@ addEventListener("message", async (e) => {
   if (e.origin !== location.origin) return;
   const { type, data } = e.data || {};
   if (type === "face-marker-ready") { markerReady = true; sendFaceImage(); fitMarker(); }
+  if (type === "face-hud") showHud(e.data);
   if (type === "face-points-draft") {
-    facePoints = data; showFacePoints(); showPointsState();
+    // over what is kept: the marker hands back only the points it asks for (one eye shown: not the covered one's)
+    facePoints = { ...facePoints, ...data }; showFacePoints(); showPointsState();
     // saved as soon as all twelve are placed: a separate save inside the marker was easy to miss,
     // and "Save face options" next to it saved only the options
     // Only on the Face page: the marker also answers every time it is handed the points again (each
@@ -33,10 +35,22 @@ addEventListener("message", async (e) => {
 let pointsTimer = null, pointsSaved = null;
 // Eyes covered by a visor, glasses or a mask aren't marked: the mouth's four points are all there is.
 const hiddenEyes = () => $("eyes").value === "hidden";
-const features = () => hiddenEyes() ? ["mouth"] : ["right_eye", "left_eye", "mouth"];
+// One eye showing (under hair, an eyepatch): only that one is marked. The build still reads both eyes' places (the
+// face's middle, its width); the covered one is the shown one's mirror across the mouth's middle.
+const shownEye = () => ({ left: "left_eye", right: "right_eye" })[$("eye-shown").value] || null;
+const features = () => hiddenEyes() ? ["mouth"] : shownEye() ? [shownEye(), "mouth"] : ["right_eye", "left_eye", "mouth"];
 const pointCount = () => 4 * features().length;
 const placed = (p) => features().reduce((n, k) => n + Object.keys(p?.[k] || {}).length, 0);
-const marked = () => ({ ...facePoints, ...(hiddenEyes() ? { right_eye: {}, left_eye: {} } : {}) });
+// (only when it has none: one placed by hand before, where the eye would be, is kept as it was)
+function mirrored(p) {
+  const eye = shownEye(), mouth = p?.mouth || {};
+  if (!eye || !mouth.left || !mouth.right) return {};
+  const middle = (mouth.left[0] + mouth.right[0]) / 2;
+  const other = eye === "left_eye" ? "right_eye" : "left_eye";
+  if (Object.keys(p?.[other] || {}).length === 4) return {};
+  return { [other]: Object.fromEntries(Object.entries(p[eye] || {}).map(([n, [x, y]]) => [n, [Math.round((2 * middle - x) * 10) / 10, y]])) };
+}
+const marked = () => ({ ...facePoints, ...(hiddenEyes() ? { right_eye: {}, left_eye: {} } : mirrored(facePoints)) });
 // The points alone, in one order: what is kept (face.json) and what the marker hands back are the
 // same points written differently (key order, an eye left out or empty), and read as a change.
 const written = (p) => JSON.stringify(["right_eye", "left_eye", "mouth"].map((k) =>
@@ -66,6 +80,51 @@ function sendFaceImage() {
 // (again after the arcade look's page has slid in)
 const fitMarker = () => markerReady && $("marker").contentWindow.postMessage({ type: "face-fit" }, location.origin);
 onShow.face = () => { for (const ms of [0, 350, 1000]) setTimeout(fitMarker, ms); };
+// The bar over the picture and the 3D view: the point to place now (the marker says which), how far along, a chip
+// per point (a click places it again), Undo and Fit. Over both, so the two views below start level.
+const toMarker = (message) => markerReady && $("marker").contentWindow.postMessage(message, location.origin);
+function showHud(h) {
+  $("marker-hud").style.setProperty("--c", h.color || "var(--aqua)");
+  $("mh-count").innerHTML = h.count; $("mh-title").innerHTML = h.title; $("mh-how").textContent = h.how;
+  $("mh-chips").innerHTML = h.chips.map((c) => `<button class="${c.cls}" style="--c:${c.color}" data-redo="${esc(c.id)}" title="${esc(c.title)}"></button>`).join("");
+  $("mh-undo").disabled = !h.undo;
+}
+$("mh-chips").onclick = (e) => { const id = e.target.dataset?.redo; if (id) toMarker({ type: "face-redo", id }); };
+$("mh-undo").onclick = () => toMarker({ type: "face-undo" });
+$("mh-fit").onclick = () => toMarker({ type: "face-refit" });
+
+// The picture's box is as big as it is dragged, any way: by its right edge, its bottom edge or the corner between
+// them (marked "drag to resize"). This computer remembers the size. The marker inside doesn't see the drag.
+const GRIP = "vtuber-maker-marker-height", GRIP_W = "vtuber-maker-marker-width";
+const keptSize = () => { try { return [+localStorage.getItem(GRIP_W) || 0, +localStorage.getItem(GRIP) || 0]; } catch (e) { return [0, 0]; } };
+function sizeMarker(width, height) {
+  const box = $("marker-box"), wrap = box.parentElement, split = $("marker-split");
+  if (height) box.style.height = `${height}px`;
+  // the 3D view keeps at least 280 px beside it, unless it sits under it ("Bigger picture")
+  const most = split.clientWidth - (split.classList.contains("wide") ? 0 : 280 + 16);
+  split.classList.toggle("sized", !!width);
+  wrap.style.width = width ? `${Math.max(320, Math.min(most, width))}px` : "";
+}
+{ const [w, h] = keptSize(); sizeMarker(w, h); }
+document.querySelectorAll("div[data-grip]").forEach((grip) => grip.onpointerdown = (e) => {
+  e.preventDefault(); e.stopPropagation();
+  const box = $("marker-box"), wrap = box.parentElement, how = grip.dataset.grip;
+  const x0 = e.clientX, y0 = e.clientY, w0 = wrap.offsetWidth, h0 = box.offsetHeight;
+  // the page holds still under the drag: the browser's scroll anchoring moved it as the box changed height, and
+  // the corner ran off from under the cursor
+  $("main").style.overflowAnchor = "none";
+  grip.setPointerCapture(e.pointerId); $("marker").style.pointerEvents = "none"; wrap.classList.add("sizing");
+  grip.onpointermove = (m) => sizeMarker(how.includes("x") ? w0 + m.clientX - x0 : (wrap.style.width ? wrap.offsetWidth : 0),
+    how.includes("y") ? Math.max(320, Math.min(1600, h0 + m.clientY - y0)) : 0);
+  grip.onpointerup = () => {
+    grip.onpointermove = grip.onpointerup = null; $("marker").style.pointerEvents = ""; wrap.classList.remove("sizing"); $("main").style.overflowAnchor = "";
+    try {
+      if (how.includes("y")) localStorage.setItem(GRIP, String(box.offsetHeight));
+      if (how.includes("x")) localStorage.setItem(GRIP_W, String(wrap.offsetWidth));
+    } catch (e) {}
+    fitMarker();
+  };
+});
 // The open mouth's outline on the picture, as big as the size asks for: seen here, not after a build.
 function sendMouth() {
   if (!markerReady) return;
@@ -198,7 +257,9 @@ function showFacePoints() {
 const WIDE = "oc2vrm-marker-wide";
 function setWide(wide) {
   $("marker-split").classList.toggle("wide", wide);
-  $("marker-box").style.height = wide ? "calc(100vh - 80px)" : "600px";
+  const [w, h] = keptSize();
+  sizeMarker(w, 0);
+  $("marker-box").style.height = wide ? "calc(100vh - 80px)" : `${h || 600}px`;
   $("marker-wide").textContent = wide ? "Smaller picture" : "Bigger picture";
   $("marker-wide").setAttribute("aria-pressed", wide);
   if (wide) $("marker-box").scrollIntoView({ block: "nearest" });
@@ -303,6 +364,8 @@ function showFeatures() {
 $("eyes").onchange = async () => { showEyeChoice(); await keepChoices(); showFeatures(); savePoints().catch((e) => say("face-msg", e.message, true)); };
 $("mouth-fix").onchange = () => { $("mouth-free").disabled = $("mouth-scale").disabled = !$("mouth-fix").checked; sendMouth(); keepChoices(); };
 for (const id of ["mouth-tracking", "mouth-free", "mouth-scale"]) $(id).onchange = () => { sendMouth(); keepChoices(); };
-for (const id of ["eye-shown", "iris-shape", "iris-size", "look-travel", "blink-amount"]) $(id).onchange = keepChoices;
+for (const id of ["iris-shape", "iris-size", "look-travel", "blink-amount"]) $(id).onchange = keepChoices;
+// which eyes show changes which points are asked for: the marker asks again, and what is placed saves again
+$("eye-shown").onchange = async () => { await keepChoices(); showFeatures(); savePoints().catch((e) => say("face-msg", e.message, true)); };
 // (the outline follows the number as it is typed; it is saved when the field is left)
 $("mouth-scale").oninput = sendMouth;

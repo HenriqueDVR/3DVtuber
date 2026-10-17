@@ -167,7 +167,7 @@ build (`python -m app preflight`, `docs/agent/app.md` "Before a build: preflight
 | `VM-NOTHING-BUILT` | a step was asked for before any step left a `.blend` | build from the start |
 | `VM-NO-EXPORT` | no exported `.vrm` yet (to check, to mark good, to send to Warudo) | build to the end, or `run --from export` |
 | `VM-STATE-UNREADABLE` | `state.json` and its backup can't be read | move `state.json` aside: the builds stay, the record starts afresh |
-| `VM-WARUDO-FILE` / `VM-NO-WARUDO` | Warudo's folder holds another file under the avatar's name / Warudo wasn't found | rename or remove that file / give its Characters folder |
+| `VM-FOLDER-FILE` / `VM-NO-FOLDER` | The folder avatars are sent to holds another file under the avatar's name / no folder was picked | rename or remove that file / pick a folder (Review page) |
 
 Before a build (`preflight`): **stop** lines are asked about on the Build page, **warn** lines only said.
 

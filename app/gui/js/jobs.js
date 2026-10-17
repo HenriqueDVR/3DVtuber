@@ -101,11 +101,12 @@ async function poll(since) {
     if (SAYS[finished.route]) say(SAYS[finished.route], said, true);
     toast(`${finished.label || "The run"} failed: ${said}`, "bad", { ms: 9000 });
   } else if (state.cancelled) toast("Stopped. The step that was running keeps what it last finished; run it again when you like.", "info");
-  else toast(`${cap(finished.label || "done")}: finished in ${duration(took)}.`);
+  // "Get it ready" says its time in the bubble over the Next button (app.prepared); a toast of its own covered that button
+  else if (finished.route !== "prepare" || !app.prepared) toast(`${cap(finished.label || "done")}: finished in ${duration(took)}.`);
   if (took > 20) ended(state.error ? "failed" : state.cancelled ? "stopped" : "finished", finished.label);
   app.jobDone?.(state);
   if (S.manifestPath) await app.openProject(S.manifestPath);
-  if (finished.route === "prepare" && !state.error && !state.cancelled) app.prepared?.();
+  if (finished.route === "prepare" && !state.error && !state.cancelled) app.prepared?.(duration(took));
   if (finished.route === "vendor") app.vendored?.();
   for (const done of waiting.splice(0)) done(state);
 }

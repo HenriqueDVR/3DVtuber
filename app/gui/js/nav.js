@@ -1,8 +1,8 @@
 // The sidebar: pages, what each has left (badges), and the rebuild cue once something changed.
 import { $, S, app, movesFine, stepName } from "./core.js";
 
-const ORDER = ["model", "parts", "joints", "face", "options", "build", "movement", "review"];
-const TITLES = { model: "Model", parts: "Parts", joints: "Joints", face: "Face", options: "Options", build: "Build", movement: "Movement", review: "Review" };
+export const ORDER = ["model", "parts", "joints", "face", "options", "build", "movement", "review"];
+export const TITLES = { model: "Model", parts: "Parts", joints: "Joints", face: "Face", options: "Options", build: "Build", movement: "Movement", review: "Review" };
 // Things a page does when it shows (a view that needs the listing, a list to reload), and when it
 // is left for another (a camera to let go of).
 export const onShow = {}, onLeave = {};
@@ -25,18 +25,12 @@ addEventListener("hashchange", () => go(location.hash.slice(1)));
 
 // The pages with nothing to do for a finished avatar (.vrm), which keeps its own pieces, joints and face.
 const KEPT = ["parts", "joints", "face", "paint", "movement"];
-// The page after `name`: the next in order, past the ones a finished avatar has no use for.
-const after = (name) => ORDER.slice(ORDER.indexOf(name) + 1).find((page) => !(S.status?.improving && KEPT.includes(page)));
-
-// "Next: Joints →" at the end of every step page
-for (const [i, name] of ORDER.entries()) {
-  if (!ORDER[i + 1]) continue;
-  const foot = document.createElement("div");
-  foot.className = "page-next";
-  foot.innerHTML = `<button class="act alt" data-after="${name}">Next: ${TITLES[ORDER[i + 1]]} →</button>`;
-  foot.firstElementChild.onclick = () => go(after(name));
-  $(name).append(foot);
-}
+// The page after `name`: the next in order, past the ones a finished avatar has no use for; and the one before it.
+// Paint is a side page of Face's: it goes on to Options and back to Face.
+const at_ = (name) => ORDER.indexOf(name === "paint" ? "face" : name);
+export const skipped = (page) => S.status?.improving && KEPT.includes(page);
+export const after = (name) => ORDER.slice(at_(name) + 1).find((page) => !skipped(page));
+export const before = (name) => name === "paint" ? "face" : ORDER.slice(0, Math.max(at_(name), 0)).reverse().find((page) => !skipped(page));
 
 // A step that ran and has nothing more to give: done, failed, or with nothing to do on this model
 // (no ahoge on the head). The last read as pending, and "Changes not built yet" never went away.
@@ -70,7 +64,7 @@ export function renderNav() {
       : pending && nextRun(st) ? [`${pending} to build`, "warn"] : steps.build?.status === "done" ? ["built", "info"] : ["", ""],
     movement: S.movement ? (flagged ? [`${flagged} flagged`, "warn"] : ["clear", "good"]) : ["", ""],
     paint: m.paint ? ["painted", "info"] : ["", ""],
-    review: S.feedback.length ? [`${S.feedback.length} note${S.feedback.length === 1 ? "" : "s"}`, "info"] : ["", ""],
+    review: S.status?.approved ? ["marked good", "done"] : ["", ""],
   };
   document.querySelectorAll("[data-badge]").forEach((el) => {
     const [text, kind] = badges[el.dataset.badge] || ["", ""];
@@ -92,7 +86,6 @@ export function renderNav() {
       : b.dataset.go === "movement" && steps.pieces?.status !== "done" && steps.build?.status !== "done" ? "build first" : "";
     b.classList.toggle("locked", !!why); b.title = why;
   });
-  document.querySelectorAll("[data-after]").forEach((b) => { b.textContent = `Next: ${TITLES[after(b.dataset.after)]} →`; });
   // which Blender runs the builds, a click from changing it
   $("nav-blender").textContent = !S.setup ? "" : S.setup.version ? `Blender ${S.setup.version}` : "no Blender found";
   $("nav-blender").className = S.setup && !S.setup.version ? "failed" : "";

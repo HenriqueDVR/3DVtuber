@@ -1,9 +1,9 @@
-// Review: still renders (next to the approved build's), the spring viewer, and notes from Warudo.
+// Review: the spring viewer (open with the page), where the file goes, contact sheets and still renders.
 import { $, S, app, call, esc, lastVrm, say } from "./core.js";
 import { toast } from "./ui.js";
 import { reportDialog } from "./report.js";
 import { job } from "./jobs.js";
-import { onLeave } from "./nav.js";
+import { onLeave, onShow } from "./nav.js";
 
 // ---------- contact sheets: the exported file as apps draw it, beside the approved build's
 const sheetPictures = (urls, label) => urls.filter(Boolean).map((u) =>
@@ -75,19 +75,29 @@ app.jobDone = (state) => {
 
 // ---------- the viewer, springs running
 // `show`: what the viewer opens on, e.g. { pose: "arms raised" } or { weights: "LeftUpperArm" }
+// The page opens on the avatar: the last finished .vrm, loaded once per build. One asked for elsewhere (a pose
+// from the Build page, an older run) counts as shown, so it isn't swapped back under the user.
+let shownVrm = null;
 export async function openViewer(url, what, show = {}) {
+  if (what !== false) shownVrm = lastVrm();
   if (!url) {
     const vrm = lastVrm();
     url = vrm && (await call("url", { path: vrm })).url;
   }
-  if (!url) return toast("No finished .vrm yet: build first.", "bad");
+  $("viewer-empty").hidden = !!url; $("viewer").hidden = !url;
+  if (!url) return what !== false && toast("No finished .vrm yet: build first.", "bad");
   const extra = Object.entries(show).map(([key, value]) => `&${key}=${encodeURIComponent(value)}`).join("");
-  $("viewer").hidden = false; $("viewer").src = `/viewer/index.html?model=${encodeURIComponent(url)}${extra}`;
-  $("face-test").hidden = false;
-  $("viewer").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  $("viewer").src = `/viewer/index.html?model=${encodeURIComponent(url)}${extra}`;
   if (what) toast(`Viewing the ${what}.`, "info");
 }
 app.openViewer = openViewer;
+// on the page, and when the status comes (a first load lands on the page before it) or a build finishes on it
+onShow.review = () => {
+  const vrm = lastVrm();
+  if (!vrm) { $("viewer-empty").hidden = false; $("viewer").hidden = true; return; }
+  if (vrm !== shownVrm) { shownVrm = vrm; openViewer(null, false); }
+};
+app.statusShown = () => { if (location.hash === "#review") onShow.review(); };
 $("viewer-open").onclick = () => openViewer();
 
 // A blink as trackers send it: shut and open in about 0.15 s every few seconds, which is why a
@@ -128,34 +138,9 @@ onLeave.review = () => {
   document.querySelector('[data-face="stop"]')?.click();
 };
 
-// ---------- Warudo feedback: a note and screenshots per build, listed newest first
-export async function loadFeedback() {
-  S.feedback = S.manifestPath ? (await call("feedback_list")).feedback : [];
-  const VERDICT = { right: ["looks right", "good"], wrong: ["something wrong", "bad"] };
-  $("fb-list").innerHTML = S.feedback.map((f) => `<div class="feedback">
-    <span class="msg">${esc(f.when.replace("T", " "))} · ${esc(f.vrm.split(/[\\/]/).slice(-2).join("/") || "no .vrm yet")}</span>
-    ${VERDICT[f.verdict] ? `<span class="chip ${VERDICT[f.verdict][1]}">${VERDICT[f.verdict][0]}</span>` : ""}
-    <p style="margin:2px 0;white-space:pre-wrap">${esc(f.note)}</p>
-    ${f.checks?.length ? `<p class="msg" style="margin:2px 0">Looked right: ${esc(f.checks.join("; "))}.</p>` : ""}
-    ${f.urls.filter(Boolean).map((u) => `<img src="${u}" alt="Warudo screenshot">`).join("")}</div>`).join("");
-  app.renderNav();
-}
-$("fb-save").onclick = async () => {
-  const read = (file) => new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = fail; r.readAsDataURL(file); });
-  // the checklist goes with the note: which poses were tried and looked right
-  const boxes = [...$("fb-checks").querySelectorAll("label")];
-  const ticked = boxes.filter((l) => l.querySelector("input").checked).map((l) => l.textContent.trim());
-  // the ticks and the verdict as their own fields, not sentences in the note: the app reads them back
-  const verdict = document.querySelector('input[name="fb-verdict"]:checked')?.value || null;
-  try {
-    const images = await Promise.all([...$("fb-shots").files].map(read));
-    await call("feedback", { note: $("fb-note").value.trim(), images, checks: ticked, verdict });
-    $("fb-note").value = ""; $("fb-shots").value = ""; boxes.forEach((l) => l.querySelector("input").checked = false);
-    document.querySelector('input[name="fb-verdict"][value=""]').checked = true;
-    $("fb-msg").textContent = ""; toast("Note saved with this build.");
-    loadFeedback(); app.loadProjects?.(S.manifestPath);
-  } catch (e) { $("fb-msg").textContent = e.message; $("fb-msg").classList.add("bad"); }
-};
+// The notes from tracking apps once written here (cli.save_feedback) are kept with their builds; the page no
+// longer asks for them. Nothing to load.
+export async function loadFeedback() { S.feedback = []; }
 
 // ---------- Stuck?
 $("bundle").onclick = async () => {

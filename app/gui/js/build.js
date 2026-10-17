@@ -19,21 +19,17 @@ export function renderSteps() {
   renderDetail();
   const v = S.status.verdict;
   const line = (cls) => ([page, text]) => `<li class="${cls}">${esc(text)} <a href="#${page}">${page}</a></li>`;
-  $("verdict").innerHTML = !v ? "" : (v.ready ? `<p class="done">Ready for Warudo${v.looks.length ? ", with a few things worth a look" : ": every check passed"}. Try it pose by pose (Review).</p>` : "")
+  $("verdict").innerHTML = !v ? "" : (v.ready ? `<p class="done">Ready to use${v.looks.length ? ", with a few things worth a look" : ": every check passed"}. Try it pose by pose (Review).</p>` : "")
     + `<ul class="plain">${v.issues.map(line("failed")).join("")}${v.looks.map(line("warn")).join("")}</ul>`;
   // the baseline: what the user said was good, and what this build did differently
   const a = S.status.approved, since = S.status.since_approved;
   $("approved").innerHTML = (a ? `<p class="msg">Compared with the build you marked good on ${esc(a.when.replace("T", " "))}${a.note ? ` (${esc(a.note)})` : ""}:
       ${since && !since.worse.length && !since.better.length ? "no change past the noise." : ""}</p>`
       + `<ul class="plain">${(since?.better || []).map((b) => `<li class="done">better: ${esc(b)}</li>`).join("")}</ul>`
-    : `<p class="msg">No build marked good yet: once one looks right in Warudo, mark it, and later builds are compared with it.</p>`)
+    : `<p class="msg">No build marked good yet: once one looks right in your tracking app, mark it, and later builds are compared with it.</p>`)
     + (v?.ready || S.status.steps.find((s) => s.step === "vrm_check")?.status === "done"
       ? `<button class="act alt" id="approve">Mark this build as good</button>` : "");
-  $("approve")?.addEventListener("click", async () => {
-    const note = await ask("Mark this build as good", { text: "What did you check it with? Later builds are compared with this one.", input: true, value: "Warudo: face, arms", ok: "Mark as good" });
-    if (note === null) return;
-    try { await call("approve", { note }); await refreshStatus(); app.renderAll(); toast("Marked as good."); } catch (e) { toast(e.message, "bad"); }
-  });
+  $("approve")?.addEventListener("click", markGood);
   const failed = S.status.check_failed, spots = S.status.steps.find((s) => s.step === "check")?.report?.spots;
   // drawn again only when the check is another one: every role given on the Parts page asks for
   // the status, and each time the ten close-ups were fetched afresh
@@ -193,7 +189,7 @@ function renderTodo() {
   for (const [page, text] of S.status.verdict?.issues || []) if (page !== "build") add(text, `Go to ${pageName(page)}`, () => app.go(page), "failed");
   for (const [page, text] of S.status.verdict?.looks || []) if (page !== "face" || S.manifest.face) add(text, `Go to ${pageName(page)}`, () => app.go(page));
   for (const line of S.status.gained || []) add(`Better than the file you gave: ${line}.`, "Go to Review", () => app.go("review"), "done");
-  if (S.status.verdict?.ready) add("Load the .vrm in Warudo and try it pose by pose; note what you see on the Review page.", "Go to Review", () => app.go("review"), "done");
+  if (S.status.verdict?.ready) add("Look it over on the Review page, then load the .vrm in your tracking app and try it pose by pose.", "Go to Review", () => app.go("review"), "done");
   // one way on from a failure that retrying doesn't fix: tell the developers, with what failed already said
   const broken = items.find((it) => it.kind === "failed" && it.isJob);
   if (broken) add("Can't get past this? Tell the developers: the report says what failed.", "Report", () => app.report(broken.text));
@@ -203,7 +199,7 @@ function renderTodo() {
 }
 $("run-all").onclick = () => job("run", {});
 
-// ---------- the .vrm: where it is, for loading into Warudo
+// ---------- the .vrm: where it is, for loading into a tracking app
 export async function reveal(path) {
   try { await call("reveal", { path }); } catch (e) { toast(e.message, "bad"); }
 }
@@ -213,28 +209,67 @@ export async function copyPath(path) {
     const t = Object.assign(document.createElement("textarea"), { value: path });
     document.body.append(t); t.select(); document.execCommand("copy"); t.remove();
   }
-  toast("Path copied: paste it into Warudo's file dialog.", "info");
+  toast("Path copied: paste it into your tracking app's file dialog.", "info");
 }
-// Copies the finished .vrm into Warudo's Characters folder; asks for the folder once if Steam doesn't have it.
-async function sendToWarudo(folder) {
+// The folder avatars are sent to: picked once with a folder dialog (a tracking app's avatar folder, anything),
+// remembered, changed with "Change folder". Typed instead where no dialog can open.
+const folderName = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+async function pickFolder() {
+  let path = null;
+  try { path = (await call("browse_folder", {})).path; }
+  catch (e) {
+    path = await ask("Where should avatars go?", { text: `${e.message}. Paste the folder's path: the app remembers it.`, input: true, value: "", ok: "Use this folder" });
+    path = path?.trim();
+  }
+  return path || null;
+}
+async function sendToFolder(change = false) {
+  let folder = S.setup?.send_to;
+  if (!folder || change) {
+    folder = await pickFolder();
+    if (!folder) return;
+  }
   try {
-    const sent = await call("send_warudo", folder === undefined ? {} : { folder });
-    toast(`${sent.already ? "Already in Warudo" : "Sent to Warudo"}: pick ${sent.name} as the character's source there.`, "info");
+    const sent = await call("send", folder === S.setup?.send_to ? {} : { folder });
+    if (S.setup) S.setup.send_to = folder;
+    renderVrm();
+    toast(`${sent.already ? "Already there" : "Sent"}: ${sent.name} in ${folderName(folder)}.`, "good");
   } catch (e) {
-    if (folder !== undefined || e.known?.code !== "VM-NO-WARUDO") return toast(e.message, "bad");
-    const given = await ask("Where is Warudo?", { text: "Warudo isn't in any Steam library the app knows. Paste the path of its Characters folder "
-      + "(Warudo\\Warudo_Data\\StreamingAssets\\Characters); the app remembers it.", input: true, value: "", ok: "Send" });
-    if (given) sendToWarudo(given.trim());
+    if (e.known?.code === "VM-NO-FOLDER" && S.setup) { S.setup.send_to = ""; renderVrm(); }
+    toast(e.message, "bad");
   }
 }
 function renderVrm() {
-  const vrm = lastVrm();
+  const vrm = lastVrm(), to = S.setup?.send_to;
   for (const id of ["vrm-send", "vrm-show", "vrm-copy", "review-vrm-send", "review-vrm-show", "review-vrm-copy"]) $(id).disabled = !vrm;
   $("vrm-path").innerHTML = vrm ? `<code>${esc(vrm)}</code>` : "";
+  for (const id of ["vrm-send", "review-vrm-send"]) $(id).textContent = to ? `Send to ${folderName(to)}` : "Send to a folder…";
+  $("review-folder").hidden = !to;
+  $("review-folder-path").innerHTML = to ? `Sends a copy to <code>${esc(to)}</code>` : "Pick the folder once; the app remembers it.";
+  renderApprove();
+  app.statusShown?.();
 }
-$("vrm-send").onclick = $("review-vrm-send").onclick = () => sendToWarudo();
+app.renderVrm = renderVrm;
+$("vrm-send").onclick = $("review-vrm-send").onclick = () => sendToFolder();
+$("review-folder").onclick = () => sendToFolder(true);
 $("vrm-show").onclick = $("review-vrm-show").onclick = () => reveal(lastVrm());
 $("vrm-copy").onclick = $("review-vrm-copy").onclick = () => copyPath(lastVrm());
+
+// Marking the build as good, from the Build page and from Review
+async function markGood() {
+  const note = await ask("Mark this build as good", { text: "What did you check it with? Later builds are compared with this one.", input: true, value: "face, arms, hair", ok: "Mark as good" });
+  if (note === null) return;
+  try { await call("approve", { note }); await refreshStatus(); app.renderAll(); toast("Marked as good."); } catch (e) { toast(e.message, "bad"); }
+}
+function renderApprove() {
+  const st = S.status, a = st?.approved, vrm = lastVrm();
+  const thisOne = a && vrm && a.vrm && a.vrm.replaceAll("\\", "/") === vrm.replaceAll("\\", "/");
+  const can = st?.verdict?.ready || st?.steps?.find((s) => s.step === "vrm_check")?.status === "done";
+  $("review-approve").innerHTML = thisOne ? `<p class="done">✓ This build is marked good${a.note ? ` (${esc(a.note)})` : ""}.</p>`
+    : (a ? `<p class="msg">The build marked good is an older one (${esc(a.when.replace("T", " "))}).</p>` : "")
+      + (can ? `<button class="act" id="review-mark">Mark this build as good</button>` : `<p class="msg">Build it to the end first.</p>`);
+  $("review-mark")?.addEventListener("click", markGood);
+}
 
 // ---------- history: every run folder, to open, render or compare
 let ticked = [];
