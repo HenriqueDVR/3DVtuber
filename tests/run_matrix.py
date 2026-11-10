@@ -31,7 +31,8 @@ def blenders():
 
 def run(blender, pattern):
     blender = Path(blender).resolve()  # Windows won't start a relative path with forward slashes
-    version = subprocess.run([str(blender), "--version"], capture_output=True, text=True).stdout.splitlines()[0]
+    engine.blender_version(blender)    # asked through the engine first: it sets what a Blender needs to start at all
+    version =subprocess.run([str(blender), "--version"], capture_output=True, text=True).stdout.splitlines()[0]
     LOGS.mkdir(parents=True, exist_ok=True)
     log = LOGS / (re.sub(r"[^\w.]+", "_", version).strip("_") + ".log")
     command = [str(blender), "-b", "--factory-startup", "--python-exit-code", "1", "-P", str(REPO / "tests" / "run_tests.py")]

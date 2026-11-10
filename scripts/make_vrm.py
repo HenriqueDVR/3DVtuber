@@ -57,7 +57,15 @@ def parse_args():
     parser.add_argument("--manifest", type=Path,
                         help="character manifest: its hair, hat, swing_cloth, appendage and body pieces override detection")
     parser.add_argument("--closed-eyes", type=Path, help="closed-eyes version of the face patch texture, for blink lids")
-    return parser.parse_args(sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else [])
+    parser.add_argument("--plain", action="store_true",
+                        help="the build with the least in it, for a model the full one fails on (engine.PLAINER): no face "
+                             "points, no named pieces, no hair, cloth, hat or sleeve chains. The rig and skinning stay")
+    args = parser.parse_args(sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else [])
+    if args.plain:
+        args.face = args.mouth_colour = None
+        args.rigid_head, args.keep_eyes, args.no_sleeve_springs = True, True, True
+        args.cloth = args.hat_tip = args.free_mouth = False
+    return args
 
 
 def _colour(value):
@@ -93,7 +101,7 @@ def main():
         hat_tip=args.hat_tip,
         mouth_color=_colour(args.mouth_colour),
         free_mouth=args.free_mouth,
-        pieces=manifest.pieces_for(data, "build") if data else None,
+        pieces=manifest.pieces_for(data, "build") if data and not args.plain else None,
         pieces_reference=manifest.path_of(data, "reference") if data else None,
         rig_path=manifest.path_of(data, "rig") if data else None,
         skinning=args.skinning,

@@ -227,7 +227,32 @@ CHECKS = {"movement", "springs"}
 # last, so a character with marked eyes always blinks (the demon girl's lids moved 2.8 mm once all three
 # were refused, which read as none in Warudo).
 EYE_MODES = ("iris", "modelled", "slide", "blink")
-SOFT = {"face_tracking", "chest", "eyes", "mouth", "finger_guides"}
+# The hair and clothing steps too (the user, 2026-11-10: a new model "breaks the app in some unique new way"
+# nearly every time, and a build must end in a file that works): without hair weights the hair stays on the
+# head as the build step left it, without the clothing step the pieces keep the weights they had.
+SOFT = {"face_tracking", "chest", "eyes", "mouth", "finger_guides", "hair", "pieces"}
+# The rig check that fell over on a model takes no avatar away either: the file is exported, unjudged, and
+# the verdict says so and holds it back.
+CARRIES_ON = SOFT | CHECKS | {"check"}
+# A step no build does without, tried again a plainer way when it fails on the model: (what `_arguments` is
+# told, said to the user). In order; the first that passes is kept, and the verdict says which.
+#   build "plain": no face points, no named pieces, no hair, cloth or sleeve chains: a body that moves,
+#   the face left as modelled. "plain_voxel": the same with the skinning that needs no closed surface.
+#   tpose "one_seam": copies of a vertex along a texture seam given one set of weights before the bake:
+#   the bake refuses when they part (a slit), and the user takes stretching over a tear.
+PLAINER = {
+    # (a face file with a point missing ended the first proof build at the survey, before the build's own net)
+    "survey": (("no_face", "the model couldn't be surveyed with its face points, so it was surveyed without them: "
+                           "which pieces are the eyes is guessed by size"),),
+    "build": (("plain", "the build failed on this model as asked, so it was made the plain way: a body rig with no "
+                        "hair, cloth or sleeve springs and no named pieces, the face as modelled"),
+              ("plain_voxel", "the plain build failed too, so it was skinned by the model's volume instead of its surface")),
+    "tpose": (("one_seam", "the T-pose bake would have left a slit along a texture seam, so the copies of each seam "
+                           "vertex were given one set of weights first"),),
+}
+# Failures that are the computer's or the file's kind, not this model's shape: a plainer try meets them again.
+NOT_THE_MODEL = {"VM-OOM", "VM-DISK-FULL", "VM-TIMEOUT", "VM-NO-VRM-ADDON", "VM-BLENDER-OLD", "VM-UNSUPPORTED-FILE",
+                 "VM-LICENCE", "VM-NOTHING-BUILT", "VM-TRIPO-MIX"}
 # Steps that make what a finished .vrm already has, with what of the file's stays instead: a
 # character whose source is a .vrm (manifest.improves) is taken in as it is and these don't run.
 KEPT = {"survey": "a finished .vrm is read as it is, not surveyed",
@@ -598,6 +623,13 @@ class Project:
         for name in sorted(SOFT):
             if steps.get(name, {}).get("status") == "failed":
                 issues.append(("build", f"built without {name.replace('_', ' ')}"))
+        if steps.get("check", {}).get("status") == "failed":
+            issues.append(("build", "the rig check couldn't run on this model: the avatar is exported but nothing judged how it "
+                                    "moves. Look at it posed before using it"))
+        for name in PLAINER:
+            report = steps.get(name, {}).get("report") or {}
+            if steps.get(name, {}).get("status") == "done" and report.get("plainer"):
+                looks.append(("build", report["why"]))
         ships = self.ships()
         if ships:
             done = lambda name: steps.get(name, {}).get("status") == "done"  # noqa: E731
@@ -851,7 +883,7 @@ class Project:
                     try:
                         self._eyes_tried = set()
                         # (one run ahead is taken as it came out: its file, or what it raised)
-                        entry = _taken(ahead.pop(name)) if name in (ahead or ()) else self._run_step(name, index, folder)
+                        entry = _taken(ahead.pop(name)) if name in (ahead or ()) else self._step_or_plainer(name, index, folder, emit)
                     except StepFailed as error:
                         while True:
                             if not self._eyes_fall_back(name, error):
@@ -874,7 +906,7 @@ class Project:
                     failure = {"reason": str(error)[-1500:], "finished": datetime.now().isoformat(timespec="seconds"),
                                **({"known": error.known} if error.known else {}),
                                "failure": errors.failure(name, error.known, str(error))}
-                    if name not in SOFT | CHECKS and not error.carries_on:
+                    if name not in CARRIES_ON and not error.carries_on:
                         # the step keeps what it last finished (later steps may read it); the failure
                         # rides beside it so the app can say what went wrong and what to do
                         self._note_failure(name, failure, folder / f"{index:02d}_{name}.log")
@@ -1050,7 +1082,7 @@ class Project:
                 emit({"step": name, "status": "ahead"})
                 if name == "export" and isinstance(lane.result, dict) and lane.result.get("vrm"):
                     exported = Path(lane.result["vrm"])
-                if isinstance(lane.result, BaseException) and not (isinstance(lane.result, StepFailed) and name in SOFT | CHECKS):
+                if isinstance(lane.result, BaseException) and not (isinstance(lane.result, StepFailed) and name in CARRIES_ON):
                     # the chain ends at this step: what comes after it would not have run
                     after = group[group.index(name) + 1:]
                     waiting = [other for other in waiting if other not in after]
@@ -1089,6 +1121,38 @@ class Project:
                 lane.thread.start()
             time.sleep(0.1)
         return outcome
+
+    def _step_or_plainer(self, name, index, folder, emit):
+        """`_run_step`, and when a step of PLAINER fails on the model, its plainer ways in turn. The first
+        failure's log is kept beside the step's (`_asked.log`); if no way passes, that first failure is the
+        one raised: it is of what the user asked for. Never for a model taken in with its own rig or as a
+        finished .vrm (those steps read, they don't make), nor for a failure that isn't the model's."""
+        self.__dict__.setdefault("_plainer", {}).pop(name, None)
+        try:
+            return self._run_step(name, index, folder)
+        except StepFailed as error:
+            ways = () if self.improving else PLAINER.get(name, ())
+            if name == "tpose" and self.options()["repair_shoulder_seams"]:
+                ways = ()
+            if not ways or (error.known or {}).get("code") in NOT_THE_MODEL:
+                raise
+            first = error
+        stem = folder / f"{index:02d}_{name}"
+        with contextlib.suppress(OSError):
+            stem.with_suffix(".log").replace(stem.with_name(stem.name + "_asked.log"))
+        for way, why in ways:
+            emit({"step": name, "status": "warning", "reason": why})
+            self._plainer[name] = way
+            try:
+                entry = self._run_step(name, index, folder)
+            except StepFailed:
+                continue
+            entry["warnings"] = [*entry.get("warnings", []), why]
+            entry["report"] = {**(entry.get("report") or {}), "plainer": way, "why": why,
+                               "asked_failed": errors.failure(name, first.known, str(first))}
+            return entry
+        self._plainer.pop(name, None)
+        raise first
 
     def _run_step(self, name, index, folder, kept=True, abandon=None, exported=None):
         """One step, to its entry in the state. `kept`: told to the run's one Blender when there is one.
@@ -1227,7 +1291,7 @@ class Project:
         if name == "survey":
             # the marked eyes say which pieces are the eyes (by size the fox girl's ears were, and her face was hair)
             return ["preflight.py", source, "--json", stem.with_suffix(".json"), "--height", o["height"],
-                    *(["--face", face] if face else []),
+                    *(["--face", face] if face and getattr(self, "_plainer", {}).get("survey") != "no_face" else []),
                     *(["--rig", manifest.path_of(data, "rig")] if data.get("rig") and not self.keeping else [])], []
         if name == "build" and self.keeping:
             # the height as the manifest has it: `o` reads it back from this step's own report
@@ -1253,6 +1317,11 @@ class Project:
                 args.append("--hair-head-only")
             if not o["sleeve_springs"]:
                 args.append("--no-sleeve-springs")
+            plainer = getattr(self, "_plainer", {}).get("build")
+            if plainer:
+                args.append("--plain")
+                if plainer == "plain_voxel":
+                    args[args.index("--skinning") + 1] = "voxel"
             return args, NO_EXPORT
         if name == "movement":
             reference = manifest.path_of(data, "reference") or source
@@ -1308,7 +1377,7 @@ class Project:
                 args.append("--keep-finger-pose")
             elif o["tpose"] == "spec":
                 args.append("--spec-hands")
-            if o["repair_shoulder_seams"]:
+            if o["repair_shoulder_seams"] or getattr(self, "_plainer", {}).get("tpose") == "one_seam":
                 args.append("--repair-shoulder-seams")
         if name == "chest":
             args += ["--height", o["height"], "--amount", o["chest_amount"]]
@@ -2660,14 +2729,34 @@ def provenance(blender, manifest_path):
             "python": platform.python_version(), "warnings": warnings}
 
 
+# Blender 4.5 and 5.2 swap Windows' own memory routines for TBB's as they start, and die there when they
+# can't: after the Windows updates of late October 2026 (Insider build 26300) both printed MALLOC_UNSWAPPED and
+# left with 0xC0000409 before reading a single argument, 4.2 still ran, and every build stopped at its first
+# step. With MALLOC_SWITCH set TBB leaves the routines alone and Blender runs as it did.
+MALLOC_UNSWAPPED = "Failed to replace function"
+MALLOC_SWITCH = "TBB_MALLOC_DISABLE_REPLACEMENT"
+
+
 def blender_version(blender):
-    """"4.2.1" as that Blender prints it, or None when it won't say. Asked once per path."""
+    """"4.2.1" as that Blender prints it, or None when it won't say. Asked once per path.
+
+    A Blender that dies swapping Windows' memory routines (MALLOC_UNSWAPPED) is asked once more with
+    MALLOC_SWITCH set, and when it then answers the switch stays set for whatever this process starts
+    after: only where it is needed, since nothing is known of what it costs a Blender that starts without.
+    """
     blender = str(blender)
     if blender not in _BLENDER_VERSIONS:
         try:
             # (errors="replace", as `install`: a byte Windows' code page has no letter for, in a warning's
             # path, and nothing came back at all: a Blender that runs read as one that doesn't start)
-            out = subprocess.run([blender, "--version"], capture_output=True, text=True, errors="replace", timeout=60).stdout
+            ask = lambda: subprocess.run([blender, "--version"], capture_output=True, text=True, errors="replace", timeout=60)  # noqa: E731
+            said = ask()
+            out = said.stdout or ""
+            if MALLOC_UNSWAPPED in out + (said.stderr or "") and MALLOC_SWITCH not in os.environ:
+                os.environ[MALLOC_SWITCH] = "1"
+                out = ask().stdout or ""
+                if not re.search(r"Blender (\d+\.\d+\.\d+)", out):
+                    del os.environ[MALLOC_SWITCH]
             found = re.search(r"Blender (\d+\.\d+\.\d+)", out)
             _BLENDER_VERSIONS[blender] = found.group(1) if found else None
         except Exception:  # noqa: BLE001 -- a record and a Setup line, never a reason to stop
