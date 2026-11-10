@@ -2,7 +2,7 @@
 import { $, S, app, movesFine, stepName } from "./core.js";
 
 export const ORDER = ["model", "parts", "joints", "face", "options", "build", "movement", "review"];
-export const TITLES = { model: "Model", parts: "Parts", joints: "Joints", face: "Face", options: "Options", build: "Build", movement: "Movement", review: "Review" };
+export const TITLES = { quick: "Quick build", model: "Model", parts: "Parts", joints: "Joints", face: "Face", options: "Options", build: "Build", movement: "Movement", review: "Review" };
 // Things a page does when it shows (a view that needs the listing, a list to reload), and when it
 // is left for another (a camera to let go of).
 export const onShow = {}, onLeave = {};

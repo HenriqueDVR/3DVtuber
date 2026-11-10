@@ -29,6 +29,7 @@ try {
   <ol id="steps">
     <li><button data-go="home"><span class="n">⌂</span><span class="t">Characters</span><span class="badge" data-badge="home"></span></button></li>
     <li class="sep"></li>
+    <li><button data-go="quick"><span class="n">★</span><span class="t">Quick build</span><span class="badge" data-badge="quick"></span></button></li>
     <li><button data-go="model"><span class="n">1</span><span class="t">Model</span><span class="badge" data-badge="model"></span></button></li>
     <li><button data-go="parts"><span class="n">2</span><span class="t">Parts</span><span class="badge" data-badge="parts"></span></button></li>
     <li><button data-go="joints"><span class="n">3</span><span class="t">Joints</span><span class="badge" data-badge="joints"></span></button></li>
@@ -85,6 +86,20 @@ try {
       not quietly break another. A few minutes a character, one after the other; Stop ends it.</p>
     <div class="row"><button class="act alt" id="regress-run" data-job>Rebuild every character and compare…</button><span class="msg" id="regress-msg"></span></div>
     <div id="regress-out"></div>
+  </div>
+</section>
+
+<section class="page" id="quick">
+  <header class="page-head">
+    <div class="kicker">Automatic</div>
+    <h2>Quick build <span class="chip" id="quick-chip"></span></h2>
+    <p class="lead">From model to avatar on one screen. The app does each step and shows you what to look at; where a person does it
+      better, the button beside it lets you do that step by hand.</p>
+  </header>
+  <div class="stack w-lg">
+    <div class="card"><div class="row"><button class="act" id="quick-go" data-job>Go</button><span class="msg" id="quick-msg"></span>
+      <span style="flex:1"></span><button class="act alt small" id="quick-all">All pages (advanced) →</button></div></div>
+    <div id="quick-stages"></div>
   </div>
 </section>
 

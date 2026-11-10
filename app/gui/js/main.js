@@ -16,14 +16,16 @@ import { loadSetup } from "./setup.js";
 import "./start.js";
 import "./report.js";
 import { resetPaint } from "./paint.js";
+import { renderQuick } from "./quick.js";
+import "./guide.js";
 
 const LAST = "vtuber-maker-project";
 
 export function renderAll() {
-  renderNav(); renderHome(); renderSurvey().catch(failed); renderPieces(); colourPieces(); renderFace(); renderOptions(); renderSteps(); showJoints();
+  renderNav(); renderHome(); renderSurvey().catch(failed); renderPieces(); colourPieces(); renderFace(); renderOptions(); renderSteps(); showJoints(); renderQuick();
 }
 app.renderAll = renderAll;
-app.refreshStatus = async () => { await refreshStatus(); renderSteps(); renderNav(); };
+app.refreshStatus = async () => { await refreshStatus(); renderSteps(); renderNav(); renderQuick(); };
 const failed = (e) => toast(e.message, "bad");
 
 async function refreshProjects() {

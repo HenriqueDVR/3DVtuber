@@ -1390,6 +1390,88 @@ class Engine(unittest.TestCase):
         finally:
             engine._blender = real
 
+    def _failing_blender(self, fail, seen):
+        """A stand-in for a Blender: the step's script fails while `fail(arguments)` says so, else writes its file."""
+        def blender(blender, blend_in, args, log, extra):
+            seen.append([str(a) for a in args])
+            if fail(seen[-1]):
+                Path(log).write_text("Traceback (most recent call last):\nValueError: need at least two points\n")
+                return 1
+            Path(log).write_text("")
+            Path(args[args.index("--blend") + 1] if "--blend" in args else args[1]).write_bytes(b"BLENDER-v402")
+            return 0
+        return blender
+
+    def test_a_build_that_fails_on_the_model_is_made_the_plain_way(self):
+        # the user, 2026-11-10: nearly every new model broke the build in a way of its own, and ended with no file
+        project = self.project({"options": {}, "triangles": 40000})
+        real, seen, said = engine._blender, [], []
+        engine._blender = self._failing_blender(lambda args: "--plain" not in args, seen)
+        try:
+            entry = project._step_or_plainer("build", engine.NAMES.index("build"), self.root, said.append)
+        finally:
+            engine._blender = real
+        self.assertEqual(entry["status"], "done")
+        self.assertEqual(["--plain" in args for args in seen], [False, True])
+        self.assertEqual(entry["report"]["plainer"], "plain")
+        self.assertTrue(entry["report"]["asked_failed"])
+        self.assertIn("plain way", entry["warnings"][-1])
+        self.assertEqual([event["status"] for event in said], ["warning"])
+        # the log of the build as asked is kept beside the plain one's
+        self.assertIn("ValueError", (self.root / "01_build_asked.log").read_text())
+        # ... and the verdict says how it was built
+        project._record("build", entry)
+        project._record("vrm_check", {"status": "done"})
+        self.assertTrue(any("plain way" in line for _, line in project.verdict()["looks"]))
+
+    def test_the_plain_build_tries_the_other_skinning_last_and_gives_the_first_failure_up(self):
+        project = self.project({"options": {}, "triangles": 40000})
+        real, seen = engine._blender, []
+        engine._blender = self._failing_blender(lambda args: args[args.index("--skinning") + 1] != "voxel", seen)
+        try:
+            entry = project._step_or_plainer("build", engine.NAMES.index("build"), self.root, lambda event: None)
+            self.assertEqual(entry["report"]["plainer"], "plain_voxel")
+            self.assertEqual(len(seen), 3)
+            del seen[:]
+            engine._blender = self._failing_blender(lambda args: True, seen)
+            with self.assertRaises(engine.StepFailed) as failed:
+                project._step_or_plainer("build", engine.NAMES.index("build"), self.root, lambda event: None)
+            self.assertEqual(len(seen), 3)
+            self.assertNotIn("--plain", " ".join(str(failed.exception).split()[:3]))
+            # the next run starts as asked again
+            self.assertNotIn("--plain", [str(a) for a in project._arguments("build", self.root / "01_build", None)[0]])
+        finally:
+            engine._blender = real
+
+    def test_a_failure_that_is_not_the_models_is_not_tried_a_plainer_way(self):
+        project = self.project({"options": {}, "triangles": 40000})
+        real, seen = engine._blender, []
+
+        def blender(blender, blend_in, args, log, extra):
+            seen.append(args)
+            Path(log).write_text("Malloc returns null\n")
+            return 1
+        engine._blender = blender
+        try:
+            with self.assertRaises(engine.StepFailed) as failed:
+                project._step_or_plainer("build", engine.NAMES.index("build"), self.root, lambda event: None)
+        finally:
+            engine._blender = real
+        self.assertEqual(failed.exception.known["code"], "VM-OOM")
+        self.assertEqual(len(seen), 1)
+
+    def test_no_step_after_the_build_ends_it_but_the_bake_and_the_export(self):
+        fatal = [name for name in engine.NAMES if name not in engine.CARRIES_ON | engine.OPTIONAL]
+        self.assertEqual(fatal, ["survey", "build", "tpose", "export", "vrm_check"])
+        self.assertEqual(set(engine.PLAINER), {"survey", "build", "tpose"})
+        # a rig check that fell over leaves the file, and holds it back
+        project = self.project({"options": {}, "triangles": 40000})
+        project._record("check", {"status": "failed", "reason": "check: failed"})
+        project._record("vrm_check", {"status": "done"})
+        verdict = project.verdict()
+        self.assertFalse(verdict["ready"])
+        self.assertTrue(any("rig check couldn't run" in line for _, line in verdict["issues"]))
+
     def test_contact_sheets_come_back_from_the_browser(self):
         import subprocess
         import threading
@@ -2091,6 +2173,35 @@ class Engine(unittest.TestCase):
         finally:
             engine.subprocess.run = real
         self.assertEqual(started, [])
+
+    def test_a_blender_that_dies_swapping_memory_routines_is_asked_again(self):
+        # Blender 5.2.2 and 4.5.14 after the Windows updates of late October 2026: "Failed to replace function
+        # free in module ucrtbase.dll" and 0xC0000409 before an argument was read; both run with TBB's switch set
+        real = engine.subprocess.run, dict(engine._BLENDER_VERSIONS), os.environ.pop(engine.MALLOC_SWITCH, None)
+        asked = []
+
+        def run(command, **rest):
+            asked.append(engine.MALLOC_SWITCH in os.environ)
+            if asked[-1]:
+                return SimpleNamespace(stdout="Blender 5.2.2 LTS\n", stderr="", returncode=0)
+            return SimpleNamespace(stdout="", stderr="Failed to replace function free in module ucrtbase.dll\n", returncode=3221226505)
+        engine.subprocess.run = run
+        try:
+            self.assertEqual(engine.blender_version(self.root / "new" / "blender.exe"), "5.2.2")
+            self.assertEqual(asked, [False, True])
+            self.assertEqual(os.environ.get(engine.MALLOC_SWITCH), "1")
+            # ... and one that says nothing with the switch either is no reason to leave it set
+            del os.environ[engine.MALLOC_SWITCH]
+            engine.subprocess.run = lambda command, **rest: SimpleNamespace(stdout="", stderr="Failed to replace function free", returncode=1)
+            self.assertIsNone(engine.blender_version(self.root / "dead" / "blender.exe"))
+            self.assertNotIn(engine.MALLOC_SWITCH, os.environ)
+        finally:
+            engine.subprocess.run = real[0]
+            engine._BLENDER_VERSIONS.clear()
+            engine._BLENDER_VERSIONS.update(real[1])
+            os.environ.pop(engine.MALLOC_SWITCH, None)
+            if real[2] is not None:
+                os.environ[engine.MALLOC_SWITCH] = real[2]
 
     def test_setup_says_what_is_missing_and_what_to_do(self):
         self.no_blender_but()
@@ -3655,7 +3766,9 @@ Promise.resolve(app.started).finally(() => setTimeout(() => fetch(`/test/page${l
             errors_said = [line for line in done.stderr.splitlines() if "CONSOLE" in line and ("Uncaught" in line or "SyntaxError" in line)]
             self.assertEqual(errors_said, [], look)
             # each is drawn by its module's last lines, or by main.js after every import ran
-            for mark in ('data-tool="brush"', "New character", 'class="page on" id="home"', "Open or create a character first"):
+            # (quick.js and guide.js too: the automatic mode's switch, and what to check on each step's page)
+            for mark in ('data-tool="brush"', "New character", 'class="page on" id="home"', "Open or create a character first",
+                         'id="a-mode"', "Mode: automatic", "What to check here"):
                 self.assertTrue(mark in page, f"not drawn in the {look} look: {mark}")
             # the arcade look's stage, roster and menus are there, whichever was asked for
             for mark in ('<html lang="en" class="arcade', 'id="a-bg"', 'class="slot new', 'id="menu"', 'id="a-crumbs"'):

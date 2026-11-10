@@ -244,3 +244,14 @@ dl.facts dd .sub { display: block; }
   .page { padding: var(--s4); }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* Quick build (quick.js): the automatic mode's stages */
+.qstage { margin-bottom: var(--s3); }
+.qstage .qn { display: inline-block; min-width: 22px; text-align: center; border: 1px solid var(--line); border-radius: 50%; margin-right: 4px; font-size: 12px; }
+.qstage.done { opacity: .82; }
+.qstage.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+.qstage .row { gap: var(--s2); flex-wrap: wrap; margin-top: var(--s2); }
+.qstage canvas { display: block; max-width: 100%; border: 1px solid var(--line); border-radius: var(--r); margin-bottom: var(--s2); }
+.qlines { margin-top: var(--s3); }
+.guide ul { margin: var(--s2) 0 0; padding-left: 18px; }
+.guide li { margin: 3px 0; }

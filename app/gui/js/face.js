@@ -167,7 +167,7 @@ export async function loadFace() {
   const blob = await new Promise((done) => canvas.toBlob(done, "image/png"));
   if (mine !== loading) return;
   faceImage = { src: URL.createObjectURL(blob), name: "face_patch.png" };
-  sendFaceImage(); showFacePoints();
+  sendFaceImage(); showFacePoints(); app.renderQuick?.();
 }
 
 // A pixel of the patch image on the model: the patch triangle whose UVs hold it, interpolated.
@@ -285,16 +285,23 @@ $("points-guess").onclick = async () => {
   }
   if (placed(facePoints) && !confirm("Replace the points already placed with the detector's guess?")) return;
   say("guess-msg", "Looking for the face…");
+  const found = await guessFace();
+  say("guess-msg", found.error ?? `Placed (the detector is ${Math.round(found.sure * 100)}% sure of its least certain point). Check each one and drag any that is off.`, !!found.error);
+};
+// The detector's guess taken and saved: { sure } or { error }. The Quick build page asks for it too (quick.js).
+async function guessFace() {
   // a job like a build: the detector must not run beside a Blender (memory)
   const state = await job("face_guess", {});
-  if (!state?.result?.points) { say("guess-msg", state?.error ? state.error.split("\n")[0] : state?.cancelled ? "Stopped." : "", !!state?.error); return; }
+  if (!state?.result?.points) return { error: state?.error ? state.error.split("\n")[0] : state?.cancelled ? "Stopped." : "" };
   try {
     const { sure, ...kept } = state.result.points;
     facePoints = kept; sendFaceImage(); showFacePoints(); showPointsState();
     await savePoints();
-    say("guess-msg", `Placed (the detector is ${Math.round(sure * 100)}% sure of its least certain point). Check each one and drag any that is off.`);
-  } catch (e) { say("guess-msg", e.message, true); }
-};
+    return { sure };
+  } catch (e) { return { error: e.message }; }
+}
+// What other pages may know of the face: whether its picture is made, the picture, the points as they stand.
+app.face = { guess: guessFace, has: () => ({ patch: !!facePatch, picture: faceImage?.src || null, points: facePoints }) };
 export function renderFace() {
   if (!S.manifest) return;
   const o = S.manifest.options;

@@ -363,12 +363,13 @@ async function choose(i) {
   const p = S.projects[i];
   play("select");
   if (!p) { await app.openProject(null); return app.go("model"); }
-  if (p.manifest === S.manifestPath && S.manifest) { card = upNext(); return app.go("menu"); }
+  if (p.manifest === S.manifestPath && S.manifest) { card = upNext(); return app.go(app.landing?.() || "menu"); }
   opening = p; card = 0;
   let moved = false;
   const watchCard = () => { moved = true; };
   A("cards").addEventListener("pointerover", watchCard); addEventListener("keydown", watchCard);
-  app.go("menu");
+  // (automatic mode opens a character on its one screen, quick.js; the menu is a button away)
+  app.go(app.landing?.() || "menu");
   try { await app.openProject(p.manifest); }
   finally { opening = null; A("cards").removeEventListener("pointerover", watchCard); removeEventListener("keydown", watchCard); }
   if (page === "menu") { if (!moved) card = upNext(); menu(); }

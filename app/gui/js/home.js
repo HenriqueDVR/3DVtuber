@@ -125,6 +125,10 @@ $("create").onclick = async () => {
         else toast("Not confirmed: the build will stop at the licence. You can confirm later on the Options page.", "warn", { ms: 12000 });
       }
       if (may && $("create-prepare").checked) job("run", {});
+    } else if (app.landing?.() === "quick") {
+      // automatic mode: the one screen, which gets it ready, finds the face and builds, stopping where a person should look
+      app.go("quick");
+      if ($("create-prepare").checked) app.quickGo();
     } else if ($("create-prepare").checked) job("prepare", {});
   } catch (e) { say("create-msg", e.message, true); }
 };
