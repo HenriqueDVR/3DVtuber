@@ -1,6 +1,6 @@
 """Make the eyes follow face tracking, then export VRM.
 
-    blender -b in.blend -P scripts/add_eye_tracking.py -- out.blend out.vrm --face face.json [--slide [H V]] [--still-iris] [--lid-travel F] [--renders dir]
+    blender -b in.blend -P scripts/add_eye_tracking.py -- out.blend out.vrm --face face.json [--slide [H V]] [--still-iris] [--lid-travel F] [--lid-blink] [--renders dir]
 
 By default (eyes with room around the iris, like model A) each painted iris moves onto its own disc,
 the face under it has the iris painted out, and a copy of the lids in front keeps it under them.
@@ -9,7 +9,8 @@ little over the face instead, H of its width sideways and V of its height up and
 eyes.SLIDE). Either way the eyes move on the eight ARKit eyeLook keys, which face trackers drive
 directly, bound to the VRM look expressions; in Warudo set eye movement to blendshapes.
 Needs face points (viewer/setup.html) on a face patch, and a blend with the face tracking keys
-(scripts/add_face_tracking.py): the lids blink with them. Measures the result and exits 1 if an
+(scripts/add_face_tracking.py): the eyes squeeze toward their lash line in a blink (`--lid-blink`, experimental:
+a moving iris or modelled disc blinks by a lid brought down over the still eye, pipeline/lid_blink.py). Measures the result and exits 1 if an
 iris could come through the lids or sink into the face, or a patch into the ball, in any look;
 the files are written either way. The input file is left alone. Needs the VRM Add-on.
 """
@@ -24,7 +25,7 @@ from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 
-from vtuber_maker.pipeline import eyes, face_points, face_rig, meshdata, vrm_export  # noqa: E402
+from vtuber_maker.pipeline import eyes, face_points, face_rig, lid_blink, meshdata, vrm_export  # noqa: E402
 
 # The look-at input angle (degrees) at which the look expressions reach full weight, as VRoid exports.
 LOOK_INPUT = 90.0
@@ -101,6 +102,9 @@ def main():
     ap.add_argument("--upright", type=float, default=1.0,
                     help="moving iris: how far the eyes look up and down, as a factor (0: sideways only)")
     ap.add_argument("--blink", type=float, default=1.0, help="how far the eyes close, as a factor on the blink the build made")
+    ap.add_argument("--lid-blink", action="store_true",
+                    help="experimental, moving iris or modelled discs: a lid comes down over the still eye in a blink "
+                         "(pipeline/lid_blink.py) instead of the eye squeezing toward its lash line")
     ap.add_argument("--only", choices=("left", "right"),
                     help="the character's other eye is covered (hair, an eyepatch): it is left as it is, with no blink")
     ap.add_argument("--renders", type=Path, help="write eye close-ups here, before and after, looking each way")
@@ -215,12 +219,22 @@ def main():
             if squeeze:
                 failures = squeezed(failures)
         report_irises(built, numbers)
+    lidded = False
+    if args.slide is None and args.lid_blink:
+        # last, over the eyes as they were checked: it moves nothing of them, and only the two blink keys change
+        try:
+            lidded = report_lid_blink(lid_blink.add_lid_blink(obj, points, only=args.only))
+        except lid_blink.LidBlinkRefused as refused:
+            print(f"the lid blink was refused ({refused}): the eye squeezes in a blink instead")
     if args.only:
         covered = "right" if args.only == "left" else "left"
         print(f"the {covered} eye is covered: left as it is, {len(eyes.still_blink(obj, covered))} blink keys emptied")
-    if args.blink != 1.0:
+    blink = min(args.blink, 1.0) if lidded else args.blink
+    if lidded and args.blink > 1.0:
+        print(f"the lid shuts the eye at 1: asked for {args.blink}, it comes down no further")
+    if blink != 1.0:
         # after the eyes are made: their own layers were given the blink the face has
-        eyes.scale_blinks(obj, args.blink)
+        eyes.scale_blinks(obj, blink)
     for name, crop in built["crops"].items():
         x0, y0, x1, y1 = crop["box"]
         print(f"{name} image: {x1 - x0} x {y1 - y0} px of the face patch's {crop['full'][0]} x {crop['full'][1]}")
@@ -241,6 +255,20 @@ def main():
         print("FAILED:", failure)
     if failures:
         sys.exit(1)
+
+
+def report_lid_blink(report):
+    for side, r in report.items():
+        if side == "images":
+            continue
+        print(f"lid blink, {side} eye: opening {r['opening_px']} px, {r['opening_mm']:.1f} mm tall; lashes {r['lash_px']} px; "
+              f"skin filled over {r['filled_px']} px; the lash line comes down {r['middle_mm']:.1f} mm in the middle, "
+              f"{r['ends_mm']:.1f} at its ends; sheets cut {r['cut_px'][0]} and {r['cut_px'][1]} px short where no face is "
+              f"under them; brought forward {r['strip_forward_mm']:.2f} (strip) and {r['lid_forward_mm']:.2f} mm (lid); "
+              f"least before the face on the way down {r['least_clear_mm']:.2f} mm")
+    for name, (w, h) in report["images"].items():
+        print(f"{name} image: {w} x {h} px")
+    return True
 
 
 def report_modelled(built, numbers):

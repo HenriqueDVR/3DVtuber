@@ -288,6 +288,7 @@ def export(filepath, armature):
     normalize_bones(filepath, look_at_origin=origin)
     verify(filepath, armature)
     sparse_morph_targets(filepath)
+    still_sheet_normals(filepath)
     fold_emissive_strength(filepath)
     from . import improve  # it reads this module, so not at the top
     if not improve.imported(armature):
@@ -543,6 +544,29 @@ def sparse_morph_targets(filepath):
                              f"(accessors {changed[:5]}); the file is left as it was")
     _write_glb(filepath, gltf, packed)
     return len(whole)
+
+
+def still_sheet_normals(filepath, materials=("EyeLash", "EyeLidSkin")):
+    """Rewrite a .vrm so the lid blink's sheets (pipeline/lid_blink.py) keep their own normals in every face shape;
+    returns how many targets lost theirs.
+
+    Blender reckons a shape's normals from its geometry, and the lid at rest is a band folded under the lashes:
+    shut, its normals turned by the difference between two shapes that have nothing to do with how it is lit, and
+    it was shaded in stripes. Without them it keeps the normals it was given, the face's where it lies shut. The
+    accessors stay in the file, read by nothing (the indices of every other accessor are left alone).
+    """
+    gltf, binary = _read_glb(filepath)
+    names = gltf.get("materials", [])
+    done = 0
+    for mesh in gltf.get("meshes", []):
+        for primitive in mesh.get("primitives", []):
+            if primitive.get("material") is None or names[primitive["material"]].get("name") not in materials:
+                continue
+            for target in primitive.get("targets", []):
+                done += target.pop("NORMAL", None) is not None
+    if done:
+        _write_glb(filepath, gltf, binary)
+    return done
 
 
 def use_mipmaps(filepath):

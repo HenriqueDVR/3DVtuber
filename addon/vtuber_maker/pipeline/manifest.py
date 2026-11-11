@@ -79,6 +79,9 @@ OPTIONS = {
     "iris_size": 1.0,         # modelled iris discs: a factor on the size read, IRIS_SIZE; never wider than its disc
     "look_travel": 1.0,       # how far the eyes look, a factor on what the build works out, LOOK_TRAVEL
     "blink_amount": 1.0,      # how far the eyes close, a factor on the blink the build made, BLINK_AMOUNT
+    "lid_blink": False,       # experimental: a moving iris or modelled discs blink by a lid coming down over the still eye
+                              # (pipeline/lid_blink.py). Off: the eye squeezes toward its lash line, the default (the user,
+                              # 2026-11-11, after seeing it on seven characters). Sliding eyes and a blink alone always squeeze
     # scripts/fix_mouth.py, once the face is marked: the talking shapes redrawn, on a mouth patch of its
     # own (free). None: the face bends around the marked mouth. On by default since 2026-10-07 (the
     # user: the best mouth on every character tried); a manifest written before says null itself.
@@ -362,7 +365,7 @@ def validate(data):
                          ("iris_shape", IRIS_SHAPE), ("eye_shown", EYE_SHOWN)):
         if options.get(key, OPTIONS[key]) not in allowed:
             problems.append(f"option {key} must be one of {', '.join('null (automatic)' if a is None else a for a in allowed)}")
-    for key in ("chest", "hair_hits_body", "licence_read", "auto_pieces", "sleeve_springs"):
+    for key in ("chest", "hair_hits_body", "licence_read", "auto_pieces", "sleeve_springs", "lid_blink"):
         if not isinstance(options.get(key, OPTIONS[key]), bool):
             problems.append(f"option {key} must be true or false")
     amount = options.get("chest_amount", OPTIONS["chest_amount"])

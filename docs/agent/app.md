@@ -267,6 +267,7 @@ the `eyes` step on, `eye_shown` from `face_tracking`):
 | `iris_size` | 0.7 to 1.4 | modelled iris discs only: a factor on the size read; never wider than the disc |
 | `look_travel` | 0.5 to 1.5 | a factor on how far the eyes look, every eye mode |
 | `blink_amount` | 0.5 to 1.4 | a factor on the blink keys (`eyes.scale_blinks`); needs the eye step to run |
+| `lid_blink` | false / true | experimental. false (default): the eye squeezes toward its lash line. true (`--lid-blink`): a moving iris or modelled discs blink by a lid brought down over the still eye (`pipeline/lid_blink.py`; a lid shuts at 1, so `blink_amount` over 1 is not used). Sliding and blink-only eyes always squeeze |
 
 A modelled iris is read as an oval (`eyes.drawn_circle`: centre, half width, half height), never
 flatter than a circle. A changed option can make the eye check refuse the step (an iris showing

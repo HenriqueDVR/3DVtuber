@@ -14,6 +14,9 @@ const OPTION_UI = [
     [[true, "on", "The tip bounces when the head moves; the rest of the hat stays solid."], [false, "off", "The whole hat stays solid."]]],
   ["face_tracking", "Mouth tracking and blink", "Adds the ARKit-named face shapes that iPhone and webcam face tracking drive: the jaw, the mouth's corners and a blink (no brows or cheeks yet). Needs the face points (Face page).",
     [[true, "on", "The mouth and blink follow your face in your tracking app."], [false, "off", "Only the five vowel mouths: no blink unless eye tracking adds one."]]],
+  ["lid_blink", "How the eyes blink", "For eyes that look around with an iris of their own (a moving iris or the model's iris pieces). Painted eyes that slide, and eyes that only blink, always squeeze.",
+    [[false, "the eye squeezes (recommended)", "The whole eye squeezes toward its lash line."],
+      [true, "a lid comes down (experimental)", "The upper lashes come down over the still eye and a lid of skin closes behind them, as hand-drawn anime faces blink. Rough where hair is drawn over the lashes in their colour."]]],
   ["mouth_colour", "Inside of the mouth", "The colour painted inside the mouth when it opens.",
     [AUTO("picked from the model's texture"), ["skin", "skin", "Skin-coloured: for simple faces where a dark mouth reads as a hole."]]],
   ["Hair and clothes"],
@@ -64,12 +67,12 @@ async function setOption(key, value) {
 const IMPROVES = ["chest", "chest_amount", "licence_read"];
 
 // Each option's default (pipeline/manifest.py OPTIONS): a tile whose value differs says "changed".
-const DEFAULTS = { rigid_head: null, hat_tip: false, face_tracking: true, mouth_colour: null, cloth: null, ahoge: true, hair_hits_body: true,
+const DEFAULTS = { rigid_head: null, hat_tip: false, face_tracking: true, lid_blink: false, mouth_colour: null, cloth: null, ahoge: true, hair_hits_body: true,
   chest: false, chest_amount: 0.5, loose_pieces: true, repair_shoulder_seams: true, auto_pieces: false, licence_read: false, facing: null,
   skinning: "heat", fingers: "guides", tpose: "spec" };
 // One line each, said plainly; the whole of what the option does is a click away (the "?").
 const SHORT = { rigid_head: "Hats, helmets, masks: the head moves as one block.", hat_tip: "A pointed hat's tip bounces.",
-  face_tracking: "Your mouth and blinks drive the avatar's.", mouth_colour: "The colour inside the open mouth.",
+  face_tracking: "Your mouth and blinks drive the avatar's.", lid_blink: "The eye squeezes, or (experimental) a lid comes down over it.", mouth_colour: "The colour inside the open mouth.",
   cloth: "Skirts, coat tails and capes swing.", ahoge: "The single strand on top of the head bounces.",
   hair_hits_body: "Long hair stays off the back and arms.", chest: "The chest bounces as the body moves.",
   loose_pieces: "Straps and belts between limbs don't tear.", repair_shoulder_seams: "No gaps at the shoulders when the arms go up.",
@@ -79,7 +82,7 @@ const SHORT = { rigid_head: "Hats, helmets, masks: the head moves as one block."
 // The page in groups: what most people look at open, the rest folded with a word on when to open it.
 const GROUPS = [
   { title: "What moves", keys: ["cloth", "ahoge", "hair_hits_body", "chest"] },
-  { title: "Face and head", note: "mouth tracking, the mouth's colour, solid heads and hats", keys: ["face_tracking", "mouth_colour", "rigid_head", "hat_tip"], folded: true },
+  { title: "Face and head", note: "mouth tracking, the blink, the mouth's colour, solid heads and hats", keys: ["face_tracking", "lid_blink", "mouth_colour", "rigid_head", "hat_tip"], folded: true },
   { title: "Repairs", note: "leave these on unless something looks wrong after a build", keys: ["loose_pieces", "repair_shoulder_seams", "auto_pieces"], folded: true },
   { title: "Advanced", note: "body weights, fingers, the saved pose, which way the model faces", keys: ["skinning", "fingers", "tpose", "facing"], folded: true },
   { title: "A finished avatar", keys: ["licence_read"], improving: true },

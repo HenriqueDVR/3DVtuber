@@ -416,6 +416,14 @@ class Engine(unittest.TestCase):
                                 look_travel=1.3)._arguments("eyes", self.root / "10_eyes", None)
         self.assertEqual([str(a) for a in slide[-5:]], ["--slide", "4.5", "2", "--travel", "1.3"])
 
+    def test_the_lid_blink_is_asked_for_only_when_chosen(self):
+        # experimental (the user, 2026-11-11): the squeeze stays the default and nothing is passed for it
+        squeeze, _ = self.project({"options": {}, "triangles": 40000}, eyes="iris")._arguments("eyes", self.root / "10_eyes", None)
+        self.assertNotIn("--lid-blink", [str(a) for a in squeeze])
+        lid, _ = self.project({"options": {}, "triangles": 40000}, eyes="iris", lid_blink=True)._arguments(
+            "eyes", self.root / "10_eyes", None)
+        self.assertIn("--lid-blink", [str(a) for a in lid])
+
     def test_a_covered_eye_is_told_to_both_face_steps(self):
         project = self.project({"options": {}, "triangles": 40000}, eyes="iris", eye_shown="left", iris_shape=None, iris_size=1.0,
                                look_travel=1.0, blink_amount=1.0)

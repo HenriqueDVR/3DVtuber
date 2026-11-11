@@ -1395,6 +1395,8 @@ class Project:
                     args += ["--iris-size", o["iris_size"]]
             if o["eye_shown"]:
                 args += ["--only", o["eye_shown"]]
+            if o["lid_blink"]:
+                args.append("--lid-blink")
             for flag, key in (("--travel", "look_travel"), ("--blink", "blink_amount")):
                 if o[key] != 1.0:
                     args += [flag, o[key]]
