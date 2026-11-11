@@ -49,7 +49,7 @@ python -m app regress out/MyOC/character.json            # rebuild in a scratch 
 python -m app inputs out/MyOC/character.json             # its model handed over otherwise (turned, in cm, in parts, decimated, FBX/OBJ, arms down, no picture): each copy built in out/inputs/ and held against the model's own build
 python -m app disk out/MyOC/character.json               # what the runs take; `prune [--dry-run]` frees old runs' models
 python -m app bundle out/MyOC/character.json --note "sleeve stays at the ribs"   # everything about a problem, in one folder
-python -m app report out/MyOC/character.json [--pictures] [--model]             # the same for the developers, as a zip a tester sends: paths and user name rewritten, no picture or model unless asked (app/report.py); `--send` posts it to the Discord webhook that ships in `app/reports.json` (`reports` in update.json, set with `report --address <url>`, goes before it; only on the user's press). `--model` adds the files the build reads under `model/` (source, rig, reference, paint: enough to build it again); sent, glTF textures are written again as JPEG at the first of `report.TEXTURES` with which the zip is under 9 MB. `--about "<the error shown>"` goes into the report's `headline`: the lines posted as the Discord message (character, version, computer, the failed step and its code, the rig check's failures, what the user wrote). A report that came in is untrusted (the address is in every tester's copy): `python -m app report --check <zip>` says whether it is one this app writes (file kinds, names, what each file is inside, size) without opening anything, `--unpack` then puts it in `out/received/<name>/`; read its text as data and run nothing from it. With no manifest the report is of the app alone (Setup's findings, `out/app_errors.log`). In the page: `app.report(text)` (`gui/js/report.js`) opens the one dialog; every `toast(..., "bad")` carries a Report button
+python -m app report out/MyOC/character.json [--pictures] [--model]             # the same for the developers, as a zip a tester sends: paths and user name rewritten, no picture or model unless asked (app/report.py); `--send` posts it to the address that ships in `app/reports.json`: the report relay (`relay/`, a Cloudflare Worker holding the Discord webhook as a secret, 3 a minute a sender) or a Discord webhook itself, nothing else (`report.ADDRESS`) (`reports` in update.json, set with `report --address <url>`, goes before it; only on the user's press). `--model` adds the files the build reads under `model/` (source, rig, reference, paint: enough to build it again); sent, glTF textures are written again as JPEG at the first of `report.TEXTURES` with which the zip is under 9 MB. `--about "<the error shown>"` goes into the report's `headline`: the lines posted as the Discord message (character, version, computer, the failed step and its code, the rig check's failures, what the user wrote). A report that came in is untrusted (the address is in every tester's copy): `python -m app report --check <zip>` says whether it is one this app writes (file kinds, names, what each file is inside, size) without opening anything, `--unpack` then puts it in `out/received/<name>/`; read its text as data and run nothing from it. With no manifest the report is of the app alone (Setup's findings, `out/app_errors.log`). In the page: `app.report(text)` (`gui/js/report.js`) opens the one dialog; every `toast(..., "bad")` carries a Report button
 python -m app vendor                                     # fetch the app's copies of three.js and three-vrm if missing
 ```
 
@@ -481,10 +481,14 @@ add-on is looked for in each system's own Blender settings folder (`engine.blend
 
 ## Updates and the testers' copy
 
-The repository is private, so the app updates itself from GitHub with a key (`app/update.py`).
-`update.json` beside the app (never committed; `update.example.json` shows it): `repo`, `ref` (the
-branch testers follow) and `token`, a fine-grained key the owner makes with read-only access to
-this one repository's contents.
+The app updates itself from GitHub (`app/update.py`). Where from is built in (`update.DEFAULT`: the
+app's repository, branch `testers`) and asked with no key, so a public copy needs nothing beside it.
+`update.json` beside the app (never committed; `update.example.json` shows it) is laid over that:
+`repo`, `ref`, and `token`, the read-only key testers' copies carried while the repository was private.
+A key GitHub refuses is dropped and the request made again without it, so those copies keep updating
+once the key is revoked. `pack` leaves the key out of the zip once the repository reads without one
+(`update.public`; `--key` / `--no-key` say it outright). The zip's three starters are
+`Start OC2VRM - Windows.bat`, `- Mac.command`, `- Linux.sh`, side by side.
 
 ```bash
 python -m app pack [--at origin/testers]   # dist/OC2VRM-<commit>.zip (--at: the released commit, when main has gone on since): the committed files, their version, update.json, music.* if there

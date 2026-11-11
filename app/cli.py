@@ -38,6 +38,8 @@ def main(argv=None):
     p = sub.add_parser("pack", help="the zip a tester starts from: the committed files, their version, and update.json when there is one")
     p.add_argument("--out", type=Path, help="folder for the zip (default: dist/)")
     p.add_argument("--at", help="the commit to pack: a hash, a branch, origin/testers (default: the one checked out)")
+    p.add_argument("--key", action=argparse.BooleanOptionalAction, default=None,
+                   help="put update.json's key in the zip (default: only while the repository is private)")
     sub.add_parser("vendor", help="keep a copy of three.js, three-vrm and the face tracker with the app, so it runs offline (17 MB)")
 
     p = sub.add_parser("init", help="start a character manifest for a model")
@@ -258,7 +260,7 @@ def cmd_update(args):
 
 
 def cmd_pack(args):
-    return update.pack(args.out, at=args.at)
+    return update.pack(args.out, at=args.at, key=args.key)
 
 
 def cmd_vendor(args):

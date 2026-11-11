@@ -1,0 +1,21 @@
+# OC2VRM's report relay (see README.md). The Discord webhook is not in here: it is a secret,
+# set once with `npx wrangler secret put DISCORD_WEBHOOK`.
+name = "oc2vrm-reports"
+main = "worker.js"
+compatibility_date = "2025-06-01"
+
+# Each sender (by address) at most 3 reports a minute
+[[ratelimits]]
+name = "PER_SENDER"
+namespace_id = "1001"
+  [ratelimits.simple]
+  limit = 3
+  period = 60
+
+# Everyone together at most 30 a minute
+[[ratelimits]]
+name = "ALL"
+namespace_id = "1002"
+  [ratelimits.simple]
+  limit = 30
+  period = 60

@@ -6,8 +6,9 @@
 
 Plain Python. The zip is written to <out>/reports/ and stays there; it leaves the computer only when
 the tester sends it: by hand, or with --send (the page's "Send to the developers"), which posts it
-to the developers' Discord channel through the webhook that comes with the app (app/reports.json). A webhook
-can be posted to and not read from. --model adds the files the build reads; sent, their textures are
+to the developers' Discord channel through the address that comes with the app (app/reports.json): the
+report relay (relay/, a Cloudflare Worker that keeps the channel's webhook a secret), or a webhook itself.
+Either can be posted to and not read from. --model adds the files the build reads; sent, their textures are
 written smaller until the zip fits what Discord takes. Without --pictures it holds numbers and text only (settings, step logs, checks,
 shape key numbers, timings, the computer's kind): no picture of the character, no model. Paths in
 every text file are rewritten, so the Windows user name and the folders the art is kept in stay
@@ -44,8 +45,11 @@ LOG_MOST = 2 * 2**20
 RENDERS_MOST = 3
 # Pictures go in no larger than this on their longer side (pixels)
 PICTURE_MOST = 1400
-# Where a report may be posted: Discord's webhooks and nothing else, whatever update.json says
-ADDRESS = re.compile(r"https://(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+")
+# Where a report may be posted: Discord's webhooks, or the report relay on Cloudflare's workers.dev (relay/),
+# and nothing else, whatever update.json says
+RELAY = re.compile(r"https://oc2vrm-reports\.[a-z0-9-]+\.workers\.dev/report")
+ADDRESS = re.compile(r"https://(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+"
+                     r"|https://oc2vrm-reports\.[a-z0-9-]+\.workers\.dev/report")
 # The most Discord takes in one message's files (bytes), with room for the message itself
 SEND_MOST = 9 * 2**20
 # The note is the message's text: Discord takes 2000 characters
@@ -58,9 +62,9 @@ TEXTURES = ((4096, 85), (2048, 85), (1024, 80))
 SUMMARY_ROOM = 256 * 1024
 
 
-# The developers' webhook, shipped with the app. The repository is private and so is this address:
-# whoever has it can post to the reports channel (not read it). Before the repository is ever made
-# public, delete that webhook in Discord and make another.
+# Where reports go, shipped with the app: the relay's address once it runs (relay/README.md). A webhook's
+# address in here is anyone's once the repository is public: they can post to the channel, rename the
+# webhook or delete it. The relay keeps the webhook a secret and lets each sender send only so often.
 SHIPPED = Path(__file__).with_name("reports.json")
 
 
@@ -312,7 +316,12 @@ def address():
         shipped = json.loads(SHIPPED.read_text(encoding="utf-8")).get("address")
     except (OSError, ValueError):
         shipped = None
-    for found in ((update.config() or {}).get("reports"), shipped):
+    own = (update.config() or {}).get("reports")
+    # the relay that comes with the app goes before a webhook a copy's update.json still names: testers' copies
+    # carried the developers' old webhook there, deleted when the relay took its place (2026-11-11)
+    if shipped and RELAY.fullmatch(shipped) and not (own and RELAY.fullmatch(own)):
+        own = None
+    for found in (own, shipped):
         if found and ADDRESS.fullmatch(found):
             return found
     return None
@@ -322,7 +331,8 @@ def use_address(url):
     """Keep the webhook in update.json (never committed, never written over by an update); "" forgets it."""
     url = (url or "").strip()
     if url and not ADDRESS.fullmatch(url):
-        raise ValueError("that isn't a Discord webhook address (https://discord.com/api/webhooks/...)")
+        raise ValueError("that isn't a Discord webhook address (https://discord.com/api/webhooks/...) "
+                         "or the report relay's (https://oc2vrm-reports.<you>.workers.dev/report)")
     try:
         settings = json.loads(update.CONFIG.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -366,7 +376,13 @@ def send(manifest_path, note="", pictures=False, model=False, blender=None, open
             response.read()
     except urllib.error.HTTPError as error:
         why = {401: "the address was refused", 404: "the address no longer exists (ask the developers for the new one)",
-               413: "it is too large", 429: "too many were sent just now: try again in a minute"}.get(error.code, f"Discord answered {error.code}")
+               413: "it is too large", 429: "too many were sent just now: try again in a minute"}.get(error.code, f"it was answered {error.code}")
+        # the relay says why in a sentence of its own ({"said": ...}); a webhook's own answer is not shown
+        try:
+            said = json.loads(error.read().decode("utf-8", "replace")).get("said") if "workers.dev" in url else None
+        except (OSError, ValueError, AttributeError):
+            said = None
+        why = str(said)[:200] if said else why
         raise NotSent(f"the report wasn't sent: {why}. It is in {path}") from None
     except OSError as error:
         raise NotSent(f"the report wasn't sent: no connection ({getattr(error, 'reason', error)}). It is in {path}") from None

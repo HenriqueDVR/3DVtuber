@@ -72,8 +72,8 @@ When a fix is published the **Setup** page says "A newer one is published" under
 their builds and Blender are not touched and nothing else is downloaded again. Say which version you
 are on in a report: the line under **This app**.
 
-Keep the file `update.json` that came in your copy: it is what lets the app ask for updates. Don't
-share it.
+If your copy came with a file `update.json`, keep it and don't share it. A copy without one updates
+all the same.
 
 ## 2. What to bring
 

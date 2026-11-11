@@ -1,10 +1,13 @@
 """Updating the app in place: the Setup page's Update button, and `python -m app pack` for the copy testers get.
 
-The repository is private, so a tester's copy carries `update.json` beside the app:
+Where updates come from is built in (DEFAULT): the app's public repository and its release branch,
+asked with no key. `update.json` beside the app, when there is one, is laid over that:
 {"repo": "Owner/Name", "ref": "testers", "token": "<a read-only key for that one repository>"}.
-The key is the user's to make (GitHub > Settings > Developer settings > Fine-grained tokens:
-this repository only, Contents: Read-only) and to put in that file; it is never committed and
-never sent anywhere but api.github.com.
+While the repository was private every tester's copy carried such a key (GitHub > Settings > Developer
+settings > Fine-grained tokens: this repository only, Contents: Read-only); it is never committed and
+never sent anywhere but api.github.com. A key GitHub refuses (revoked once the repository is public) is
+dropped and the question asked again without it, so those copies go on updating; and `pack` leaves the
+key out of a zip once the repository can be read without one.
 
 An update is the code alone, about 8 MB: the zip of the published commit, unpacked over the app's
 own files. `out/` (characters and builds), `tools/` (Blender, 1.7 GB), `samples/`, `dist/`,
@@ -34,6 +37,9 @@ VERSION = REPO / ".oc2vrm_version.json"
 # time a version is published to testers. The commit beside it says exactly which code it is.
 NUMBER = REPO / "VERSION"
 API = "https://api.github.com/repos/{repo}/{what}"
+# Where a copy updates from when its update.json says nothing else: the app's own repository, the branch
+# releases are published to (`VERSION` raised, then main pushed to it).
+DEFAULT = {"repo": "HenriqueDVR/3DVtuber", "ref": "testers"}
 # Never written, never removed, whatever a zip holds: the user's own things.
 KEPT = ("out", "tools", "samples", "dist", ".git")
 KEPT_FILES = ("update.json", ".oc2vrm_version.json", "music.mp3", "music.ogg", "music.wav")
@@ -42,6 +48,28 @@ KEPT_FILES = ("update.json", ".oc2vrm_version.json", "music.mp3", "music.ogg", "
 LAUNCHERS = ("OC2VRM.bat", "oc2vrm.sh")
 # The exit code that tells the launcher "start me again" (EX_TEMPFAIL).
 RESTART = 75
+# In the zip a tester unpacks, the app lies in this folder, and beside it only what they start it with and a
+# few lines on how: the folder used to open on seventeen files and folders with the launcher among them (the
+# user, 2026-11-10). An update is laid over the app's own folder as before: the launchers beside it only call
+# the ones inside, and never need to change.
+PROGRAM = "program"
+# {name beside the app's folder: (its lines, their line end, whether a Mac or Linux may run it)}
+STARTERS = {
+    "Start OC2VRM - Windows.bat": (["@echo off", 'rem Starts OC2VRM. Everything it is made of is in the "program" folder beside this file.',
+                          r'call "%~dp0program\OC2VRM.bat" %*'], "\r\n", False),
+    "Start OC2VRM - Mac.command": (["#!/bin/sh", "# macOS: double-click to start OC2VRM (the first time: right-click, Open, Open).",
+                                    'exec "$(dirname "$0")/program/oc2vrm.sh" "$@"'], "\n", True),
+    "Start OC2VRM - Linux.sh": (["#!/bin/sh", "# Linux: starts OC2VRM.", 'exec "$(dirname "$0")/program/oc2vrm.sh" "$@"'], "\n", True),
+    "READ ME FIRST.txt": (["OC2VRM: turns a 3D character model into a VTuber avatar (.vrm).", "",
+                           "To start it",
+                           '  Windows: double-click "Start OC2VRM - Windows.bat".',
+                           '  Mac:     double-click "Start OC2VRM - Mac.command" (the first time: right-click, Open, Open).',
+                           "  Linux:   run 'Start OC2VRM - Linux.sh'.", "",
+                           "The first start asks before it downloads anything it needs (Python, a picture library, Blender).",
+                           "A black window opens with the app: leave it open while you use the app.", "",
+                           'The "program" folder is the app itself. Your characters and avatars are kept in program/out,',
+                           "and the app can send a finished avatar to any folder you choose."], "\r\n", False),
+}
 
 
 class UpdateFailed(ValueError):
@@ -49,12 +77,14 @@ class UpdateFailed(ValueError):
 
 
 def config():
-    """update.json, or None when this copy has none (then there is nothing to update from)."""
+    """Where this copy updates from: DEFAULT, with update.json's own values over it when there is one.
+    (The user, 2026-11-10: once the app is public, people "can just update normally", with no key.)"""
     try:
         found = json.loads(CONFIG.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
-    return found if found.get("repo") else None
+        found = {}
+    found = found if isinstance(found, dict) else {}
+    return {**DEFAULT, **{k: v for k, v in found.items() if v}}
 
 
 def is_checkout():
@@ -92,18 +122,29 @@ def _commit():
     return {"commit": commit, "short": (commit or "")[:7], "changed": False}
 
 
-def _ask(settings, what, accept, open_url):
+def _ask(settings, what, accept, open_url, keyed=True):
     # "api" in update.json names another server speaking GitHub's two calls (a mirror; the tests' stand-in)
+    key = settings.get("token") if keyed else None
     request = urllib.request.Request((settings.get("api") or API).format(repo=settings["repo"], what=what),
                                      headers={"Accept": accept, "User-Agent": "oc2vrm", "X-GitHub-Api-Version": "2022-11-28",
-                                              **({"Authorization": f"Bearer {settings['token']}"} if settings.get("token") else {})})
+                                              **({"Authorization": f"Bearer {key}"} if key else {})})
     try:
         with open_url(request, timeout=60) as response:
             return response.read()
     except urllib.error.HTTPError as error:
-        why = {401: "the key in update.json was refused (expired, or mistyped)",
-               403: "the key in update.json may not read the repository (or too many checks this hour)",
-               404: "the repository or the version named in update.json wasn't found with this key"}.get(error.code, f"GitHub answered {error.code}")
+        # a key refused is asked again without it: the repository public, the testers' key revoked, their copies
+        # still update. When that fails too, what is said is about the key, the one thing they can mend.
+        if key and error.code in (401, 403, 404):
+            try:
+                return _ask(settings, what, accept, open_url, keyed=False)
+            except UpdateFailed:
+                pass
+        keyed_why = {401: "the key in update.json was refused (expired, or mistyped)",
+                     403: "the key in update.json may not read the repository (or too many checks this hour)",
+                     404: "the repository or the version named in update.json wasn't found with this key"}
+        plain_why = {403: "GitHub refused (too many checks from this connection this hour: try again later)",
+                     404: f"the repository {settings['repo']} or its branch wasn't found (it may not be public yet)"}
+        why = (keyed_why if key else plain_why).get(error.code, f"GitHub answered {error.code}")
         raise UpdateFailed(f"couldn't reach the update: {why}") from None
     except OSError as error:
         raise UpdateFailed(f"couldn't reach the update: no connection to GitHub ({getattr(error, 'reason', error)})") from None
@@ -124,10 +165,8 @@ def check(open_url=trust.open_url):
     """{"configured", "current", "latest", "available", "how"}: whether a newer version is published.
     Never raises: {"error": why} when the published version can't be asked for."""
     settings, here = config(), current()
-    found = {"configured": settings is not None, "current": here["short"], "version": here["version"], "latest": None, "available": False,
-             "how": "git" if is_checkout() else "zip", "ref": (settings or {}).get("ref") or "main"}
-    if settings is None:
-        return found
+    found = {"configured": True, "current": here["short"], "version": here["version"], "latest": None, "available": False,
+             "how": "git" if is_checkout() else "zip", "ref": settings.get("ref") or "main"}
     try:
         latest = _ask(settings, f"commits/{found['ref']}", "application/vnd.github.sha", open_url).decode().strip()
     except UpdateFailed as error:
@@ -162,8 +201,6 @@ def apply(on_event=None, open_url=trust.open_url):
     "removed", "restart"}; the app has to be started again to run the new code. Raises UpdateFailed."""
     emit = on_event or (lambda event: None)
     settings = config()
-    if settings is None:
-        raise UpdateFailed("this copy has no update.json: there is nowhere to update from")
     found = check(open_url)
     if found.get("error"):
         raise UpdateFailed(found["error"])
@@ -232,12 +269,24 @@ def apply(on_event=None, open_url=trust.open_url):
             "backup": str(backup) if backup.exists() else ""}
 
 
-def pack(out_dir=None, name="OC2VRM", at=None):
+def public(settings=None, open_url=trust.open_url):
+    """Whether the repository updates come from can be read with no key (a public repository)."""
+    settings = settings or config()
+    try:
+        _ask({**settings, "token": None}, "commits/" + (settings.get("ref") or "main"), "application/vnd.github.sha", open_url)
+        return True
+    except UpdateFailed:
+        return False
+
+
+def pack(out_dir=None, name="OC2VRM", at=None, key=None):
     """The zip a tester starts from: the committed files of this checkout, the version file that
     says which commit they are, and update.json (with its key) and the arcade look's song (music.mp3,
     .ogg or .wav: the owner's file, not committed) when they are beside the app.
     `at`: the commit to pack (a hash, a branch, "origin/testers"); default the one checked out. Work goes
     on after a release, and a zip of the newest commit was offered an "update" back to the released one.
+    `key`: whether the zip carries update.json's key. None: only while the repository can't be read without one
+    (`public`), so no key goes out once the app is public.
     Returns {"zip", "commit", "version", "files", "megabytes", "with_key", "music"}. Needs git."""
     git = lambda *args: subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, check=True).stdout  # noqa: E731
     try:
@@ -250,17 +299,36 @@ def pack(out_dir=None, name="OC2VRM", at=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / f"{name}-{commit[:7]}.zip"
     # the files as committed, not as they stand in the folder: a half-made change is not handed out
-    subprocess.run(["git", "archive", "--format=zip", f"--prefix={name}/", "-o", str(target), commit], cwd=REPO, check=True)
+    inside = f"{name}/{PROGRAM}"
+    subprocess.run(["git", "archive", "--format=zip", f"--prefix={inside}/", "-o", str(target), commit], cwd=REPO, check=True)
+    try:
+        own = json.loads(CONFIG.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        own = None
     settings = config()
+    if own and own.get("token") and not (key if key is not None else not public(settings)):
+        own = {k: v for k, v in own.items() if k != "token"}
+    # nor a Discord webhook for reports: whoever reads it can post to the channel or delete it (the relay in
+    # app/reports.json is what a copy sends to)
+    if own and "discord.com/api/webhooks" in str(own.get("reports", "")):
+        own = {k: v for k, v in own.items() if k != "reports"}
     with zipfile.ZipFile(target, "a", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(f"{name}/{VERSION.name}", json.dumps({"commit": commit, "ref": (settings or {}).get("ref") or "main",
+        for starter, (lines, end, runs) in STARTERS.items():
+            text = end.join([*lines, ""])
+            entry = zipfile.ZipInfo(f"{name}/{starter}", date_time=datetime.now().timetuple()[:6])
+            entry.compress_type = zipfile.ZIP_DEFLATED
+            # (a script a Mac or Linux may run: the zip carries that, where the system unpacking it keeps it)
+            entry.external_attr = (0o100755 if runs else 0o100644) << 16
+            archive.writestr(entry, text)
+        archive.writestr(f"{inside}/{VERSION.name}", json.dumps({"commit": commit, "ref": settings.get("ref") or "main",
                                                                "when": datetime.now().isoformat(timespec="seconds"), "files": listed}))
-        if settings is not None:
-            archive.writestr(f"{name}/{CONFIG.name}", json.dumps(settings, indent=2))
+        # (update.json as the owner wrote it, less the key when it isn't to go: what is built in needn't be in it)
+        if own:
+            archive.writestr(f"{inside}/{CONFIG.name}", json.dumps(own, indent=2))
         # the one the server plays (/music): the first of the three there is; stored, a song doesn't deflate
         music = next((REPO / n for n in KEPT_FILES if n.startswith("music.") and (REPO / n).is_file()), None)
         if music:
-            archive.write(music, f"{name}/{music.name}", zipfile.ZIP_STORED)
+            archive.write(music, f"{inside}/{music.name}", zipfile.ZIP_STORED)
     number = subprocess.run(["git", "show", f"{commit}:{NUMBER.name}"], cwd=REPO, capture_output=True, text=True).stdout.strip()
     return {"zip": str(target), "commit": commit[:7], "version": f"v{number.lstrip('vV')}" if number else "", "files": len(listed), "megabytes": round(target.stat().st_size / 2**20, 1),
-            "with_key": bool(settings and settings.get("token")), "music": music.name if music else ""}
+            "with_key": bool(own and own.get("token")), "music": music.name if music else ""}

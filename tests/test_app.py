@@ -170,6 +170,18 @@ class Engine(unittest.TestCase):
             report.use_address("https://discord.com/api/webhooks/123/abc-DEF")
             self.assertEqual(json.loads((self.root / "update.json").read_text())["repo"], "a/b")
             made = report.send(self.path, note="@everyone it broke", pictures=True, blender="blender", open_url=open_url)
+            # the report relay (relay/): its address is taken, a stranger's Worker isn't, and its own reason is said
+            report.use_address("https://oc2vrm-reports.someone.workers.dev/report")
+            self.assertEqual(report.address(), "https://oc2vrm-reports.someone.workers.dev/report")
+            with self.assertRaisesRegex(ValueError, "report relay"):
+                report.use_address("https://stealer.someone.workers.dev/report")
+
+            def busy(request, timeout=None):
+                import io
+                import urllib.error
+                raise urllib.error.HTTPError(request.full_url, 429, "busy", {}, io.BytesIO(b'{"ok": false, "said": "too many just now: try again in a minute"}'))
+            with self.assertRaisesRegex(report.NotSent, "too many just now"):
+                report.send(self.path, note="x", blender="blender", open_url=busy)
         self.assertEqual(posted, posted[:1])
         self.assertEqual(posted[0].full_url, "https://discord.com/api/webhooks/123/abc-DEF")
         body = posted[0].data
@@ -2844,9 +2856,30 @@ class Updates(unittest.TestCase):
         self.assertEqual((found["version"], found["latest_version"]), ("v1", "v2"))
         self.assertFalse(update.check(self.github(latest=self.OLD))["available"])
         self.assertIn("the key in update.json was refused", update.check(self.github(fail=401))["error"])
+        # no update.json: the app's own repository and release branch, asked with no key (the user, 2026-11-10:
+        # once public, people "can just update normally"). Before, a copy without the file asked nothing.
         update.CONFIG.unlink()
-        asked = len(self.asked)
-        self.assertEqual((update.check(self.github())["configured"], len(self.asked)), (False, asked))  # no file, nothing asked
+        self.asked.clear()
+        self.assertTrue(update.check(self.github())["available"])
+        self.assertEqual(self.asked[0], (f"https://api.github.com/repos/{update.DEFAULT['repo']}/commits/{update.DEFAULT['ref']}", None))
+
+    def test_a_refused_key_is_dropped_and_the_update_asked_for_without_it(self):
+        # the repository made public and the testers' key revoked: their copies, key and all, go on updating
+        github = self.github()
+
+        def revoked(request, timeout=None):
+            if request.get_header("Authorization"):
+                self.asked.append((request.full_url, request.get_header("Authorization")))
+                import urllib.error
+                raise urllib.error.HTTPError(request.full_url, 401, "Bad credentials", {}, None)
+            return github(request, timeout)
+        found = update.check(revoked)
+        self.assertEqual((found.get("error"), found["available"], found["latest_version"]), (None, True, "v2"))
+        self.assertEqual([key for _, key in self.asked[:2]], ["Bearer key", None])
+        self.assertEqual(update.apply(open_url=revoked)["now"], "bbbbbbb")
+        # without a key, a repository not found says it may not be public yet, not that a key was refused
+        update.CONFIG.unlink()
+        self.assertIn("may not be public yet", update.check(self.github(fail=404))["error"])
 
     def test_a_checkout_ahead_of_the_release_is_offered_nothing(self):
         # the owner works on past a release: the published commit is in their history already
@@ -2920,24 +2953,38 @@ class Updates(unittest.TestCase):
         update.REPO, update.CONFIG, update.VERSION = self.real
         if not shutil.which("git") or not (update.REPO / ".git").exists():
             self.skipTest("not a git checkout")
+        # (whether the repository is public is asked of GitHub: here it is said, with nothing sent)
+        real_public = update.public
+        update.public = lambda *args, **kwargs: True
+        self.addCleanup(setattr, update, "public", real_public)
         packed = update.pack(self.app / "dist")
         with zipfile.ZipFile(packed["zip"]) as archive:
             names = set(archive.namelist())
-            version = json.loads(archive.read("OC2VRM/.oc2vrm_version.json"))
-        self.assertTrue({"OC2VRM/OC2VRM.bat", "OC2VRM/app/server.py", "OC2VRM/requirements.txt"} <= names)
+            version = json.loads(archive.read("OC2VRM/program/.oc2vrm_version.json"))
+            starter = archive.read("OC2VRM/Start OC2VRM - Windows.bat")
+            shipped = json.loads(archive.read("OC2VRM/program/update.json")) if "OC2VRM/program/update.json" in names else {}
+        # a public repository: no key goes out in the zip, whatever update.json beside the app holds
+        self.assertEqual((packed["with_key"], "token" in shipped), (False, False))
+        # the three ways to start it share a name, so they sit together in the folder (the user, 2026-11-10)
+        self.assertEqual(sorted(n for n in update.STARTERS if n.startswith("Start OC2VRM - ")),
+                         ["Start OC2VRM - Linux.sh", "Start OC2VRM - Mac.command", "Start OC2VRM - Windows.bat"])
+        # beside the app's folder, only what starts it and a few lines on how (the user, 2026-11-10)
+        self.assertEqual({n.split("/")[1] for n in names} - {""}, {"program", *update.STARTERS})
+        self.assertIn(rb'call "%~dp0program\OC2VRM.bat" %*', starter)
+        self.assertTrue({"OC2VRM/program/OC2VRM.bat", "OC2VRM/program/app/server.py", "OC2VRM/program/requirements.txt"} <= names)
         self.assertEqual(version["commit"][:7], packed["commit"])
         self.assertIn("app/server.py", version["files"])
-        self.assertFalse(any(n.startswith(("OC2VRM/out/", "OC2VRM/tools/", "OC2VRM/samples/")) for n in names))
+        self.assertFalse(any(n.startswith(("OC2VRM/program/out/", "OC2VRM/program/tools/", "OC2VRM/program/samples/")) for n in names))
         # the owner's song goes with it when there is one beside the app, though it is never committed
         self.assertEqual(packed["music"], next((n for n in ("music.mp3", "music.ogg", "music.wav") if (update.REPO / n).is_file()), ""))
-        self.assertEqual(f"OC2VRM/{packed['music']}" in names, bool(packed["music"]))
+        self.assertEqual(f"OC2VRM/program/{packed['music']}" in names, bool(packed["music"]))
         # an earlier commit packs as it was: work goes on after a release, and the zip must be the release
         import subprocess
         before = subprocess.run(["git", "rev-parse", "HEAD~1"], cwd=update.REPO, capture_output=True, text=True).stdout.strip()
         if before:
             earlier = update.pack(self.app / "dist", at="HEAD~1")
             with zipfile.ZipFile(earlier["zip"]) as archive:
-                self.assertEqual(json.loads(archive.read("OC2VRM/.oc2vrm_version.json"))["commit"], before)
+                self.assertEqual(json.loads(archive.read("OC2VRM/program/.oc2vrm_version.json"))["commit"], before)
         with self.assertRaisesRegex(update.UpdateFailed, "no such commit"):
             update.pack(self.app / "dist", at="no-such-branch")
 
@@ -6007,6 +6054,35 @@ class Inputs(unittest.TestCase):
         for code in set(re.findall(r"VM-[A-Z-]+", script)):
             self.assertIsNotNone(errors.describe(code), code)
 
+
+
+class ReportRelay(unittest.TestCase):
+    """The report relay (relay/worker.js) as Cloudflare runs it, against a stand-in for Discord: its own Node tests."""
+
+    def test_the_shipped_relay_goes_before_an_old_webhook_a_copy_still_names(self):
+        # testers' update.json carried the developers' webhook, deleted when the relay took its place
+        from unittest import mock
+        from app import report
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            shipped, config = root / "reports.json", root / "update.json"
+            config.write_text(json.dumps({"repo": "a/b", "reports": "https://discord.com/api/webhooks/1/old"}))
+            with mock.patch.object(update, "CONFIG", config), mock.patch.object(report, "SHIPPED", shipped):
+                shipped.write_text(json.dumps({"address": "https://oc2vrm-reports.someone.workers.dev/report"}))
+                self.assertEqual(report.address(), "https://oc2vrm-reports.someone.workers.dev/report")
+                # a relay of a copy's own still goes first
+                config.write_text(json.dumps({"reports": "https://oc2vrm-reports.other.workers.dev/report"}))
+                self.assertEqual(report.address(), "https://oc2vrm-reports.other.workers.dev/report")
+
+    def test_the_relay_passes_reports_on_and_turns_the_rest_away(self):
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("no Node.js on this computer")
+        done = subprocess.run([node, "--test", str(Path(__file__).resolve().parents[1] / "relay" / "test.mjs")],
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(done.returncode, 0, done.stdout[-3000:] + done.stderr[-2000:])
 
 if __name__ == "__main__":
     unittest.main()
