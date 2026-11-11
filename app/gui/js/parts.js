@@ -344,7 +344,7 @@ export function renderPieces() {
         ${role === "appendage" ? `<select data-core title="the bone it grows from">${CORE.map((b) => `<option ${b === (named.bone || "") ? "selected" : ""} value="${b}">${b || "grows from: nearest"}</option>`).join("")}</select>` : ""}
         ${role === "detail" ? `<select data-anchor aria-label="rides on">${others.map((n) => `<option ${n === named.anchor ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>` : ""}
         ${role === "hat" ? `<label class="inline"><input type="checkbox" data-tip ${named.tip ? "checked" : ""}> tip swings</label>` : ""}</td>
-      <td>${hasSuggestion(row) ? `<button class="act alt small" data-accept title="${ROLE_INFO[row.suggested]?.[1] ?? ""}">use: ${roleName(row.suggested)}</button>` : ""}</td></tr>`;
+      <td>${hasSuggestion(row) ? `<button class="act alt small" data-accept title="use the suggestion, ${roleName(row.suggested)}: ${ROLE_INFO[row.suggested]?.[1] ?? ""}">use it</button>` : ""}</td></tr>`;
   }).join("") + regionRows()
     + (hidden ? `<tr><td colspan="6" class="msg">${hidden} more hidden by the filter.</td></tr>` : "");
   body.querySelectorAll("tr[data-region]").forEach((tr) => {

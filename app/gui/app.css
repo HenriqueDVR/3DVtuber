@@ -245,13 +245,38 @@ dl.facts dd .sub { display: block; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
-/* Quick build (quick.js): the automatic mode's stages */
-.qstage { margin-bottom: var(--s3); }
-.qstage .qn { display: inline-block; min-width: 22px; text-align: center; border: 1px solid var(--line); border-radius: 50%; margin-right: 4px; font-size: 12px; }
-.qstage.done { opacity: .82; }
-.qstage.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
-.qstage .row { gap: var(--s2); flex-wrap: wrap; margin-top: var(--s2); }
-.qstage canvas { display: block; max-width: 100%; border: 1px solid var(--line); border-radius: var(--r); margin-bottom: var(--s2); }
-.qlines { margin-top: var(--s3); }
+/* Quick build (quick.js): the automatic mode's one screen */
+.qstrip { display: flex; gap: var(--s2); list-style: none; margin: 0; padding: 0; flex-wrap: wrap; }
+.qstrip li { flex: 1; min-width: 120px; padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r); font-size: 12.5px; opacity: .55; }
+.qstrip li b { display: inline-block; min-width: 20px; margin-right: 6px; }
+.qstrip li.on { opacity: 1; border-color: var(--warn); }
+.qstrip li.done { opacity: .9; border-color: color-mix(in srgb, var(--good) 55%, var(--line)); }
+.qstrip li.done b::after { content: " \2713"; color: var(--good); }
+.qnow { padding: var(--s5, 28px); }
+.qnow h3 { margin: 0 0 var(--s2); font-size: 22px; }
+.qnow p { max-width: 62ch; font-size: 14px; line-height: 1.5; margin: var(--s2) 0; }
+.qnow .row { gap: var(--s2); flex-wrap: wrap; margin-top: var(--s3); }
+.qnow canvas { display: block; max-width: 100%; border: 1px solid var(--line); border-radius: var(--r); margin: var(--s2) 0; }
+.qnow canvas.small { width: 320px; }
+.qnow .qafter { opacity: .8; }
+.qwait { display: flex; align-items: center; gap: var(--s3); }
+.qwait h3 { margin: 0; }
+.qwait i { width: 22px; height: 22px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--warn); animation: qspin 1s linear infinite; }
+@keyframes qspin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .qwait i { animation: none; } }
+.qlines { margin-top: var(--s4); }
+.qmore summary span { opacity: .65; font-weight: normal; margin-left: 6px; }
+.qwhat ol { margin: var(--s2) 0 0; padding-left: 20px; }
+.qwhat li { margin: 4px 0; }
+/* what only the advanced mode shows (quick.js sets the class): the New character page asks for a model and a name */
+body.mode-auto .adv { display: none; }
+body:not(.mode-auto) .adv-off { display: none; }
+.qmode { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); margin-bottom: var(--s2); }
+.qmode button { text-align: left; padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); color: inherit; cursor: pointer; opacity: .7; font: inherit; }
+.qmode button:hover { opacity: 1; }
+.qmode button.on { opacity: 1; border-color: var(--good); box-shadow: 0 0 0 1px var(--good) inset; }
+.qmode b { font-size: 15px; }
+.qmode span { margin-left: 8px; font-size: 11px; opacity: .7; text-transform: uppercase; letter-spacing: .06em; }
+.qmode small { display: block; margin-top: 4px; font-size: 12.5px; line-height: 1.4; opacity: .85; }
 .guide ul { margin: var(--s2) 0 0; padding-left: 18px; }
 .guide li { margin: 3px 0; }

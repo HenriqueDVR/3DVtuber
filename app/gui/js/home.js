@@ -125,11 +125,13 @@ $("create").onclick = async () => {
         else toast("Not confirmed: the build will stop at the licence. You can confirm later on the Options page.", "warn", { ms: 12000 });
       }
       if (may && $("create-prepare").checked) job("run", {});
-    } else if (app.landing?.() === "quick") {
-      // automatic mode: the one screen, which gets it ready, finds the face and builds, stopping where a person should look
+    } else {
+      // Quick build / Overview (quick.js): what the app is doing and what comes next, in a few lines. In automatic
+      // mode it goes on to find the face and build, stopping where a person should look; in advanced it reads the
+      // model and lays out the steps. (It used to stay here, on the survey's numbers: "step 1 of 8", no word of either)
       app.go("quick");
       if ($("create-prepare").checked) app.quickGo();
-    } else if ($("create-prepare").checked) job("prepare", {});
+    }
   } catch (e) { say("create-msg", e.message, true); }
 };
 $("rename").onclick = async () => {
@@ -236,13 +238,18 @@ export async function renderSurvey() {
   if (!url) return;
   const s = await (await fetch(url)).json();
   const o = s.options || {};
-  $("survey").innerHTML = `<table>
+  // what the survey found, at a glance; the measurements and notes behind a click (the user, 2026-11-10: less to read)
+  const notes = notesFor(s.notes || []);
+  const facts = [s.pose.kind, `${Math.round(s.triangles / 1000)}k triangles`, s.parts.eye_inserts ? "modelled eyes" : "painted face",
+    o.rigid_head ? "rigid head" : "hair", o.cloth_physics ? "cloth physics" : ""].filter(Boolean);
+  $("survey").innerHTML = `<div class="facts">${facts.map((f) => `<span>${esc(f)}</span>`).join("")}</div>
+    <details class="more"><summary>Measurements${notes.length ? ` and ${notes.length} note${notes.length > 1 ? "s" : ""}` : ""}</summary><table>
     <tr><td>Size</td><td>${s.size.map((v) => v.toFixed(2)).join(" × ")} m, ${s.triangles.toLocaleString()} triangles, ${s.pieces} pieces</td></tr>
     <tr><td>Pose</td><td>${esc(s.pose.kind)}, arms ${Math.round(s.pose.arm_drop_degrees)}° below horizontal</td></tr>
     <tr><td>Face</td><td>${s.parts.eye_inserts ? "modelled eyes" : "painted face"}${s.face_patch ? ", face patch" : ""}</td></tr>
     <tr><td>Head</td><td>${o.rigid_head ? "solid head or hat: rigid head suggested" : "hair"}</td></tr>
     <tr><td>Cloth</td><td>${Math.round(s.cloth.share * 100)}% below the hips hangs free${o.cloth_physics ? ": cloth physics suggested" : ""}</td></tr>
-    </table>${notesFor(s.notes || []).length ? `<ul class="plain msg">${notesFor(s.notes || []).map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}`;
+    </table>${notes.length ? `<ul class="plain msg">${notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}</details>`;
 }
 
 // The survey's notes in the app's words: with a Tripo rig the joints come from it, so notes about

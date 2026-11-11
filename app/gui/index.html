@@ -93,30 +93,42 @@ try {
   <header class="page-head">
     <div class="kicker">Automatic</div>
     <h2>Quick build <span class="chip" id="quick-chip"></span></h2>
-    <p class="lead">From model to avatar on one screen. The app does each step and shows you what to look at; where a person does it
-      better, the button beside it lets you do that step by hand.</p>
+    <p class="lead">One thing at a time: the app does the work and tells you when it needs you.</p>
   </header>
   <div class="stack w-lg">
-    <div class="card"><div class="row"><button class="act" id="quick-go" data-job>Go</button><span class="msg" id="quick-msg"></span>
-      <span style="flex:1"></span><button class="act alt small" id="quick-all">All pages (advanced) →</button></div></div>
-    <div id="quick-stages"></div>
+    <ol class="qstrip" id="quick-strip"></ol>
+    <div class="card qnow" id="quick-now"></div>
+    <details class="more qmore" id="quick-more"><summary>Refine it yourself <span>optional: for when you know what you want to change</span></summary>
+      <div id="quick-refine"></div></details>
   </div>
 </section>
 
 <section class="page" id="model" data-step="1">
   <div id="model-new">
     <header class="page-head">
-      <div class="kicker">Step 1 of 8</div>
+      <div class="kicker adv">Step 1 of 8</div>
       <h2>New character</h2>
-      <p class="lead">Pick the model to turn into an avatar. Everything you decide on the later pages is saved with it as you go.</p>
-      <details class="more"><summary>More about this page</summary>
-        <p>A character is one model you turn into a VTuber avatar. Parts, joints, face and options are saved in
-          <code>out\&lt;name&gt;\character.json</code>. To go back to one you already started, open it from Characters.</p></details>
+      <p class="lead">Pick your 3D model and give it a name. That is all the app needs to start.</p>
     </header>
+    <div class="qmode w-sm" id="new-mode" role="radiogroup" aria-label="How to build it">
+      <button data-mode="automatic" role="radio"><b>Automatic</b><span>recommended</span>
+        <small>The app does each step and tells you when it needs you. Best for a first try.</small></button>
+      <button data-mode="advanced" role="radio"><b>Advanced</b><span>every choice</span>
+        <small>You go page by page: parts, joints, face, options. For when you know what you want to change.</small></button>
+    </div>
+    <p class="help w-sm">You can switch any time (top bar), and nothing is lost: it is the same character either way.</p>
+    <div class="card w-sm qwhat adv-off">
+      <div class="title">What happens next</div>
+      <ol><li><b>The app reads your model.</b> About a minute, nothing to do.</li>
+        <li><b>You check the face.</b> It shows where it found the eyes and mouth; you say if that is right, or mark them yourself.</li>
+        <li><b>It builds the avatar.</b> A few minutes. Then you see it move, with anything worth a look pointed out.</li></ol>
+    </div>
     <div class="card w-sm">
-      <label for="new-model">1 · The model (.fbx recommended; .glb and .obj work; a finished .vrm is improved as it is)</label>
+      <label for="new-model">1 · The model</label>
       <div class="field"><input type="text" id="new-model" placeholder="E:\3DVtuber\samples\my_oc.fbx">
         <button class="act alt" data-browse="model" data-for="new-model">Browse…</button></div>
+      <p class="help">A .fbx, .glb or .obj of a standing character, or a finished .vrm. Best: Tripo's rigged <b>FBX</b>, made in a <b>T-pose</b>.</p>
+      <details class="more"><summary>Which file should I use?</summary>
       <p class="help">The textured model straight from Tripo (P2 works best). <b>Recommended:</b> in Tripo press
         <b>Rig</b>, pick "VRM 1.0 humanoid" and export as <b>FBX</b>. That one file holds the model, its texture and
         Tripo's skeleton, which usually bends better than the app's own; the app finds the skeleton by itself, also
@@ -128,10 +140,12 @@ try {
         skeleton, weights, expressions, springs and materials stay, and nothing is rigged again. The build straightens
         its joints for finger tracking, can add chest bounce (Options), checks it and writes a new .vrm beside it,
         always as VRM 1.0. For an avatar someone else made, its licence may have to be read first: the app asks.</p>
+      <p class="help">A character is one model you turn into a VTuber avatar. What you decide is saved in
+        <code>out\&lt;name&gt;\character.json</code>. To go back to one you already started, open it from Characters.</p></details>
       <label for="new-name">2 · Name</label><input type="text" id="new-name" placeholder="MyOC">
-      <p class="help">A folder name for the build: letters, digits, <code>_</code>. Also the avatar's file name in your tracking app.</p>
-      <label for="new-author">Author (optional)</label><input type="text" id="new-author" placeholder="Unknown">
-      <details><summary class="help" style="cursor:pointer">Advanced: files you usually don't have</summary>
+      <p class="help">Letters, digits and <code>_</code>. It is the avatar's file name in your tracking app.</p>
+      <div class="adv"><label for="new-author">Author (optional)</label><input type="text" id="new-author" placeholder="Unknown"></div>
+      <details class="adv"><summary class="help" style="cursor:pointer">Advanced: files you usually don't have</summary>
         <label for="new-rig">Tripo's rig as a separate file, only if the model above is an unrigged copy</label>
         <div class="field"><input type="text" id="new-rig" placeholder="empty: the model's own rig, if it has one">
           <button class="act alt" data-browse="rig" data-for="new-rig">Browse…</button></div>
@@ -143,8 +157,8 @@ try {
           <button class="act alt" data-browse="face" data-for="new-face">Browse…</button></div>
       </details>
       <div class="row" style="margin-top:var(--s4)"><button class="act" id="create">Create the character</button>
-        <label class="inline"><input type="checkbox" id="create-prepare" checked> and get it ready</label></div>
-      <p class="help">Getting it ready runs the survey, lists the pieces and makes the face patch in one go, a minute or
+        <label class="inline adv"><input type="checkbox" id="create-prepare" checked> and get it ready</label></div>
+      <p class="help adv">Getting it ready runs the survey, lists the pieces and makes the face patch in one go, a minute or
         two. The one thing left for you is the Face page: mark the eyes and mouth and press Save and build. Untick to
         run each page's step yourself.</p>
       <div class="msg" id="create-msg"></div>
@@ -168,6 +182,10 @@ try {
           <button class="act alt" id="survey-run" data-job>Run survey only</button></div>
         <div id="survey" style="margin-top:var(--s3)"></div>
       </div>
+      </div>
+    <!-- the rest of this page is seldom needed: folded, so the survey is what the page says (the user, 2026-11-10) -->
+    <details class="fold-group" id="model-more"><summary>More for this character <span>rig file · duplicate · rename · delete</span></summary>
+    <div class="cols">
       <div class="card">
         <div class="title">Tripo's rig (optional)</div>
         <p class="help" id="rig-state"></p>
@@ -199,6 +217,7 @@ try {
           <button class="act alt" id="delete">Delete…</button><span class="msg" id="character-msg"></span></div>
       </div>
     </div>
+    </details>
   </div>
 </section>
 
@@ -305,34 +324,6 @@ try {
     </div>
     <div class="card">
       <div class="title">2 · Mark the eyes and mouth <span class="chip" id="points-state"></span></div>
-      <div class="opt"><b>First: how the eyes move</b>
-        <p class="help">Makes the eyes follow where you look in the tracking app (in Warudo, set eye movement to "blendshapes").
-          Blinking works either way.
-          <b>Eyes behind a visor, glasses or a mask:</b> choose "eyes are covered", and only the mouth's four points are asked for below.</p>
-        <select id="eyes" aria-label="eye tracking"><option value="">automatic (recommended)</option><option value="iris">moving iris</option>
-          <option value="modelled">the model's own irises slide</option>
-          <option value="slide">sliding eye patches</option><option value="none">none: eyes stay still</option>
-          <option value="hidden">none: eyes are covered (visor, glasses, mask)</option></select>
-        <p class="choice" id="eyes-choice"></p>
-        <div class="row" id="eye-shown-row">
-          <label class="inline">eyes that show <select id="eye-shown" aria-label="eyes that show"><option value="">both</option>
-            <option value="left">only the character's left (on the right of the picture)</option>
-            <option value="right">only the character's right (on the left of the picture)</option></select></label>
-          <span class="help">one under hair or an eyepatch: mark only the one that shows. The other stays exactly as it is
-            (no blink, no eye movement), and its place is taken as the mirror of the shown one across the mouth.</span>
-        </div>
-        <div class="examples" data-examples="eyes"></div>
-        <details><summary>Fine-tune the eyes</summary>
-          <p class="help">The build reads these off the drawing; change one when it read wrong. Each needs a rebuild
-            (from the eyes on). Shape and size are for irises the model has as pieces of their own, and an iris is
-            never wider than its piece.</p>
-          <div class="row">
-            <label class="inline">iris shape <select id="iris-shape" aria-label="iris shape"><option value="">as it is drawn</option>
-              <option value="circle">a circle</option><option value="oval">an oval, taller than wide</option></select></label>
-            <label class="inline">iris size × <input id="iris-size" type="number" step="0.05" min="0.7" max="1.4" value="1" style="width:70px"></label>
-            <label class="inline">how far they look × <input id="look-travel" type="number" step="0.05" min="0.5" max="1.5" value="1" style="width:70px"></label>
-            <label class="inline">how far they close × <input id="blink-amount" type="number" step="0.05" min="0.5" max="1.4" value="1" style="width:70px"></label>
-          </div></details></div>
       <p class="help">Place the points on the picture: the bar over it says which one is next and where, four for each eye and four
         for the mouth. Or let <b>Place them for me</b> put them all down (about 15 seconds), then drag any that is off. The 3D
         view shows where each lands: they must sit on the eyes and the mouth. They save by themselves once all are placed.</p>
@@ -360,9 +351,41 @@ try {
           <div id="face-checks"></div>
         </div>
       </div>
+      <!-- how the eyes move: a choice most leave on automatic, folded under the points (the user, 2026-11-10) -->
+      <details class="fold-group" id="eye-opts"><summary>How the eyes move <span>tracking · which eyes show · fine-tune</span></summary>
+      <div class="opt">
+        <p class="help">Makes the eyes follow where you look in the tracking app (in Warudo, set eye movement to "blendshapes").
+          Blinking works either way.
+          <b>Eyes behind a visor, glasses or a mask:</b> choose "eyes are covered", and only the mouth's four points are asked for below.</p>
+        <select id="eyes" aria-label="eye tracking"><option value="">automatic (recommended)</option><option value="iris">moving iris</option>
+          <option value="modelled">the model's own irises slide</option>
+          <option value="slide">sliding eye patches</option><option value="none">none: eyes stay still</option>
+          <option value="hidden">none: eyes are covered (visor, glasses, mask)</option></select>
+        <p class="choice" id="eyes-choice"></p>
+        <div class="row" id="eye-shown-row">
+          <label class="inline">eyes that show <select id="eye-shown" aria-label="eyes that show"><option value="">both</option>
+            <option value="left">only the character's left (on the right of the picture)</option>
+            <option value="right">only the character's right (on the left of the picture)</option></select></label>
+          <span class="help">one under hair or an eyepatch: mark only the one that shows. The other stays exactly as it is
+            (no blink, no eye movement), and its place is taken as the mirror of the shown one across the mouth.</span>
+        </div>
+        <div class="examples" data-examples="eyes"></div>
+        <details><summary>Fine-tune the eyes</summary>
+          <p class="help">The build reads these off the drawing; change one when it read wrong. Each needs a rebuild
+            (from the eyes on). Shape and size are for irises the model has as pieces of their own, and an iris is
+            never wider than its piece.</p>
+          <div class="row">
+            <label class="inline">iris shape <select id="iris-shape" aria-label="iris shape"><option value="">as it is drawn</option>
+              <option value="circle">a circle</option><option value="oval">an oval, taller than wide</option></select></label>
+            <label class="inline">iris size × <input id="iris-size" type="number" step="0.05" min="0.7" max="1.4" value="1" style="width:70px"></label>
+            <label class="inline">how far they look × <input id="look-travel" type="number" step="0.05" min="0.5" max="1.5" value="1" style="width:70px"></label>
+            <label class="inline">how far they close × <input id="blink-amount" type="number" step="0.05" min="0.5" max="1.4" value="1" style="width:70px"></label>
+          </div></details></div>
+      </details>
     </div>
     <div class="card w-lg">
-      <div class="title">3 · How the mouth moves</div>
+      <div class="title">3 · Mouth, then build</div>
+      <details class="fold-group" id="mouth-opts"><summary>How the mouth moves <span>tracking · redrawn or free mouth · size</span></summary>
       <div class="opt"><b>Mouth tracking</b>
         <p class="help">Makes the mouth follow yours in the tracking app: the jaw and the mouth's corners, not only the
           five talking shapes. Eye tracking and mouth tracking are separate: have both, either or neither.</p>
@@ -382,6 +405,7 @@ try {
             step 2, the solid shape is the mouth closed, where it rests, and the dashed outline is the widest it opens at
             this size; the outline follows the number as you change it. An estimate to choose the size by, without building.</span></div>
         <div class="examples" data-examples="mouth"></div></div>
+      </details>
       <div class="row" style="margin-top:var(--s3)"><button class="act" id="face-build" data-job>Save and build</button>
         <span class="help">the points and every choice on this page save as you make them; the build is what puts them on the avatar</span></div>
       <div class="msg" id="face-msg"></div>
@@ -635,6 +659,28 @@ try {
         <button class="act alt" id="setup-vendor" data-job hidden title="downloads three.js, three-vrm and the face tracker (17 MB, each file checked) into the app's folder">Keep a copy for offline use</button></div>
       <p class="help" id="start-send" style="margin-top:var(--s3)"></p>
     </div>
+    <div class="card w-lg"><div class="title">This app <span class="chip" id="update-chip"></span></div>
+      <p class="help" id="update-text">checking for a newer version…</p>
+      <div class="row"><button class="act" id="update-run" data-job hidden>Update</button>
+        <button class="act alt" id="update-check">Check for an update</button><span class="msg" id="update-msg"></span></div>
+      <p class="help">An update is the app's own code, about 8 MB. Your characters, their builds and Blender are not
+        touched or downloaded again. The app starts again by itself afterwards.</p>
+    </div>
+    <div class="card w-lg"><div class="title">Look</div>
+      <p class="help">How the app itself is drawn: a fighting game's menus, with a character select, a main menu, motion
+        and sound. Nothing about a character changes.</p>
+      <div class="row">
+        <label class="inline" title="stops the moving background, the sparks and the page effects"><input type="checkbox" id="look-still"> less motion</label>
+        <label class="inline" id="look-sound-row" title="the menus' sounds, and a note for each build step that finishes; all the way left is off">sound
+          <input type="range" id="look-sound" min="0" max="1" step="0.05" value="0.5" style="width:120px"></label>
+        <label class="inline" id="look-music-row" title="the tune behind the menus, low and muffled behind a work page; all the way left is off">music
+          <input type="range" id="look-music" min="0" max="1" step="0.05" value="0.3" style="width:120px"></label></div>
+      <div class="row" style="margin-top:var(--s3)"><label class="inline">open the app in
+        <select id="open-in" aria-label="open the app in"><option value="window">its own window</option><option value="browser">your browser</option></select></label>
+        <span class="msg" id="open-in-msg"></span></div>
+    </div>
+    <details class="fold-group w-lg" id="setup-more"><summary>More <span>which Blender · what to bring · testing the app</span></summary>
+    <div class="stack">
     <div class="card w-lg"><div class="title">Which Blender runs the builds</div>
       <p class="help">Any Blender 4.2 or later with the VRM Add-on ("VRM format" in Blender's Get Extensions). The app runs it in
         the background with only that add-on switched on, whatever else is installed in it, so your own Blender setup is
@@ -654,13 +700,6 @@ try {
         <b>T-pose</b> (arms straight out), press <b>Rig</b>, pick "VRM 1.0 humanoid" and export as <b>FBX</b>. A plain
         <code>.glb</code> or <code>.obj</code> works too, and a finished <code>.vrm</code> (VRM 1.0) is improved as it is.</p>
     </div>
-    <div class="card w-lg"><div class="title">This app <span class="chip" id="update-chip"></span></div>
-      <p class="help" id="update-text">checking for a newer version…</p>
-      <div class="row"><button class="act" id="update-run" data-job hidden>Update</button>
-        <button class="act alt" id="update-check">Check for an update</button><span class="msg" id="update-msg"></span></div>
-      <p class="help">An update is the app's own code, about 8 MB. Your characters, their builds and Blender are not
-        touched or downloaded again. The app starts again by itself afterwards.</p>
-    </div>
     <div class="card w-lg"><div class="title">Testing the app?</div>
       <p class="help">Thank you. What helps most: build one character from start to finish, load the <code>.vrm</code> in
         your tracking app, and say what looked wrong and in which pose. When something breaks or looks
@@ -669,19 +708,7 @@ try {
         <b>not</b> in it; rendered pictures of the character and any screenshots you attached are.</p>
       <p class="msg" id="start-version"></p>
     </div>
-    <div class="card w-lg"><div class="title">Look</div>
-      <p class="help">How the app itself is drawn: a fighting game's menus, with a character select, a main menu, motion
-        and sound. Nothing about a character changes.</p>
-      <div class="row">
-        <label class="inline" title="stops the moving background, the sparks and the page effects"><input type="checkbox" id="look-still"> less motion</label>
-        <label class="inline" id="look-sound-row" title="the menus' sounds, and a note for each build step that finishes; all the way left is off">sound
-          <input type="range" id="look-sound" min="0" max="1" step="0.05" value="0.5" style="width:120px"></label>
-        <label class="inline" id="look-music-row" title="the tune behind the menus, low and muffled behind a work page; all the way left is off">music
-          <input type="range" id="look-music" min="0" max="1" step="0.05" value="0.3" style="width:120px"></label></div>
-      <div class="row" style="margin-top:var(--s3)"><label class="inline">open the app in
-        <select id="open-in" aria-label="open the app in"><option value="window">its own window</option><option value="browser">your browser</option></select></label>
-        <span class="msg" id="open-in-msg"></span></div>
-    </div>
+    </div></details>
   </div>
 </section>
 </main>

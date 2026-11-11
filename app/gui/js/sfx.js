@@ -37,6 +37,9 @@ function wake() {
   if (tune && on) band();
 }
 export function arm() {
+  // at once, where the window lets a page sound unasked (the app's own window: server._show); a browser tab
+  // holds it until the first click or key, which the listeners below are for
+  wake();
   addEventListener("pointerdown", wake, true);
   addEventListener("keydown", wake, true);
   // a window out of sight plays no music; a build's step notes still sound

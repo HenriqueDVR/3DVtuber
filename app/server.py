@@ -854,6 +854,11 @@ def _show(address):
         webbrowser.open(address)
         return
     import webview
+    # the app's own window may sound without a click first: the music began only once the user clicked inside
+    # it (the user, 2026-11-10). A browser tab keeps its own rule, and there the first click still starts it
+    asked = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "")
+    if "autoplay-policy" not in asked:
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = f"{asked} --autoplay-policy=no-user-gesture-required".strip()
     webview.create_window("OC2VRM", address, width=1400, height=900)
     webview.start()
 

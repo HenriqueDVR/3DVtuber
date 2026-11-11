@@ -25,6 +25,9 @@ const EXTRAS = ["Fully local", "Own window", "Auto face marking", "File dialogs"
 function row(check, title, i) {
   const [mark, kind] = MARK[check.state];
   const button = check.action && check.state !== "ok" ? `<button class="act ${check.state === "bad" ? "" : "alt"} small" data-start="${i}">${LABEL[check.action] || "Fix"}</button>` : "";
+  // a check that is fine is one line, what it found beside it (whole on hover); only one that needs something
+  // says it all, with its fix (the user, 2026-11-10: a sentence under every tick was too much to read)
+  if (check.state === "ok") return `<div class="todo ok-line" title="${esc(check.text)}"><span><b class="${kind}">${mark} ${esc(title)}</b><em>${esc(check.text)}</em></span></div>`;
   return `<div class="todo"><span><b class="${kind}">${mark} ${esc(title)}</b><br>${esc(check.text)}${check.fix && check.state !== "ok" ? `<br><span class="msg">${esc(check.fix)}</span>` : ""}</span>${button}</div>`;
 }
 
@@ -48,6 +51,8 @@ export function renderStart() {
     : `<b>Where avatars go</b><br>Not needed to build. The first “Send to a folder…” (Build or Review) asks for your tracking app's avatar folder and remembers it; or load the .vrm from wherever it is.`;
   // offered once everything needed is there and no character is open yet: the way on from a first start
   $("start-go").hidden = !s.ready || !!S.manifest;
+  // which Blender, and adding one by hand, are folded away: opened when a build can't run without them
+  if (!s.ready && $("setup-more")) $("setup-more").open = true;
   $("start-version").textContent = `App version ${s.app || "unknown"} · Python ${s.python} · ${s.version ? `Blender ${s.version}` : "no Blender"}`;
   document.querySelectorAll("[data-start]").forEach((b) => b.onclick = () => act(all[+b.dataset.start][0]));
 }

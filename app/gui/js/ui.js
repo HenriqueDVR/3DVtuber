@@ -139,3 +139,61 @@ addEventListener("keydown", (e) => {
   e.preventDefault();
   if (key === "y" || e.shiftKey) redo(); else undo();
 });
+
+// Less to read at once. The user, 2026-11-10: "too much text everywhere... it gives me a headache"; the
+// information can stay "but maybe somewhat hidden". So a page says one sentence, and the rest is a click away:
+// a help paragraph of more than a line folds to a small "explain" tag that opens it in place, and a page's lead
+// keeps its first sentence, the rest behind a ?. Pages draw their help afresh as they go, so new ones are
+// folded as they appear. Nothing is taken out: a click shows all of it.
+const LONG = 70;
+function fold(root) {
+  // (a help written later, empty when first seen, is looked at again then)
+  root.querySelectorAll(".help:not(.fold)").forEach((p) => {
+    if (p.closest("summary, #guide, .toast, dialog") || p.textContent.trim().length <= LONG) return;
+    p.classList.add("fold"); p.tabIndex = 0; p.setAttribute("role", "button"); p.setAttribute("aria-expanded", "false");
+  });
+}
+function leads() {
+  document.querySelectorAll(".page-head .lead:not([data-split])").forEach((p) => {
+    p.dataset.split = "";
+    const html = p.innerHTML, m = [...html.matchAll(/[.:!?](\s+)(?=[A-Z<(])/g)].find((m) => {
+      const before = html.slice(0, m.index);
+      return (before.match(/</g) || []).length === (before.match(/>/g) || []).length;
+    });
+    if (!m || html.length - m.index < 20) return;
+    const cut = m.index + 1;
+    p.innerHTML = `${html.slice(0, cut)}<span class="rest">${html.slice(cut)}</span><button class="lq" aria-expanded="false" title="more about this page">?</button>`;
+  });
+}
+function flip(el) {
+  const open = !el.classList.contains("open");
+  el.classList.toggle("open", open);
+  el.setAttribute("aria-expanded", open);
+}
+addEventListener("click", (e) => {
+  const lq = e.target.closest(".lead .lq");
+  if (lq) { flip(lq.parentElement); lq.setAttribute("aria-expanded", lq.parentElement.classList.contains("open")); return; }
+  const p = e.target.closest(".help.fold");
+  if (p && !e.target.closest("a, button, input, select, label, summary")) flip(p);
+});
+addEventListener("keydown", (e) => {
+  const p = e.target.closest?.(".help.fold");
+  if (p && e.target === p && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); flip(p); }
+});
+let queued = false;
+const later = () => { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; fold(document.body); }); };
+new MutationObserver(later).observe(document.body, { childList: true, subtree: true });
+leads(); fold(document.body);
+
+// A page's "how it works" boxes: shown until "Got it", then kept behind the lead's ? with the rest of the page's words.
+const HOWTO = "oc2vrm-howto-";
+document.querySelectorAll("ol.howto").forEach((ol) => {
+  const page = ol.closest(".page")?.id, key = HOWTO + page;
+  let seen = false; try { seen = localStorage.getItem(key) === "seen"; } catch {}
+  ol.classList.toggle("seen", seen);
+  ol.insertAdjacentHTML("beforeend", `<li class="got"><button class="act alt small" title="hide these; the ? beside the line above brings them back">Got it</button></li>`);
+  ol.querySelector(".got button").onclick = () => {
+    ol.classList.add("seen"); ol.closest(".page-head")?.querySelector(".lead")?.classList.remove("open");
+    try { localStorage.setItem(key, "seen"); } catch {}
+  };
+});

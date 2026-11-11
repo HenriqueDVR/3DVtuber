@@ -79,7 +79,7 @@ const SHORT = { rigid_head: "Hats, helmets, masks: the head moves as one block."
 // The page in groups: what most people look at open, the rest folded with a word on when to open it.
 const GROUPS = [
   { title: "What moves", keys: ["cloth", "ahoge", "hair_hits_body", "chest"] },
-  { title: "Face and head", keys: ["face_tracking", "mouth_colour", "rigid_head", "hat_tip"] },
+  { title: "Face and head", note: "mouth tracking, the mouth's colour, solid heads and hats", keys: ["face_tracking", "mouth_colour", "rigid_head", "hat_tip"], folded: true },
   { title: "Repairs", note: "leave these on unless something looks wrong after a build", keys: ["loose_pieces", "repair_shoulder_seams", "auto_pieces"], folded: true },
   { title: "Advanced", note: "body weights, fingers, the saved pose, which way the model faces", keys: ["skinning", "fingers", "tpose", "facing"], folded: true },
   { title: "A finished avatar", keys: ["licence_read"], improving: true },
@@ -98,7 +98,7 @@ export function renderOptions() {
   const shown = (key) => key === "hat_tip" ? (value("rigid_head") ?? resolved.rigid_head) === true : true;
   const tile = (key) => {
     const [, title, what, choices] = row(key), v = value(key), changed = !same(v, DEFAULTS[key]);
-    const auto = picked(key, choices), chosen = choices.find(([c]) => same(c, v)) || choices[0];
+    const auto = picked(key, choices);
     const amount = key === "chest" && v === true ? (() => {
       const [, , , range] = row("chest_amount"), a = o.chest_amount ?? range.fallback;
       return `<label class="amount">how much <input type="range" data-slider="chest_amount" aria-label="chest bounce amount" min="${range.min}" max="${range.max}" step="${range.step}" value="${a}">
@@ -110,7 +110,7 @@ export function renderOptions() {
       <div class="seg" role="group" aria-label="${esc(title)}">${choices.map(([c, label, text]) =>
         `<button data-option="${key}" data-value='${esc(JSON.stringify(c))}' class="${same(c, v) ? "on" : ""}" title="${esc(text)}">${esc(label)}</button>`).join("")}</div>
       ${amount}
-      <p class="choice">${esc(chosen[2])}${auto ? ` <b>For this model: ${esc(auto[1])}.</b>` : ""}</p>
+      ${auto ? `<p class="choice"><b>For this model: ${esc(auto[1])}.</b></p>` : ""}
       <p class="long" hidden>${esc(what)}</p></div>`;
   };
   const changedCount = Object.keys(DEFAULTS).filter((k) => k !== "chest_amount" && !same(value(k), DEFAULTS[k])).length;
@@ -120,7 +120,8 @@ export function renderOptions() {
       ${changedCount ? `<span class="chip warn">${changedCount} changed</span>` : `<span class="chip done">all defaults</span>`}</p>`
     + groups.map((g) => {
       const keys = g.keys.filter((k) => (!improving || IMPROVES.includes(k)) && shown(k));
-      const open = folded[g.title] ?? !g.folded;
+      // (a folded group with a changed option in it opens: what was changed is never out of sight)
+      const open = folded[g.title] ?? (!g.folded || keys.some((k) => !same(value(k), DEFAULTS[k])));
       const changedHere = keys.filter((k) => !same(value(k), DEFAULTS[k])).length;
       return `<details class="ogroup" data-group="${esc(g.title)}" ${open ? "open" : ""}><summary>${esc(g.title)}${g.note ? ` <span>${esc(g.note)}</span>` : ""}
         ${changedHere ? `<span class="chip warn">${changedHere} changed</span>` : ""}</summary><div class="ogrid">${keys.map(tile).join("")}</div></details>`;

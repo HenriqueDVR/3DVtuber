@@ -148,7 +148,9 @@ function start() {
     <canvas id="a-fx"></canvas><div class="wipe" id="a-wipe"></div>`);
   document.body.insertAdjacentHTML("beforeend", `<footer id="a-hints"></footer>`);
   $("steps").insertAdjacentHTML("beforebegin", `<div id="a-crumbs"></div>`);
-  document.querySelector("nav .foot").insertAdjacentHTML("beforebegin", `<div class="tbs"><button id="a-bug" title="something went wrong or looks off: tell the developers (nothing is sent until you press Send)"><i aria-hidden="true">⚑</i>Report a bug</button><button id="a-music" title="the music, on or off; its loudness is on Setup"></button><button id="a-sfx" title="the menus' and buttons' sounds, on or off; their loudness is on Setup"></button><button data-to="help">Stuck?</button><button data-to="setup">Setup</button></div>`);
+  document.querySelector("nav .foot").insertAdjacentHTML("beforebegin", `<div class="tbs"><button id="a-bug" title="something went wrong or looks off: tell the developers (nothing is sent until you press Send)"><i aria-hidden="true">⚑</i>Report a bug</button><button data-to="help">Stuck?</button><button id="a-gear" aria-haspopup="true" aria-expanded="false" title="setup, sound, music, which Blender">⚙ Settings</button>
+    <div class="gear" id="a-gear-menu" hidden><button data-to="setup">Setup</button><button id="a-music" title="the music, on or off; its loudness is on Setup"></button><button id="a-sfx" title="the menus' and buttons' sounds, on or off; their loudness is on Setup"></button>
+    </div></div>`);
   $("home").insertAdjacentHTML("afterbegin", `<div class="hero"><h2 class="atitle mid">Character select<span id="a-count"></span></h2>
     <div class="band" id="a-band"><div class="who"><span class="tag" id="a-tag"></span><h3 id="a-name"></h3><p id="a-note"></p><div class="stats" id="a-stats"></div><button class="act small" id="a-draw" data-job hidden>Draw its poses</button></div></div>
     <div class="pop" id="a-pop"><img id="a-art" alt="" hidden><div class="mystery" id="a-mystery" hidden>?</div></div><div class="roster" id="a-roster"></div>
@@ -167,6 +169,16 @@ function start() {
   tables.insertAdjacentHTML("beforebegin", `<details class="tech" id="a-tech"><summary>Details <span>each step's log and notes · history · what is in the file · the rig check</span></summary></details>`);
   A("tech").append(tables);
 
+  // The top bar keeps the way round (the trail, the mode, Stuck?) and folds the rest under one button: sound,
+  // music, Setup, which Blender, the run-end notice. Twelve things along one line were too many
+  // to take in (the user, 2026-11-10). The run's own badge shows beside them only while something runs.
+  const gear = A("gear-menu"), tbs = document.querySelector(".tbs");
+  gear.append(document.querySelector("nav .foot")); tbs.prepend($("busy"));
+  const shut = () => { gear.hidden = true; A("gear").setAttribute("aria-expanded", "false"); };
+  A("gear").onclick = (e) => { e.stopPropagation(); gear.hidden = !gear.hidden; A("gear").setAttribute("aria-expanded", String(!gear.hidden)); play("select"); };
+  addEventListener("click", (e) => { if (!gear.hidden && !e.target.closest("#a-gear-menu") || e.target.closest("#a-gear-menu [data-to]")) shut(); });
+  addEventListener("keydown", (e) => { if (e.key === "Escape" && !gear.hidden) { e.stopPropagation(); shut(); A("gear").focus(); } }, true);
+
   stage(); arm();
   app.shown = shown; app.navDrawn = navDrawn; app.homeDrawn = hero;
   document.querySelector(".tbs").onclick = (e) => { const b = e.target.closest("button[data-to]"); if (b) { play("select"); app.go(b.dataset.to); } };
@@ -182,9 +194,9 @@ function start() {
   A("more").onclick = () => $("main").scrollTo({ top: document.querySelector(".hero").offsetHeight, behavior: still() ? "auto" : "smooth" });
   A("draw").onclick = () => draw([S.projects[sel]]);
   A("drawall").onclick = () => draw(undrawn());
-  A("roster").onpointerover = (e) => { const s = e.target.closest(".slot"); if (s && +s.dataset.i !== sel) show(+s.dataset.i); };
+  A("roster").onpointerover = (e) => { const s = e.target.closest(".slot"); if (s && +s.dataset.i !== sel) show(+s.dataset.i, e); };
   A("roster").onclick = (e) => { const s = e.target.closest(".slot"); if (s) choose(+s.dataset.i); };
-  A("cards").onpointerover = (e) => { const m = e.target.closest(".mcard"); if (m) light(+m.dataset.i); };
+  A("cards").onpointerover = (e) => { const m = e.target.closest(".mcard"); if (m) light(+m.dataset.i, e); };
   A("cards").onclick = (e) => { const m = e.target.closest(".mcard"); if (m) enter(+m.dataset.i); };
   A("list").onpointerover = (e) => { const b = e.target.closest("button"); if (b && +b.dataset.i !== item) { item = +b.dataset.i; play("move"); list(); } };
   A("list").onclick = (e) => { const b = e.target.closest("button"); if (b) { play("select"); app.go(GROUPS[group][+b.dataset.i]); } };
@@ -209,6 +221,7 @@ function trail(name) {
   if (name === "home") return ["home"];
   if (!S.manifest && !opening) return ["home", name];
   if (name === "menu") return ["home", "menu"];
+  if (name === "quick") return ["home", "menu", "quick"];
   if (name === "pages" || GROUPS.setup.includes(name) || GROUPS.check.includes(name)) return ["home", "menu", "pages", ...(name === "pages" ? [] : [name])];
   if (name === "build") return ["home", "menu", "build"];
   return ["home", name];
@@ -237,11 +250,12 @@ function chrome() {
     b.classList.toggle("on", b.dataset.to === page);
     if (b.dataset.to === "setup") b.classList.toggle("bad", !!S.setup && !S.setup.ready);
   });
-  const k = (a, b) => `<span><kbd>${a}</kbd>${b}</span>`, menus = ["home", "menu", "pages"].includes(page), step = $(page)?.dataset.step, path = open()?.manifest;
+  A("gear").classList.toggle("bad", !!S.setup && !S.setup.ready);
+  const k = (a, b) => `<span><kbd>${a}</kbd>${b}</span>`, menus = ["home", "menu", "pages"].includes(page), path = open()?.manifest;
   const where = `<span class="path">${path && page !== "home" ? esc(path.replaceAll("/", "\\").split("\\").slice(-3).join("\\")) + " · saved as you go" : ""}</span>`;
   html(A("hints"), S.manifest && (ORDER.includes(page) || page === "paint") ? stepBar(where)
     : (menus ? k(page === "pages" ? "↑ ↓" : "← →", "choose") + k("Enter", "select") + (page === "home" ? "" : k("Esc", "back"))
-      : `<span>${step ? `step ${step} of 8 · ` : ""}${esc(label(page))}</span>`) + `<span class="sp"></span>${where}`);
+      : `<span>${esc(label(page))}</span>`) + `<span class="sp"></span>${where}`);
   put(A("ghost-a"), `${label(page)} · `.repeat(8));
   put(A("ghost-b"), `${page === "home" || !open() ? "OC2VRM" : open().name} · `.repeat(12));
   bars();
@@ -258,12 +272,9 @@ function stepBar(where) {
   const done = (n) => !!nav(n)?.querySelector(".n.done");
   if (nudge && nudge.from !== page) nudge = null;
   const prev = before(page), next = nudge ? nudge.to : after(page);
-  const steps = ORDER.filter((n) => !skipped(n)).map((n, i) => {
-    const why = nav(n)?.classList.contains("locked") ? nav(n).title : "";
-    return `<li><button data-to="${n}" class="${n === page || (page === "paint" && n === "face") ? "on" : ""} ${done(n) ? "done" : ""}" title="${esc(why ? `${TITLES[n]}: ${why}` : `step ${i + 1}: ${TITLES[n]}`)}"${why ? " disabled" : ""}>`
-      + `<i>${done(n) ? "✓" : i + 1}</i><span>${esc(TITLES[n])}</span></button></li>`;
-  }).join("");
-  return `<button class="back" data-to="${prev || "menu"}">← ${esc(prev ? TITLES[prev] : "Menu")}</button><ol class="steps">${steps}</ol>`
+  // (every step listed here as well as in the guide at the side, the title's "step 4 of 8" and the trail at the
+  // top: the same list four times on one screen, the user, 2026-11-10. The guide holds it; this bar goes back and on)
+  return `<button class="back" data-to="${prev || "menu"}">← ${esc(prev ? TITLES[prev] : "Menu")}</button>`
     + `<span class="sp"></span>${where}`
     + `<span class="go">${nudge ? `<span class="bubble">${esc(nudge.text)}</span>` : ""}`
     + `<button class="next ${done(page) ? "ready" : ""} ${nudge ? "nudge" : ""}" data-to="${next || "menu"}">${next ? `Next: ${esc(TITLES[next])}` : "Main menu"} →</button></span>`;
@@ -352,10 +363,12 @@ async function draw(list) {
   if (!S.manifestPath) await app.loadProjects(null);
 }
 // the cursor moved: sparks from the slot it landed on, so they travel with it
-function show(i) {
+// (`e`: the pointer that did it. The sparks rise from where it is: from a fixed spot of the slot they came up
+// away from the hand, the user, 2026-11-10. A key has no place of its own and keeps the slot's top)
+function show(i, e) {
   play("move"); fill(i, true);
   const slot = A("roster").children[i];
-  if (slot) burst(...at(slot, .5, .1), "#3df2d8", 8, .6, -Math.PI / 2, 1.6);
+  if (slot) burst(...(e ? [e.clientX, e.clientY] : at(slot, .5, .1)), "#3df2d8", 8, .6, -Math.PI / 2, 1.6);
 }
 // The menu comes up at once under the picked character; its pages' states follow when it has
 // loaded (a second or so: the model's pieces are read).
@@ -406,11 +419,11 @@ async function menu() {
     if (a && img.src !== a.src) img.src = a.src;
   });
 }
-function light(i) {
+function light(i, e) {
   if (i === card) return;
   card = i; play("move");
   [...A("cards").children].forEach((m, n) => m.classList.toggle("on", n === i));
-  burst(...at(A("cards").children[i], .5, .08), CARDS[i][2], 14, .9, -Math.PI / 2, 2);
+  burst(...(e ? [e.clientX, e.clientY] : at(A("cards").children[i], .5, .08)), CARDS[i][2], 14, .9, -Math.PI / 2, 2);
 }
 function enter(i) {
   play("select");

@@ -18,6 +18,7 @@ export function go(name) {
   $("main").scrollTop = 0;
   onShow[name]?.();
   app.shown?.(name);
+  app.renderSide?.();
 }
 app.go = go;
 document.querySelectorAll("#steps button").forEach((b) => b.onclick = () => go(b.dataset.go));
@@ -97,5 +98,6 @@ export function renderNav() {
     $("rebuild-run").onclick = () => app.job("run", { from: next.from });
   }
   app.navDrawn?.();
+  app.renderSide?.();
 }
 app.renderNav = renderNav;
