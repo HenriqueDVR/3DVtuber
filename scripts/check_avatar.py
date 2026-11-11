@@ -125,6 +125,8 @@ ARM_ROUND = 7
 # Vertices this close (m) are at one place: the copies an import makes along a texture seam, and
 # the ones a file read back has for each normal (scripts/_fingerprint.py counts places the same way)
 PLACE = 1e-5
+# Copies of a vertex sharing this much of their weight are one surface the build keeps whole (loose.SHARED)
+SEAM_SHARED = 0.5
 # Copies of a vertex this far apart (m) in a pose have opened the surface there. Model A built from
 # her manifest on 2026-10-07 (tears in her hair in Warudo): 65 places with every chain swung
 # together, 3.9 cm the worst; model B the same morning (tears in her cape): 24, 6.9 cm; both rebuilt
@@ -230,7 +232,13 @@ def main():
     swings = np.array([names.get(g) in springs for g in range(len(mesh_obj.vertex_groups))] + [False])
     on_arm = np.array([any(part in names.get(g, "") for part in ARM_BONE) for g in range(len(mesh_obj.vertex_groups))] + [False])
     copy, twin = seam_copies(rest)
-    kept = seams_kept(lead[copy], lead[twin], swings, on_arm)
+    # how much of its weight each copy shares with its twin (loose.SHARED: one surface, whichever bone leads)
+    table = np.zeros((len(rest), len(mesh_obj.vertex_groups)))
+    if len(held_vertex):
+        np.add.at(table, (held_vertex, held_bone), held_weight)
+    table /= np.maximum(table.sum(axis=1, keepdims=True), 1e-12)
+    common = np.minimum(table[copy], table[twin]).sum(axis=1)
+    kept = seams_kept(lead[copy], lead[twin], swings, on_arm, common)
     seams = measured["seams"] = {"copies": int(len(copy)), "kept": int(kept.sum()), "torn": 0, "torn_cm": 0.0}
 
     def weights(i):
@@ -781,12 +789,13 @@ def seam_copies(rest):
     return copy, first[where[copy]]
 
 
-def seams_kept(lead, lead_twin, swings, on_arm):
+def seams_kept(lead, lead_twin, swings, on_arm, common=None):
     """Which copies of a vertex the build keeps with their twin (a bool for each), by the bone that
     leads each of the two (`lead`, `lead_twin`: vertex group numbers, -1 for none; `swings`,
     `on_arm`: for each group, and a last False for none).
 
-    Kept: both led by one bone (loose.share_seam_copies), both by spring chains
+    Kept: both led by one bone or sharing most of their weight (`common` >= SEAM_SHARED: loose.share_seam_copies,
+    Leaflit's hips torn sitting, 2026-11-11), both by spring chains
     (loose.share_strand_seams), or one by a chain and the other by the body it hangs from
     (split_torn_seams cuts a chain from an arm only). Not kept: an arm against anything else and
     two bones of the body: the two sides of a cut, a sleeve cut free of the skirt it rests on, are
@@ -795,7 +804,8 @@ def seams_kept(lead, lead_twin, swings, on_arm):
     weighted = (lead >= 0) & (lead_twin >= 0)
     strand = swings[lead] & swings[lead_twin]
     hem = (swings[lead] != swings[lead_twin]) & ~on_arm[lead] & ~on_arm[lead_twin]
-    return weighted & ((lead == lead_twin) | strand | hem)
+    agree = (common >= SEAM_SHARED) if common is not None else np.zeros(len(lead), dtype=bool)
+    return weighted & ((lead == lead_twin) | agree | strand | hem)
 
 
 def hand_of(names):

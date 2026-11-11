@@ -49,6 +49,11 @@ GUARD_ARMS = {"arms T-pose": (1, 0, 0), "arms forward": (0.3, -1, -0.3), "arms r
 TEARS = 0.2
 # Copies of a vertex further apart than this (m) after a bake are no longer one place (parted_copies)
 SLIT = 1e-4
+# Copies of a vertex that share at least this much of their weight are one surface, whichever bone leads
+# each (share_seam_copies). Leaflit's hips, 2026-11-11: a copy 63% right thigh and 29% spine against its twin
+# 50% spine and 37% thigh, 73% shared, parted 28 mm with the leg raised and 41 mm sitting (a slit seen in
+# Warudo). The two sides of a real cut, a sleeve on an arm against the skirt it rests on, share next to nothing.
+SHARED = 0.5
 
 
 def synchronize_shoulder_seams(mesh_obj, armature_obj, reach=0.4):
@@ -584,9 +589,20 @@ def share_strand_seams(mesh_obj, verts=None):
     return int(len(touched))
 
 
+def _agreeing(weights, weld, copies):
+    """For each vertex, whether every copy at its place shares at least SHARED of its weight with the
+    place's first copy (each copy's weights taken as fractions of their sum)."""
+    total = weights.sum(axis=0)
+    share = weights / np.where(total > 0, total, 1.0)
+    common = np.minimum(share, share[:, weld]).sum(axis=0)
+    weakest = np.full(len(weld), 2.0)
+    np.minimum.at(weakest, weld, common)
+    return (weakest[weld] >= SHARED) & (copies[weld] > 1)
+
+
 def share_seam_copies(mesh_obj, verts=None):
-    """Give the copies of a vertex led by one and the same bone one set of weights: their mean.
-    Returns how many vertices changed.
+    """Give the copies of a vertex led by one and the same bone, or sharing most of their weight
+    (SHARED), one set of weights: their mean. Returns how many vertices changed.
 
     Run before the T-pose bake. A step that rewrites weights vertex by vertex can leave the two
     copies along a texture seam a little apart: the fitted-skirt repair left 30 copies across
@@ -594,8 +610,11 @@ def share_seam_copies(mesh_obj, verts=None):
     shows in the modelled pose; the bake then turns the arms 45 degrees and leaves the two copies
     apart for good, a slit above the belt seen in Warudo as a hole in the clothing.
 
-    Copies led by different bones are left alone: the two sides of a cut (a sleeve cut free of the
-    skirt it rested on) are meant to part. Changes no geometry and no UVs.
+    The same happens where the copies mix the same bones in other amounts, led by different ones:
+    Leaflit's hips, a copy mostly thigh against its twin mostly spine, opened a slit up to 41 mm when
+    she sat. Copies led by different bones and sharing little of their weight are left alone: the two
+    sides of a cut (a sleeve cut free of the skirt it rested on) are meant to part. Changes no
+    geometry and no UVs.
     """
     verts = world_vertices(mesh_obj) if verts is None else verts
     count = len(verts)
@@ -610,6 +629,7 @@ def share_seam_copies(mesh_obj, verts=None):
     np.maximum.at(high, weld, leader)
     np.add.at(copies, weld, 1)
     one_bone = (low[weld] == high[weld]) & (low[weld] >= 0) & (copies[weld] > 1)
+    one_bone |= _agreeing(weights, weld, copies)
     total = np.zeros_like(weights)
     np.add.at(total, (slice(None), weld), weights)
     mean = total[:, weld] / copies[weld]
@@ -622,19 +642,21 @@ def share_seam_copies(mesh_obj, verts=None):
 
 def seam_copies_on_one_bone(mesh_obj, verts=None):
     """(copy, twin): each vertex that lies where an earlier one does, at a place whose copies are all
-    led by one and the same bone, and that first vertex. The seams share_seam_copies closes: read
-    before a step that moves the mesh, they say afterwards whether it opened one (parted_copies).
-    The two sides of a cut, led by different bones, are not among them."""
+    led by one and the same bone or share most of their weight (SHARED), and that first vertex. The
+    seams share_seam_copies closes: read before a step that moves the mesh, they say afterwards
+    whether it opened one (parted_copies). The two sides of a cut are not among them."""
     verts = world_vertices(mesh_obj) if verts is None else verts
     count = len(verts)
     weld, _, _ = welded_edges(mesh_obj, verts)
     weights = _weight_table(mesh_obj, count)
     leader = np.argmax(weights, axis=0)
     leader[weights.max(axis=0) <= 0.0] = -1
-    low, high = np.full(count, len(weights)), np.full(count, -2)
+    low, high, copies = np.full(count, len(weights)), np.full(count, -2), np.zeros(count, dtype=int)
     np.minimum.at(low, weld, leader)
     np.maximum.at(high, weld, leader)
-    copy = np.flatnonzero((low[weld] == high[weld]) & (low[weld] >= 0) & (weld != np.arange(count)))
+    np.add.at(copies, weld, 1)
+    closed = ((low[weld] == high[weld]) & (low[weld] >= 0)) | _agreeing(weights, weld, copies)
+    copy = np.flatnonzero(closed & (weld != np.arange(count)))
     return copy, weld[copy]
 
 

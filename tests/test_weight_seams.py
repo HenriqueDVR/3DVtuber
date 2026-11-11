@@ -259,6 +259,27 @@ class ChainsAreNotTornFromWhatTheyHangOn(unittest.TestCase):
         self.assertEqual(self.weights(obj, 0), {"Cloth0_0": 1.0})
         self.assertEqual(self.weights(obj, 3), {"LeftLowerArm": 1.0})
 
+    def test_copies_mixing_the_same_bones_otherwise_are_made_one(self):
+        # Leaflit's hips, 2026-11-11: a copy mostly thigh, its twin mostly spine, 73% of their weight shared;
+        # led by different bones, they were left apart, and opened 41 mm when she sat (a slit in Warudo)
+        obj = self.seam("RightUpperLeg", "Spine")
+        obj.vertex_groups["RightUpperLeg"].add([0, 1], 0.63, "REPLACE")
+        obj.vertex_groups["Spine"].add([0, 1], 0.29, "REPLACE")
+        obj.vertex_groups["Spine"].add([3, 4], 0.5, "REPLACE")
+        obj.vertex_groups["RightUpperLeg"].add([3, 4], 0.37, "REPLACE")
+        hips = obj.vertex_groups.new(name="Hips")
+        hips.add([0, 1, 3, 4], 0.08, "REPLACE")
+        copy, twin = loose.seam_copies_on_one_bone(obj)
+        self.assertEqual((copy.tolist(), twin.tolist()), ([3, 4], [0, 1]))  # the T-pose step then holds them shut
+        self.assertEqual(loose.share_seam_copies(obj), 4)
+        self.assertEqual(self.weights(obj, 0), self.weights(obj, 3))
+        # sharing a little (40%) is still the two sides of a cut, each left as it is
+        cut = self.seam("RightUpperLeg", "Spine")
+        cut.vertex_groups["Spine"].add([0, 1], 0.4, "REPLACE")
+        cut.vertex_groups["RightUpperLeg"].add([0, 1], 0.6, "REPLACE")
+        self.assertEqual(loose.share_seam_copies(cut), 0)
+        self.assertEqual(len(loose.seam_copies_on_one_bone(cut)[0]), 0)
+
     def bit(self, weights):
         """A triangle of its own beside a body of 200 vertices on the hips."""
         body = [(x * .02 - .2, 0, z * .02 + .8) for z in range(10) for x in range(20)]
